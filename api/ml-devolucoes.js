@@ -14,37 +14,28 @@ export default async function handler(req, res) {
     const userId = token.user_id;
     const headers = { Authorization: `Bearer ${token.access_token}` };
 
-    let cases = [];
-    try {
-      const r1 = await fetch(
-        `https://api.mercadolibre.com/post-purchase/v1/cases/search?seller_id=${userId}&status=opened&limit=50`,
-        { headers }
-      );
-      const d1 = await r1.json();
-      cases = d1.data || d1.cases || [];
-    } catch {}
+    const dateFrom = new Date();
+    dateFrom.setDate(dateFrom.getDate() - 60);
+    const dateFromStr = dateFrom.toISOString().split("T")[0] + "T00:00:00.000-03:00";
 
-    const enriched = await Promise.all(cases.slice(0, 20).map(async (c) => {
-      let productTitle = "—", buyerNickname = "—";
-      try {
-        const or = await fetch(`https://api.mercadolibre.com/orders/${c.resource_id||c.id}`, { headers });
-        const od = await or.json();
-        if (od.order_items?.[0]) productTitle = od.order_items[0].item?.title || "—";
-        if (od.buyer) buyerNickname = od.buyer.nickname || "—";
-      } catch {}
-      return {
-        id: c.id,
-        status: c.status || "aberto",
-        type: c.type || "reclamação",
-        reason: c.reason_id || "—",
-        stage: c.stage || "waiting_seller",
-        product: productTitle,
-        buyer: buyerNickname,
-        valor: c.resolution?.amount_to_return || null,
-        prazo: c.resolution?.due_date || c.date_created,
-        created: c.date_created,
-        permalink: `https://www.mercadolivre.com.br/reclamacao/${c.id}`,
-      };
+    const r2 = await fetch(
+      `https://api.mercadolibre.com/orders/search?seller=${userId}&order.status=cancelled&order.date_created.from=${encodeURIComponent(dateFromStr)}&limit=50&sort=date_desc`,
+      { headers }
+    );
+    const d2 = await r2.json();
+    const orders = d2.results || [];
+
+    const enriched = orders.slice(0, 30).map(o => ({
+      id: o.id,
+      status: "cancelado",
+      type: "pedido cancelado",
+      reason: (o.cancel_detail?.reason || "—").replace(/_/g, " "),
+      stage: "waiting_seller",
+      product: o.order_items?.[0]?.item?.title || "—",
+      buyer: o.buyer?.nickname || "—",
+      valor: o.total_amount || null,
+      created: o.date_created,
+      permalink: `https://www.mercadolivre.com.br/vendas/${o.id}/detalhe`,
     }));
 
     return res.json({ ok: true, data: enriched, total: enriched.length, updated_at: new Date().toISOString() });
