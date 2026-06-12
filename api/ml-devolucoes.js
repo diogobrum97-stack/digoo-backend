@@ -22,85 +22,91 @@ export default async function handler(req, res) {
     const d1 = await r1.json();
     const cases = d1.data || d1.cases || [];
 
-    // Log pra debug: estrutura do primeiro case
-    if (cases.length > 0) {
-      console.log("CASE_KEYS:", Object.keys(cases[0]));
-      console.log("CASE_0:", JSON.stringify(cases[0]).slice(0, 600));
-    }
-
     if (cases.length === 0) {
       return res.json({ ok: true, data: [], total: 0, updated_at: new Date().toISOString() });
     }
 
-    const enriched = await Promise.all(cases.slice(0, 30).map(async (c) => {
-      let productTitle = "—", buyerNickname = "—";
-      let returnStatusLabel = null;
-      let returnStatusKey = "default";
-      let dueDate = null;
+    // Log estrutura do primeiro case para debug
+    console.log("CASE_0_KEYS:", Object.keys(cases[0]).join(","));
+    console.log("CASE_0:", JSON.stringify(cases[0]).slice(0, 500));
 
-      // Tenta todas as possíveis chaves de ID do pedido
-      const orderId = c.order_id || c.resource_id || c.claim_id || c.id;
+    // Busca cases completos em lotes de 5 para não timeout
+    const BATCH = 5;
+    const enriched = [];
 
-      try {
-        const orRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, { headers });
-        const od = await orRes.json();
-        if (od.order_items?.[0]) productTitle = od.order_items[0].item?.title || "—";
-        if (od.buyer) buyerNickname = od.buyer.nickname || "—";
-      } catch {}
+    for (let i = 0; i < Math.min(cases.length, 20); i += BATCH) {
+      const batch = cases.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map(async (c) => {
+        let productTitle = "—", buyerNickname = "—";
+        let returnStatusLabel = null, returnStatusKey = "default", dueDate = null;
 
-      // Busca o case completo para pegar status real
-      try {
-        const caseRes = await fetch(
-          `https://api.mercadolibre.com/post-purchase/v1/cases/${c.id}`,
-          { headers }
-        );
-        const caseData = await caseRes.json();
+        // Busca case completo (1 request por item)
+        try {
+          const caseRes = await fetch(
+            `https://api.mercadolibre.com/post-purchase/v1/cases/${c.id}`,
+            { headers }
+          );
+          const cd = await caseRes.json();
 
-        // Log estrutura do case completo (só no primeiro)
-        if (c === cases[0]) {
-          console.log("CASE_FULL_KEYS:", Object.keys(caseData));
-          console.log("CASE_FULL:", JSON.stringify(caseData).slice(0, 800));
+          // Log do primeiro caso completo
+          if (c === cases[0]) {
+            console.log("CASE_FULL_KEYS:", Object.keys(cd).join(","));
+            console.log("CASE_FULL:", JSON.stringify(cd).slice(0, 600));
+          }
+
+          // Produto e comprador do case
+          productTitle = cd.item?.title || cd.order?.item?.title || "—";
+          buyerNickname = cd.buyer?.nickname || cd.order?.buyer?.nickname || "—";
+          dueDate = cd.due_date || cd.detail?.due_date || null;
+
+          // Status do envio de devolução
+          const shipStatus = cd.return?.shipment?.status
+            || cd.shipment?.status
+            || cd.return?.status
+            || null;
+
+          if (shipStatus) {
+            const m = mapStatus(shipStatus);
+            returnStatusLabel = m.label;
+            returnStatusKey = m.key;
+          }
+        } catch {}
+
+        // Se não achou produto, busca o pedido (só se necessário)
+        if (productTitle === "—") {
+          try {
+            const orderId = c.order_id || c.resource_id;
+            if (orderId) {
+              const orRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, { headers });
+              const od = await orRes.json();
+              if (od.order_items?.[0]) productTitle = od.order_items[0].item?.title || "—";
+              if (od.buyer) buyerNickname = od.buyer.nickname || "—";
+            }
+          } catch {}
         }
 
-        // Tenta extrair status da devolução de várias formas
-        const shipmentStatus = caseData.return?.shipment?.status
-          || caseData.shipment?.status
-          || caseData.return?.status
-          || caseData.resolution?.return_status
-          || null;
-
-        if (shipmentStatus) {
-          const mapped = mapStatus(shipmentStatus);
-          returnStatusLabel = mapped.label;
-          returnStatusKey = mapped.key;
-        }
-
-        dueDate = caseData.due_date
-          || caseData.detail?.due_date
-          || caseData.resolution?.due_date
-          || null;
-
-      } catch {}
-
-      return {
-        id: c.id,
-        status: c.status || "opened",
-        type: c.type || "devolução",
-        reason: c.reason_id || "—",
-        stage: c.stage || "waiting_seller",
-        returnStatusLabel,
-        returnStatusKey,
-        dueDate,
-        product: productTitle,
-        buyer: buyerNickname,
-        valor: c.resolution?.amount_to_return || null,
-        created: c.date_created,
-        permalink: `https://www.mercadolivre.com.br/vendas/${c.order_id || c.resource_id || c.id}/detalhe`,
-      };
-    }));
+        return {
+          id: c.id,
+          status: c.status || "opened",
+          type: c.type || "devolução",
+          reason: c.reason_id || "—",
+          stage: c.stage || "waiting_seller",
+          returnStatusLabel,
+          returnStatusKey,
+          dueDate,
+          product: productTitle,
+          buyer: buyerNickname,
+          valor: c.resolution?.amount_to_return || null,
+          created: c.date_created,
+          permalink: `https://www.mercadolivre.com.br/vendas/${c.order_id || c.resource_id || c.id}/detalhe`,
+        };
+      }));
+      enriched.push(...results);
+    }
 
     return res.json({ ok: true, data: enriched, total: enriched.length, updated_at: new Date().toISOString() });
   } catch (e) {
+    console.error("ERROR:", e.message);
     return res.status(500).json({ error: e.message });
   }
 }
