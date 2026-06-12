@@ -10,85 +10,95 @@ export default async function handler(req, res) {
   try {
     const headers = { Authorization: `Bearer ${token}` };
 
-    // Busca seller_id
     const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers });
     const me = await meRes.json();
     if (!me.id) return res.status(401).json({ error: "Token inválido ou expirado" });
     const userId = me.id;
 
-    // Busca devoluções abertas
     let cases = [];
-    try {
-      const r1 = await fetch(
-        `https://api.mercadolibre.com/post-purchase/v1/cases/search?seller_id=${userId}&type=returns&status=opened&limit=50`,
-        { headers }
-      );
-      const d1 = await r1.json();
-      cases = d1.data || d1.cases || [];
-    } catch {}
-
-    // Fallback: pedidos cancelados com envio entregue
-    if (cases.length === 0) {
-      try {
-        const dateFrom = new Date();
-        dateFrom.setDate(dateFrom.getDate() - 90);
-        const dateFromStr = dateFrom.toISOString().split("T")[0] + "T00:00:00.000-03:00";
-        const r2 = await fetch(
-          `https://api.mercadolibre.com/orders/search?seller=${userId}&order.status=cancelled&shipping.status=delivered&order.date_created.from=${encodeURIComponent(dateFromStr)}&limit=20&sort=date_desc`,
-          { headers }
-        );
-        const d2 = await r2.json();
-        cases = (d2.results || []).map(o => ({
-          id: o.id, status: "em_transito", type: "devolução",
-          reason_id: o.cancel_detail?.reason || "—",
-          stage: "waiting_seller", resource_id: o.id,
-          date_created: o.date_created, _order: o,
-        }));
-      } catch {}
-    }
+    const r1 = await fetch(
+      `https://api.mercadolibre.com/post-purchase/v1/cases/search?seller_id=${userId}&type=returns&status=opened&limit=50`,
+      { headers }
+    );
+    const d1 = await r1.json();
+    cases = d1.data || d1.cases || [];
 
     const enriched = await Promise.all(cases.slice(0, 30).map(async (c) => {
       let productTitle = "—", buyerNickname = "—";
-      let returnStatus = null, returnSubstatus = null, dueDateStr = null;
+      let returnStatusLabel = "Em andamento";
+      let returnStatusKey = "default";
+      let dueDate = null;
 
-      // Dados do pedido
       try {
-        if (c._order) {
-          if (c._order.order_items?.[0]) productTitle = c._order.order_items[0].item?.title || "—";
-          if (c._order.buyer) buyerNickname = c._order.buyer.nickname || "—";
-        } else {
-          const or = await fetch(`https://api.mercadolibre.com/orders/${c.resource_id || c.id}`, { headers });
-          const od = await or.json();
-          if (od.order_items?.[0]) productTitle = od.order_items[0].item?.title || "—";
-          if (od.buyer) buyerNickname = od.buyer.nickname || "—";
+        const orderId = c.resource_id || c.id;
+        const orRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, { headers });
+        const od = await orRes.json();
+
+        if (od.order_items?.[0]) productTitle = od.order_items[0].item?.title || "—";
+        if (od.buyer) buyerNickname = od.buyer.nickname || "—";
+
+        // Busca o shipping de devolução pelo order
+        // Primeiro tenta pegar o return_shipping_id direto do pedido
+        let returnShippingId = od.return_shipping_id || null;
+
+        // Se não tiver, busca nas devoluções do pedido
+        if (!returnShippingId) {
+          try {
+            const retRes = await fetch(
+              `https://api.mercadolibre.com/orders/${orderId}/returns`,
+              { headers }
+            );
+            const retData = await retRes.json();
+            const ret = Array.isArray(retData) ? retData[0] : retData;
+            returnShippingId = ret?.shipping_id || ret?.shipment_id || null;
+
+            // Status direto do objeto de devolução
+            if (ret?.status) {
+              const mapped = mapReturnStatus(ret.status, ret.substatus);
+              returnStatusLabel = mapped.label;
+              returnStatusKey = mapped.key;
+            }
+            if (ret?.due_date) dueDate = ret.due_date;
+          } catch {}
         }
-      } catch {}
 
-      // Busca detalhes do caso/devolução para pegar status real
-      try {
-        const caseRes = await fetch(
-          `https://api.mercadolibre.com/post-purchase/v1/cases/${c.id}`,
-          { headers }
-        );
-        const caseData = await caseRes.json();
-
-        // Status da devolução vem em caseData.return ou caseData.status
-        if (caseData.return) {
-          returnStatus = caseData.return.status || null;
-          returnSubstatus = caseData.return.substatus || null;
+        // Se tiver shipping_id, consulta o status do envio
+        if (returnShippingId && returnStatusLabel === "Em andamento") {
+          try {
+            const shipRes = await fetch(
+              `https://api.mercadolibre.com/shipments/${returnShippingId}`,
+              { headers }
+            );
+            const ship = await shipRes.json();
+            if (ship.status) {
+              const mapped = mapShipmentStatus(ship.status, ship.substatus);
+              returnStatusLabel = mapped.label;
+              returnStatusKey = mapped.key;
+            }
+            if (ship.status_history?.date_shipped) dueDate = null;
+          } catch {}
         }
 
-        // Prazo de ação
-        if (caseData.due_date) dueDateStr = caseData.due_date;
-        if (caseData.detail?.due_date) dueDateStr = caseData.detail.due_date;
-
-        // Se não veio do case, usa o stage do claim
-        if (!returnStatus && caseData.stage) returnStatus = caseData.stage;
+        // Fallback: tenta buscar via case detail
+        if (returnStatusLabel === "Em andamento") {
+          try {
+            const caseRes = await fetch(
+              `https://api.mercadolibre.com/post-purchase/v1/cases/${c.id}`,
+              { headers }
+            );
+            const caseData = await caseRes.json();
+            const ret = caseData.return || caseData;
+            if (ret?.status && ret.status !== "opened") {
+              const mapped = mapReturnStatus(ret.status, ret.substatus);
+              returnStatusLabel = mapped.label;
+              returnStatusKey = mapped.key;
+            }
+            if (caseData.due_date) dueDate = caseData.due_date;
+            if (caseData.detail?.due_date) dueDate = caseData.detail.due_date;
+          } catch {}
+        }
 
       } catch {}
-
-      // Mapeia status para label legível
-      const statusLabel = mapReturnStatus(returnStatus, returnSubstatus, c.stage);
 
       return {
         id: c.id,
@@ -96,9 +106,9 @@ export default async function handler(req, res) {
         type: c.type || "devolução",
         reason: c.reason_id || "—",
         stage: c.stage || "waiting_seller",
-        returnStatus: returnStatus || c.stage || "waiting_seller",
-        returnStatusLabel: statusLabel,
-        dueDate: dueDateStr,
+        returnStatusLabel,
+        returnStatusKey,
+        dueDate,
         product: productTitle,
         buyer: buyerNickname,
         valor: c.resolution?.amount_to_return || null,
@@ -113,26 +123,27 @@ export default async function handler(req, res) {
   }
 }
 
-function mapReturnStatus(status, substatus, stage) {
-  // Status do objeto return
+function mapShipmentStatus(status, substatus) {
   const s = (status || "").toLowerCase();
   const ss = (substatus || "").toLowerCase();
+  if (s === "in_transit" || ss === "in_transit") return { label: "A caminho", key: "transit" };
+  if (s === "delivered") return { label: "Devolvido", key: "delivered" };
+  if (s === "ready_to_ship") return { label: "Aguard. coleta", key: "waiting" };
+  if (s === "waiting_for_pickup" || ss === "waiting_for_pickup") return { label: "Aguard. coleta", key: "waiting" };
+  if (s === "picked_up") return { label: "Coletado", key: "transit" };
+  if (s === "not_delivered" || s === "lost") return { label: "Extraviado", key: "lost" };
+  if (s === "cancelled") return { label: "Cancelado", key: "cancelled" };
+  return { label: status || "Em andamento", key: "default" };
+}
 
-  if (s.includes("transit") || s === "on_the_way" || ss.includes("transit")) return "A caminho";
-  if (s.includes("delivered") || s === "delivered") return "Devolvido";
-  if (s.includes("waiting") || s === "waiting_for_pickup") return "Aguard. coleta";
-  if (s.includes("lost")) return "Extraviado";
-  if (s.includes("refused")) return "Recusado";
-  if (s.includes("returned")) return "Devolvido";
-  if (s.includes("dispute") || (stage || "").includes("dispute")) return "Em disputa";
-  if (s.includes("review")) return "Em revisão";
-
-  // Fallback pelo stage do claim
-  const st = (stage || "").toLowerCase();
-  if (st === "waiting_seller") return "Aguarda você";
-  if (st === "buyer") return "Aguarda comprador";
-  if (st === "dispute") return "Em disputa";
-  if (st === "resolved") return "Resolvida";
-
-  return status || "Em andamento";
+function mapReturnStatus(status, substatus) {
+  const s = (status || "").toLowerCase();
+  if (s.includes("transit") || s === "on_the_way") return { label: "A caminho", key: "transit" };
+  if (s.includes("delivered") || s === "delivered") return { label: "Devolvido", key: "delivered" };
+  if (s.includes("waiting") || s === "waiting_for_pickup") return { label: "Aguard. coleta", key: "waiting" };
+  if (s.includes("review")) return { label: "Em revisão", key: "review" };
+  if (s.includes("dispute")) return { label: "Em disputa", key: "dispute" };
+  if (s.includes("lost") || s.includes("extrav")) return { label: "Extraviado", key: "lost" };
+  if (s.includes("refused")) return { label: "Recusado", key: "lost" };
+  return { label: status || "Em andamento", key: "default" };
 }
