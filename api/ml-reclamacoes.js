@@ -1,5 +1,7 @@
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const token = req.query.token;
@@ -11,17 +13,20 @@ export default async function handler(req, res) {
     // Busca o seller_id
     const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers });
     const me = await meRes.json();
+    if (!me.id) return res.status(401).json({ error: "Token inválido ou expirado" });
     const sellerId = me.id;
 
-    // Busca reclamações abertas onde sou o vendedor
-    const claimsRes = await fetch(
-      `https://api.mercadolibre.com/post-purchase/v1/claims?role=seller&status=opened&limit=50`,
-      { headers }
-    );
+    // Endpoint correto para reclamações abertas no ML Brasil
+    const url = `https://api.mercadolibre.com/post-purchase/v1/claims?seller_id=${sellerId}&status=opened&limit=50`;
+    const claimsRes = await fetch(url, { headers });
     const claimsData = await claimsRes.json();
-    const claims = claimsData.data || claimsData.results || claimsData || [];
 
-    if (!Array.isArray(claims) || claims.length === 0) {
+    // Log para debug no Vercel
+    console.log("claims raw:", JSON.stringify(claimsData).slice(0, 500));
+
+    const claims = claimsData.data || claimsData.results || (Array.isArray(claimsData) ? claimsData : []);
+
+    if (!claims.length) {
       return res.json({ ok: true, data: [], total: 0, updated_at: new Date().toISOString() });
     }
 
@@ -30,11 +35,13 @@ export default async function handler(req, res) {
       let productTitle = "—";
       let buyerNickname = "—";
       try {
-        const orderId = c.resource_id || c.order_id || c.id;
-        const orRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, { headers });
-        const od = await orRes.json();
-        if (od.order_items?.[0]) productTitle = od.order_items[0].item?.title || "—";
-        if (od.buyer) buyerNickname = od.buyer.nickname || "—";
+        const orderId = c.order_id || c.resource_id || c.id;
+        if (orderId && String(orderId).length > 6) {
+          const orRes = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, { headers });
+          const od = await orRes.json();
+          if (od.order_items?.[0]) productTitle = od.order_items[0].item?.title || "—";
+          if (od.buyer) buyerNickname = od.buyer.nickname || "—";
+        }
       } catch {}
 
       return {
