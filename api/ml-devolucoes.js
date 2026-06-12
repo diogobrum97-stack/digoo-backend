@@ -15,28 +15,34 @@ export default async function handler(req, res) {
     if (!me.id) return res.status(401).json({ error: "Token inválido ou expirado" });
     const userId = me.id;
 
-    // Endpoint correto para devoluções no ML Brasil
     const r1 = await fetch(
       `https://api.mercadolibre.com/post-purchase/v1/claims/search?players.user_id=${userId}&players.role=respondent&claim_type=RETURNS&status=opened&limit=50`,
       { headers }
     );
     const d1 = await r1.json();
-    const claims = d1.data || [];
+    const allClaims = d1.data || [];
 
-    if (claims.length === 0) {
-      return res.json({ ok: true, data: [], total: 0, updated_at: new Date().toISOString() });
+    if (allClaims.length === 0) {
+      return res.json({ ok: true, data: [], pendingReview: [], total: 0, updated_at: new Date().toISOString() });
     }
 
-    // Enriquece em lotes de 5 para não estourar timeout
+    // Separa os que precisam de revisão (have return_review_ok action)
+    const pendingReview = allClaims.filter(c => {
+      const seller = (c.players || []).find(p => p.role === "respondent" && p.type === "seller");
+      return (seller?.available_actions || []).some(a =>
+        a.action === "return_review_ok" || a.action === "return_review_unified_ok"
+      );
+    });
+
+    // Enriquece em lotes de 5
     const BATCH = 5;
     const enriched = [];
 
-    for (let i = 0; i < Math.min(claims.length, 30); i += BATCH) {
-      const batch = claims.slice(i, i + BATCH);
+    for (let i = 0; i < Math.min(allClaims.length, 30); i += BATCH) {
+      const batch = allClaims.slice(i, i + BATCH);
       const results = await Promise.all(batch.map(async (c) => {
         let productTitle = "—", buyerNickname = "—";
 
-        // Busca dados do pedido
         try {
           const orderId = c.resource_id;
           if (orderId) {
@@ -47,52 +53,35 @@ export default async function handler(req, res) {
           }
         } catch {}
 
-        // Status real vem do stage + available_actions do vendedor
-        const sellerPlayer = (c.players || []).find(p => p.role === "respondent" && p.type === "seller");
-        const sellerActions = sellerPlayer?.available_actions || [];
-        const hasSellerAction = sellerActions.length > 0;
+        const seller = (c.players || []).find(p => p.role === "respondent" && p.type === "seller");
+        const sellerActions = seller?.available_actions || [];
+        const hasReviewOk = sellerActions.some(a =>
+          a.action === "return_review_ok" || a.action === "return_review_unified_ok"
+        );
+        const hasReviewFail = sellerActions.some(a =>
+          a.action === "return_review_fail" || a.action === "return_review_unified_fail"
+        );
 
-        // Detecta se é devolução a caminho pelo stage e actions
+        // Prazo da ação
+        let dueDate = null;
+        sellerActions.forEach(a => { if (a.due_date) dueDate = a.due_date; });
+
+        // Status/label
         let returnStatusLabel, returnStatusKey;
-
         const stage = (c.stage || "").toLowerCase();
 
-        if (stage === "dispute") {
+        if (hasReviewOk || hasReviewFail) {
+          returnStatusLabel = "Revisão pendente";
+          returnStatusKey = "review";
+        } else if (stage === "dispute") {
           returnStatusLabel = "Em disputa";
           returnStatusKey = "dispute";
         } else if (stage === "claim") {
-          // Verifica se tem ação de return_review (produto a caminho/devolvido)
-          const hasReturnReview = sellerActions.some(a =>
-            a.action?.includes("return_review") || a.action?.includes("refund")
-          );
-          if (hasReturnReview) {
-            returnStatusLabel = "Devolvido";
-            returnStatusKey = "delivered";
-          } else {
-            returnStatusLabel = "A caminho";
-            returnStatusKey = "transit";
-          }
-        } else if (stage === "waiting_seller" || (hasSellerAction && stage !== "dispute")) {
-          returnStatusLabel = "Aguarda você";
-          returnStatusKey = "waiting";
-        } else if (stage === "buyer") {
-          returnStatusLabel = "Aguarda comprador";
-          returnStatusKey = "default";
-        } else if (stage === "resolved") {
-          returnStatusLabel = "Resolvida";
-          returnStatusKey = "delivered";
+          returnStatusLabel = "A caminho";
+          returnStatusKey = "transit";
         } else {
           returnStatusLabel = "Em andamento";
           returnStatusKey = "default";
-        }
-
-        // Prazo: pega a ação com due_date mais próxima
-        let dueDate = null;
-        sellerActions.forEach(a => { if (a.due_date) dueDate = a.due_date; });
-        if (!dueDate) {
-          (c.players || []).forEach(p => {
-            (p.available_actions || []).forEach(a => { if (a.due_date) dueDate = a.due_date; });
-          });
         }
 
         return {
@@ -103,6 +92,9 @@ export default async function handler(req, res) {
           stage: c.stage || "claim",
           returnStatusLabel,
           returnStatusKey,
+          needsReview: hasReviewOk || hasReviewFail,
+          hasReviewOk,
+          hasReviewFail,
           dueDate,
           product: productTitle,
           buyer: buyerNickname,
@@ -114,7 +106,13 @@ export default async function handler(req, res) {
       enriched.push(...results);
     }
 
-    return res.json({ ok: true, data: enriched, total: enriched.length, updated_at: new Date().toISOString() });
+    return res.json({
+      ok: true,
+      data: enriched,
+      pendingReviewCount: pendingReview.length,
+      total: enriched.length,
+      updated_at: new Date().toISOString()
+    });
   } catch (e) {
     console.error("ERROR:", e.message);
     return res.status(500).json({ error: e.message });
