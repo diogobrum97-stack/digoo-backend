@@ -16,13 +16,12 @@ export default async function handler(req, res) {
     if (!me.id) return res.status(401).json({ error: "Token inválido ou expirado" });
     const sellerId = me.id;
 
-    // Endpoint correto para reclamações abertas no ML Brasil
-    const url = `https://api.mercadolibre.com/post-purchase/v1/claims?seller_id=${sellerId}&status=opened&limit=50`;
+    // Endpoint correto: /claims/search com players.user_id e role=respondent (vendedor)
+    const url = `https://api.mercadolibre.com/post-purchase/v1/claims/search?players.user_id=${sellerId}&players.role=respondent&status=opened&limit=50`;
     const claimsRes = await fetch(url, { headers });
     const claimsData = await claimsRes.json();
 
-    // Log para debug no Vercel
-    console.log("claims raw:", JSON.stringify(claimsData).slice(0, 500));
+    console.log("claims search raw:", JSON.stringify(claimsData).slice(0, 800));
 
     const claims = claimsData.data || claimsData.results || (Array.isArray(claimsData) ? claimsData : []);
 
@@ -44,12 +43,27 @@ export default async function handler(req, res) {
         }
       } catch {}
 
+      // Detecta stage a partir dos players
+      let stage = c.stage || "waiting_seller";
+      if (c.players) {
+        const sellerPlayer = c.players.find(p => p.type === "seller");
+        const hasSellerAction = sellerPlayer?.available_actions?.length > 0;
+        if (hasSellerAction) stage = "waiting_seller";
+        else {
+          const buyerPlayer = c.players.find(p => p.type === "buyer");
+          const hasBuyerAction = buyerPlayer?.available_actions?.length > 0;
+          if (hasBuyerAction) stage = "buyer";
+          else if (c.stage === "dispute") stage = "dispute";
+          else stage = "buyer";
+        }
+      }
+
       return {
         id: c.id,
         status: c.status || "aberto",
-        type: c.claim_type || c.type || "reclamação",
-        reason: c.reason_id || c.reason || "—",
-        stage: c.stage || "waiting_seller",
+        type: c.type || "reclamação",
+        reason: c.reason_id || "—",
+        stage,
         product: productTitle,
         buyer: buyerNickname,
         valor: c.resolution?.amount_to_return || null,
