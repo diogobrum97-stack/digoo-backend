@@ -26,12 +26,17 @@ export default async function handler(req, res) {
       return res.json({ ok: true, data: [], pendingReview: [], total: 0, updated_at: new Date().toISOString() });
     }
 
-    // Separa os que precisam de revisão (have return_review_ok action)
+    // Separa os que precisam de revisão:
+    // 1. Têm return_review_ok nas actions, OU
+    // 2. São type=returns com stage=claim (produto chegou, aguarda revisão manual)
     const pendingReview = allClaims.filter(c => {
       const seller = (c.players || []).find(p => p.role === "respondent" && p.type === "seller");
-      return (seller?.available_actions || []).some(a =>
-        a.action === "return_review_ok" || a.action === "return_review_unified_ok"
+      const hasReviewAction = (seller?.available_actions || []).some(a =>
+        a.action === "return_review_ok" || a.action === "return_review_unified_ok" ||
+        a.action === "return_review_fail" || a.action === "return_review_unified_fail"
       );
+      const isReturnInClaim = c.type === "returns" && c.stage === "claim";
+      return hasReviewAction || isReturnInClaim;
     });
 
     // Enriquece em lotes de 5
@@ -61,6 +66,11 @@ export default async function handler(req, res) {
         const hasReviewFail = sellerActions.some(a =>
           a.action === "return_review_fail" || a.action === "return_review_unified_fail"
         );
+        // Também considera revisão pendente se type=returns e stage=claim
+        const isReturnInClaim = c.type === "returns" && c.stage === "claim";
+
+        // needsReview considera actions explícitas OU stage=claim em devolução
+        const needsReviewOverride = isReturnInClaim && !hasReviewOk && !hasReviewFail;
 
         // Prazo da ação
         let dueDate = null;
@@ -92,7 +102,7 @@ export default async function handler(req, res) {
           stage: c.stage || "claim",
           returnStatusLabel,
           returnStatusKey,
-          needsReview: hasReviewOk || hasReviewFail,
+          needsReview: hasReviewOk || hasReviewFail || needsReviewOverride,
           hasReviewOk,
           hasReviewFail,
           dueDate,
