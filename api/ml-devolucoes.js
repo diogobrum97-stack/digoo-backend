@@ -82,11 +82,23 @@ export default async function handler(req, res) {
             );
             const ret = await retRes.json();
             const order = ret.orders?.[0];
-            if (order?.return_quantity) returnQty = order.return_quantity;
+            // returnQty como inteiro
+            if (order?.return_quantity) returnQty = Math.round(Number(order.return_quantity));
+
+            // Prazo: tenta várias fontes
             const shipment = ret.shipments?.[0];
-            if (shipment?.status === "delivered" && shipment?.last_updated) {
-              returnDueDate = addBusinessDays(new Date(shipment.last_updated), 3).toISOString();
+            if (shipment) {
+              // Data base: last_updated do shipment delivered, ou date_delivered, ou last_updated geral
+              const baseDate = shipment.date_delivered
+                || (shipment.status === "delivered" ? shipment.last_updated : null)
+                || ret.last_updated
+                || null;
+              if (baseDate) {
+                returnDueDate = addBusinessDays(new Date(baseDate), 3).toISOString();
+              }
             }
+            // Fallback: due_date direto do objeto de retorno
+            if (!returnDueDate && ret.due_date) returnDueDate = ret.due_date;
           } catch {}
         }
         const sellerActions = seller?.available_actions || [];
