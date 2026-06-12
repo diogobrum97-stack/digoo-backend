@@ -1,3 +1,14 @@
+function addBusinessDays(date, days) {
+  let count = 0;
+  const d = new Date(date);
+  while (count < days) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++; // pula sábado e domingo
+  }
+  return d;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -55,6 +66,29 @@ export default async function handler(req, res) {
         } catch {}
 
         const seller = (c.players || []).find(p => p.role === "respondent" && p.type === "seller");
+        const sellerActionsEarly = seller?.available_actions || [];
+        const isPendingReview = sellerActionsEarly.some(a =>
+          a.action === "return_review_ok" || a.action === "return_review_unified_ok" ||
+          a.action === "return_review_fail" || a.action === "return_review_unified_fail"
+        );
+
+        // Busca detalhes da devolução (prazo e quantidade) — só para pendentes de revisão
+        let returnQty = null, returnDueDate = null;
+        if (isPendingReview) {
+          try {
+            const retRes = await fetch(
+              `https://api.mercadolibre.com/post-purchase/v2/claims/${c.id}/returns`,
+              { headers }
+            );
+            const ret = await retRes.json();
+            const order = ret.orders?.[0];
+            if (order?.return_quantity) returnQty = order.return_quantity;
+            const shipment = ret.shipments?.[0];
+            if (shipment?.status === "delivered" && shipment?.last_updated) {
+              returnDueDate = addBusinessDays(new Date(shipment.last_updated), 3).toISOString();
+            }
+          } catch {}
+        }
         const sellerActions = seller?.available_actions || [];
         const hasReviewOk = sellerActions.some(a =>
           a.action === "return_review_ok" || a.action === "return_review_unified_ok"
@@ -98,7 +132,8 @@ export default async function handler(req, res) {
           needsReview: hasReviewOk || hasReviewFail,
           hasReviewOk,
           hasReviewFail,
-          dueDate,
+          dueDate: returnDueDate || dueDate || null,
+          returnQty,
           product: productTitle,
           buyer: buyerNickname,
           valor: c.resolution?.amount_to_return || null,
