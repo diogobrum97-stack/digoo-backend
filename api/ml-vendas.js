@@ -24,15 +24,15 @@ module.exports = async function handler(req, res) {
     const dateFromStr = dateFrom.toISOString().split("T")[0] + "T00:00:00.000-03:00";
     const dateToStr = dateTo.toISOString().split("T")[0] + "T23:59:59.000-03:00";
 
-    // Busca pedidos pagos do período em lotes
+    // Busca pedidos do período em lotes — inclui paid, payment_required, in_process
     let allOrders = [];
     let offset = 0;
     const limit = 50;
     let total = null;
 
-    while (total === null || offset < Math.min(total, 200)) {
+    while (total === null || offset < Math.min(total, 300)) {
       const r = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${userId}&order.status=paid&order.date_created.from=${encodeURIComponent(dateFromStr)}&order.date_created.to=${encodeURIComponent(dateToStr)}&limit=${limit}&offset=${offset}&sort=date_desc`,
+        `https://api.mercadolibre.com/orders/search?seller=${userId}&order.date_created.from=${encodeURIComponent(dateFromStr)}&order.date_created.to=${encodeURIComponent(dateToStr)}&limit=${limit}&offset=${offset}&sort=date_desc`,
         { headers }
       );
       const d = await r.json();
@@ -49,6 +49,9 @@ module.exports = async function handler(req, res) {
 
     let totalRevenue = 0;
     let totalOrders = allOrders.length;
+
+    // Filtra só pedidos com valor real (exclui cancelados)
+    allOrders = allOrders.filter(o => !["cancelled"].includes(o.status));
 
     allOrders.forEach(order => {
       const date = order.date_created?.slice(0, 10);
@@ -120,12 +123,15 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    const totalUnits = Object.values(productMap).reduce((s,p)=>s+p.qty,0);
+
     return res.json({
       ok: true,
       period: { days, from: dateFromStr, to: dateToStr },
       summary: {
         totalRevenue: Math.round(totalRevenue * 100) / 100,
         totalOrders,
+        totalUnits,
         avgTicket: totalOrders > 0 ? Math.round((totalRevenue / totalOrders) * 100) / 100 : 0,
       },
       dailyEvolution,
