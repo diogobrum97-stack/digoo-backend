@@ -11,54 +11,51 @@ module.exports = async function handler(req, res) {
   try {
     const headers = { Authorization: `Bearer ${token}` };
 
-    // Seller ID
     const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers });
     const me = await meRes.json();
     if (!me.id) return res.status(401).json({ error: "Token inválido" });
     const userId = me.id;
 
-    // Datas
     const dateTo = new Date();
     const dateFrom = new Date();
     dateFrom.setDate(dateFrom.getDate() - days);
     const dateFromStr = dateFrom.toISOString().split("T")[0] + "T00:00:00.000-03:00";
     const dateToStr = dateTo.toISOString().split("T")[0] + "T23:59:59.000-03:00";
 
-    // Busca pedidos do período em lotes — inclui paid, payment_required, in_process
-    let allOrders = [];
-    let offset = 0;
-    const limit = 50;
-    let total = null;
+    // Pega total de pedidos para saber quantas páginas
+    const countRes = await fetch(
+      `https://api.mercadolibre.com/orders/search?seller=${userId}&order.date_created.from=${encodeURIComponent(dateFromStr)}&order.date_created.to=${encodeURIComponent(dateToStr)}&limit=1`,
+      { headers }
+    );
+    const countData = await countRes.json();
+    const totalOrders = countData.paging?.total || 0;
 
-    while (total === null || offset < Math.min(total, 300)) {
-      const r = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${userId}&order.date_created.from=${encodeURIComponent(dateFromStr)}&order.date_created.to=${encodeURIComponent(dateToStr)}&limit=${limit}&offset=${offset}&sort=date_desc`,
-        { headers }
+    // Busca primeiros 500 pedidos em paralelo (lotes de 50, max 10 requisições)
+    const maxPages = Math.min(Math.ceil(totalOrders / 50), 10);
+    const pageRequests = [];
+    for (let i = 0; i < maxPages; i++) {
+      pageRequests.push(
+        fetch(
+          `https://api.mercadolibre.com/orders/search?seller=${userId}&order.date_created.from=${encodeURIComponent(dateFromStr)}&order.date_created.to=${encodeURIComponent(dateToStr)}&limit=50&offset=${i * 50}&sort=date_desc`,
+          { headers }
+        ).then(r => r.json()).then(d => d.results || []).catch(() => [])
       );
-      const d = await r.json();
-      if (!d.results) break;
-      allOrders = allOrders.concat(d.results);
-      total = d.paging?.total || 0;
-      offset += limit;
-      if (d.results.length < limit) break;
     }
 
+    const pages = await Promise.all(pageRequests);
+    let allOrders = pages.flat().filter(o => o.status !== "cancelled");
+
     // Processa pedidos
-    const productMap = {}; // SKU/título -> dados agregados
-    const dailyMap = {};   // data -> faturamento
-
+    const productMap = {};
+    const dailyMap = {};
     let totalRevenue = 0;
-    let totalOrders = allOrders.length;
-
-    // Filtra só pedidos com valor real (exclui cancelados)
-    allOrders = allOrders.filter(o => !["cancelled"].includes(o.status));
+    let totalUnits = 0;
 
     allOrders.forEach(order => {
       const date = order.date_created?.slice(0, 10);
-      if (date) {
-        dailyMap[date] = (dailyMap[date] || 0) + (order.total_amount || 0);
-      }
-      totalRevenue += order.total_amount || 0;
+      const amount = order.total_amount || 0;
+      if (date) dailyMap[date] = (dailyMap[date] || 0) + amount;
+      totalRevenue += amount;
 
       (order.order_items || []).forEach(item => {
         const key = item.item?.id || item.item?.title || "unknown";
@@ -72,45 +69,41 @@ module.exports = async function handler(req, res) {
             unitPrice: item.unit_price || 0,
           };
         }
-        productMap[key].qty += item.quantity || 0;
-        productMap[key].revenue += (item.unit_price || 0) * (item.quantity || 0);
+        const qty = item.quantity || 0;
+        productMap[key].qty += qty;
+        productMap[key].revenue += (item.unit_price || 0) * qty;
+        totalUnits += qty;
       });
     });
 
-    // Produtos ordenados por quantidade vendida
     const products = Object.values(productMap).sort((a, b) => b.qty - a.qty);
     const topSellers = products.slice(0, 10);
     const lowSellers = products.filter(p => p.qty <= 2).slice(0, 10);
 
-    // Busca anúncios ativos para cruzar com parados
-    let activeItems = [];
+    // Anúncios parados
+    let stoppedItems = [];
     try {
       const itemsRes = await fetch(
-        `https://api.mercadolibre.com/users/${userId}/items/search?status=active&limit=50&sort=sold_quantity_asc`,
+        `https://api.mercadolibre.com/users/${userId}/items/search?status=active&limit=20&sort=sold_quantity_asc`,
         { headers }
       );
       const itemsData = await itemsRes.json();
       const itemIds = (itemsData.results || []).slice(0, 20);
-
       if (itemIds.length > 0) {
         const detailRes = await fetch(
           `https://api.mercadolibre.com/items?ids=${itemIds.join(",")}&attributes=id,title,price,sold_quantity,available_quantity,seller_sku`,
           { headers }
         );
         const detailData = await detailRes.json();
-        activeItems = detailData
+        stoppedItems = detailData
           .filter(r => r.code === 200)
           .map(r => r.body)
-          .filter(item => {
-            // Parados: não aparecem nos pedidos do período
-            const soldInPeriod = productMap[item.id]?.qty || 0;
-            return soldInPeriod === 0;
-          })
+          .filter(item => !(productMap[item.id]?.qty > 0))
           .slice(0, 10);
       }
     } catch {}
 
-    // Evolução diária — preenche dias sem venda com 0
+    // Evolução diária
     const dailyEvolution = [];
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date();
@@ -123,21 +116,21 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    const totalUnits = Object.values(productMap).reduce((s,p)=>s+p.qty,0);
-
     return res.json({
       ok: true,
       period: { days, from: dateFromStr, to: dateToStr },
       summary: {
         totalRevenue: Math.round(totalRevenue * 100) / 100,
-        totalOrders,
+        totalOrders: allOrders.length,
+        totalOrdersML: totalOrders,
         totalUnits,
-        avgTicket: totalOrders > 0 ? Math.round((totalRevenue / totalOrders) * 100) / 100 : 0,
+        avgTicket: allOrders.length > 0 ? Math.round((totalRevenue / allOrders.length) * 100) / 100 : 0,
+        note: totalOrders > 500 ? `Mostrando 500 de ${totalOrders} pedidos` : null,
       },
       dailyEvolution,
       topSellers,
       lowSellers,
-      stoppedItems: activeItems,
+      stoppedItems,
       updated_at: new Date().toISOString(),
     });
   } catch (e) {
