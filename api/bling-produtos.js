@@ -1,7 +1,9 @@
 export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
   try {
-    // Lê token Bling do Firebase
     const r = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
     const token = await r.json();
     if (!token || !token.access_token) throw new Error("Bling não conectado — rode oauth_bling.py");
@@ -11,7 +13,6 @@ export default async function handler(req, res) {
       Accept: "application/json",
     };
 
-    // Busca todos os produtos paginando
     const produtos = [];
     let pagina = 1;
     while (true) {
@@ -31,7 +32,6 @@ export default async function handler(req, res) {
       if (items.length < 100) break;
     }
 
-    // Retorna só o necessário: codigo (SKU) + precoCusto
     const resultado = produtos
       .filter(p => p.codigo)
       .map(p => ({
