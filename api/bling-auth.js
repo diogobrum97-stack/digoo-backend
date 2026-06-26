@@ -1,7 +1,7 @@
 const CLIENT_ID     = process.env.BLING_CLIENT_ID;
 const CLIENT_SECRET = process.env.BLING_CLIENT_SECRET;
 const FIREBASE_URL  = process.env.FIREBASE_URL;
-const VERCEL_URL    = process.env.VERCEL_URL;
+const REDIRECT_URI  = "https://digoo-backend.vercel.app/api/bling-auth";
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -12,7 +12,6 @@ export default async function handler(req, res) {
   // Passo 2: callback com o código
   if (code) {
     try {
-      const redirect = `https://${VERCEL_URL}/api/bling-auth`;
       const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
 
       const tokenRes = await fetch("https://www.bling.com.br/Api/v3/oauth/token", {
@@ -24,7 +23,7 @@ export default async function handler(req, res) {
         body: new URLSearchParams({
           grant_type: "authorization_code",
           code,
-          redirect_uri: redirect,
+          redirect_uri: REDIRECT_URI,
         }),
       });
 
@@ -36,7 +35,6 @@ export default async function handler(req, res) {
       const tokenData = await tokenRes.json();
       tokenData.saved_at = Date.now();
 
-      // Salva no Firebase
       await fetch(`${FIREBASE_URL}/bling_token.json`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -70,8 +68,6 @@ export default async function handler(req, res) {
   }
 
   // Passo 1: redireciona para o Bling
-  const redirect = `https://${VERCEL_URL}/api/bling-auth`;
-  const authUrl = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirect)}&state=digoo`;
-
+  const authUrl = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=digoo`;
   return res.redirect(authUrl);
 }
