@@ -113,6 +113,7 @@ module.exports = async function handler(req, res) {
     let totalRevenue = 0;
     let totalUnits = 0;
     let skuQty = 0, skuRevenue = 0, skuTitle = null;
+    const skuVendasDetalhe = [];
 
     allOrders.forEach(order => {
       const date = order.date_created?.slice(0, 10);
@@ -144,6 +145,13 @@ module.exports = async function handler(req, res) {
             skuQty += qty;
             skuRevenue += (item.unit_price || 0) * qty;
             skuTitle = item.item?.title || skuTitle;
+            skuVendasDetalhe.push({
+              date: order.date_created,
+              qty,
+              unitPrice: item.unit_price || 0,
+              total: (item.unit_price || 0) * qty,
+              orderId: order.id,
+            });
           }
         }
       });
@@ -203,6 +211,7 @@ module.exports = async function handler(req, res) {
         note: totalOrders > (maxPages * 50) ? `Mostrando ${maxPages * 50} de ${totalOrders} pedidos` : null,
       },
       skuMatch: skuFiltro ? { sku: skuFiltro, title: skuTitle, qty: skuQty, revenue: Math.round(skuRevenue * 100) / 100 } : null,
+      skuVendasDetalhe: skuFiltro ? skuVendasDetalhe.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 100) : undefined,
       skusVendidosNoPeriodo: skuFiltro ? [...new Set(products.map(p => p.sku).filter(s => s && s !== "—"))].slice(0, 60) : undefined,
       dailyEvolution,
       topSellers,
