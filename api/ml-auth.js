@@ -1,5 +1,27 @@
 export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  // Modo "whoami": não é parte do fluxo de OAuth, só confirma qual conta ML
+  // está por trás de um token já salvo. Fica no mesmo arquivo/rota do ml-auth
+  // pra não gastar mais uma Serverless Function (limite de 12 no plano Hobby).
+  if (req.query.whoami) {
+    const token = req.query.token;
+    if (!token) return res.status(400).json({ error: "Token ausente" });
+    try {
+      const r = await fetch("https://api.mercadolibre.com/users/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (!data.id) return res.status(401).json({ error: "Token inválido" });
+      return res.json({ id: data.id, nickname: data.nickname || null, email: data.email || null, site_id: data.site_id || null });
+    } catch (e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   const { code, error, state, conta } = req.query;
   if (error) return res.redirect(`${process.env.PANEL_URL}?ml_error=${error}`);
 
