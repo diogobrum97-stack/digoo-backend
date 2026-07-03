@@ -5,8 +5,57 @@ module.exports = async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const token = req.query.token;
-  const skuFiltro = req.query.sku ? String(req.query.sku).trim().toLowerCase() : null;
   if (!token) return res.status(400).json({ error: "Token ausente" });
+
+  // Modo "prices": lista preço atual de todos os anúncios ativos (sku, id, price).
+  // Fica no mesmo arquivo/rota do ml-vendas pra não gastar mais uma Serverless
+  // Function (limite de 12 no plano Hobby da Vercel). Usado pro acompanhamento
+  // automático de mudança de preço, sem precisar marcar nada manualmente.
+  if (req.query.prices) {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ error: "Token inválido" });
+
+      let itemIds = [];
+      let offset = 0;
+      for (let page = 0; page < 3; page++) {
+        const r = await fetch(
+          `https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=100&offset=${offset}`,
+          { headers }
+        );
+        const d = await r.json();
+        const results = d.results || [];
+        itemIds.push(...results);
+        if (results.length < 100) break;
+        offset += 100;
+      }
+
+      const prices = [];
+      for (let i = 0; i < itemIds.length; i += 20) {
+        const chunk = itemIds.slice(i, i + 20);
+        const detailRes = await fetch(
+          `https://api.mercadolibre.com/items?ids=${chunk.join(",")}&attributes=id,price,seller_sku,status`,
+          { headers }
+        );
+        const detailData = await detailRes.json();
+        (detailData || [])
+          .filter(r => r.code === 200)
+          .forEach(r => {
+            const body = r.body;
+            if (body.seller_sku) prices.push({ sku: body.seller_sku, id: body.id, price: body.price });
+          });
+      }
+
+      return res.json({ ok: true, prices, updated_at: new Date().toISOString() });
+    } catch (e) {
+      console.error("ml-vendas prices error:", e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  const skuFiltro = req.query.sku ? String(req.query.sku).trim().toLowerCase() : null;
 
   try {
     const headers = { Authorization: `Bearer ${token}` };
@@ -154,6 +203,7 @@ module.exports = async function handler(req, res) {
         note: totalOrders > (maxPages * 50) ? `Mostrando ${maxPages * 50} de ${totalOrders} pedidos` : null,
       },
       skuMatch: skuFiltro ? { sku: skuFiltro, title: skuTitle, qty: skuQty, revenue: Math.round(skuRevenue * 100) / 100 } : null,
+      skusVendidosNoPeriodo: skuFiltro ? [...new Set(products.map(p => p.sku).filter(s => s && s !== "—"))].slice(0, 60) : undefined,
       dailyEvolution,
       topSellers,
       lowSellers,
