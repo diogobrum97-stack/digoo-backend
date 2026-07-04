@@ -142,7 +142,7 @@ module.exports = async function handler(req, res) {
             const d = await r.json();
             // Nome exato do campo de saldo ainda não confirmado contra a API real —
             // tenta as variações mais prováveis e guarda a resposta crua no debug
-            const aptas = d.total ?? d.available_quantity ?? d.quantity ?? 0;
+            const aptas = d.available_quantity ?? d.total ?? d.quantity ?? 0;
             rows.push({ sku: it.seller_sku, produto: it.title || "", aptas, transf: 0, pendente: 0, vendas30: 0 });
             if (req.query.debug) debug.push({ sku: it.seller_sku, inventory_id: it.inventory_id, respostaCrua: d });
           } catch (e) {
