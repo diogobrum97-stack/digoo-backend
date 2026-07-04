@@ -29,31 +29,11 @@ export default async function handler(req, res) {
       const dataInicial = new Date(Date.now() - diasAtras * 86400000).toISOString().slice(0, 10);
       const dataFinal = new Date().toISOString().slice(0, 10);
 
-      // Busca TODAS as páginas de notas do período (não só a primeira)
-      const notas = [];
-      let pagina = 1;
-      while (pagina <= 5) { // trava de segurança: até 500 notas
-        const listResp = await fetch(
-          `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
-          { headers }
-        );
-        if (!listResp.ok) {
-          const txt = await listResp.text();
-          throw new Error(`Bling /nfe ${listResp.status}: ${txt.slice(0, 300)}`);
-        }
-        const listData = await listResp.json();
-        const items = listData.data || [];
-        notas.push(...items);
-        if (items.length < 100) break;
-        pagina++;
-        await sleep(350);
-      }
-
-      // Busca os nomes das naturezas de operação UMA vez só (várias notas repetem o mesmo ID),
-      // pra não precisar de uma chamada extra por nota.
+      // Busca os nomes das naturezas de operação primeiro — usamos isso tanto pra
+      // resolver o nome de cada nota quanto pra tentar filtrar a busca direto pela
+      // natureza de "transferência de mercadoria", em vez de varrer nota por nota.
       const naturezasPorId = {};
       try {
-        await sleep(350);
         const natResp = await fetch(`https://www.bling.com.br/Api/v3/naturezas-operacoes?limite=100`, { headers });
         if (natResp.ok) {
           const natData = await natResp.json();
@@ -63,10 +43,68 @@ export default async function handler(req, res) {
         }
       } catch (e) { /* segue sem os nomes, usa só CFOP nesse caso */ }
 
+      const idsNaturezaTransferencia = Object.entries(naturezasPorId)
+        .filter(([, nome]) => {
+          const n = String(nome).toLowerCase();
+          return n.includes("transfer") && n.includes("mercadoria");
+        })
+        .map(([id]) => id);
+
+      // Tenta buscar a lista JÁ filtrada pela(s) natureza(s) de transferência encontrada(s).
+      // Não temos garantia de que o Bling aceita esse parâmetro — se der erro em qualquer
+      // uma das tentativas, descartamos tudo e caímos no modo antigo (varrer tudo).
+      let notasFiltradasPorNatureza = null;
+      if (idsNaturezaTransferencia.length) {
+        try {
+          const candidatas = [];
+          for (const natId of idsNaturezaTransferencia) {
+            await sleep(350);
+            const filtResp = await fetch(
+              `https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1&idNaturezaOperacao=${natId}`,
+              { headers }
+            );
+            if (!filtResp.ok) throw new Error(`filtro por natureza não aceito (status ${filtResp.status})`);
+            const filtData = await filtResp.json();
+            candidatas.push(...(filtData.data || []));
+          }
+          notasFiltradasPorNatureza = candidatas;
+        } catch (e) {
+          notasFiltradasPorNatureza = null; // volta pro modo de varrer tudo
+        }
+      }
+
+      let notas;
+      let filtroFuncionou = notasFiltradasPorNatureza !== null;
+      if (notasFiltradasPorNatureza !== null) {
+        notas = notasFiltradasPorNatureza;
+      } else {
+        // Fallback: busca TODAS as páginas de notas do período e verifica uma por uma
+        notas = [];
+        let pagina = 1;
+        while (pagina <= 5) { // trava de segurança: até 500 notas
+          const listResp = await fetch(
+            `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
+            { headers }
+          );
+          if (!listResp.ok) {
+            const txt = await listResp.text();
+            throw new Error(`Bling /nfe ${listResp.status}: ${txt.slice(0, 300)}`);
+          }
+          const listData = await listResp.json();
+          const items = listData.data || [];
+          notas.push(...items);
+          if (items.length < 100) break;
+          pagina++;
+          await sleep(350);
+        }
+      }
+
       const transferencias = [];
       const debug = [];
-      const capNotas = Math.min(parseInt(req.query.limite || "90"), 150); // trava de segurança em 150 mesmo se pedirem mais
-      const notasLimitadas = notas.slice(0, capNotas); // com lotes de 3, cada 30 notas ≈ 14-15s reais
+      // Se o filtro funcionou, a lista já deve ser pequena (raro precisar do cap).
+      // Se caiu no fallback, mantemos o limite de segurança pra não estourar os 60s da Vercel.
+      const capNotas = filtroFuncionou ? notas.length : Math.min(parseInt(req.query.limite || "90"), 150);
+      const notasLimitadas = notas.slice(0, capNotas);
 
       const processarNota = async (nf) => {
         try {
@@ -112,6 +150,8 @@ export default async function handler(req, res) {
         ...(req.query.debug ? {
           debug,
           naturezasEncontradas: naturezasPorId,
+          idsNaturezaTransferencia,
+          filtroPorNaturezaFuncionou: filtroFuncionou,
           totalNotasEncontradas: notas.length,
           totalNotasVerificadas: notasLimitadas.length,
         } : {}),
