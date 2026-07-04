@@ -4,7 +4,20 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const token = req.query.token;
+  let token = req.query.token;
+
+  // Modo "estoque": se não vier token na URL, busca automaticamente o token
+  // da Filial salvo no Firebase — igual o bling-produtos.js já faz com o
+  // Bling. Assim dá pra testar essa URL direto no navegador sem precisar
+  // copiar/colar token manualmente.
+  if (req.query.estoque && !token && process.env.FIREBASE_URL) {
+    try {
+      const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
+      const tData = await tR.json();
+      token = tData?.access_token;
+    } catch (e) { /* segue sem token, cai no erro padrão abaixo */ }
+  }
+
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
   // Modo "prices": lista preço atual de todos os anúncios ativos (sku, id, price).
@@ -51,6 +64,87 @@ module.exports = async function handler(req, res) {
       return res.json({ ok: true, prices, updated_at: new Date().toISOString() });
     } catch (e) {
       console.error("ml-vendas prices error:", e.message);
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  // Modo "estoque": puxa o saldo do Full automaticamente, sem precisar da
+  // planilha manual. Fica no mesmo arquivo/rota do ml-vendas pra não gastar
+  // mais uma Serverless Function (limite de 12 no plano Hobby da Vercel).
+  if (req.query.estoque) {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ error: "Token inválido" });
+
+      // 1) Lista de anúncios ativos
+      let itemIds = [];
+      let offset = 0;
+      for (let page = 0; page < 5; page++) {
+        const r = await fetch(
+          `https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=100&offset=${offset}`,
+          { headers }
+        );
+        const d = await r.json();
+        const results = d.results || [];
+        itemIds.push(...results);
+        if (results.length < 100) break;
+        offset += 100;
+      }
+
+      // 2) Detalhe em lotes: sku, título e inventory_id (só quem tem inventory_id está no Full)
+      let itensDetalhe = [];
+      for (let i = 0; i < itemIds.length; i += 20) {
+        const chunk = itemIds.slice(i, i + 20);
+        const detailRes = await fetch(
+          `https://api.mercadolibre.com/items?ids=${chunk.join(",")}&attributes=id,seller_sku,title,inventory_id,status`,
+          { headers }
+        );
+        const detailData = await detailRes.json();
+        (detailData || [])
+          .filter(r => r.code === 200 && r.body.seller_sku)
+          .forEach(r => itensDetalhe.push(r.body));
+      }
+
+      const itensFull = itensDetalhe.filter(it => it.inventory_id);
+      const capItens = Math.min(parseInt(req.query.limite || "150"), 200);
+      const itensLimitados = itensFull.slice(0, capItens);
+
+      // 3) Saldo do Full por item, em lotes de 5 em paralelo
+      const debug = [];
+      const rows = [];
+      for (let i = 0; i < itensLimitados.length; i += 5) {
+        const lote = itensLimitados.slice(i, i + 5);
+        await Promise.all(lote.map(async it => {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/inventories/${it.inventory_id}/stock/fulfillment`, { headers });
+            const d = await r.json();
+            // Nome exato do campo de saldo ainda não confirmado contra a API real —
+            // tenta as variações mais prováveis e guarda a resposta crua no debug
+            const aptas = d.total ?? d.available_quantity ?? d.quantity ?? 0;
+            rows.push({ sku: it.seller_sku, produto: it.title || "", aptas, transf: 0, pendente: 0, vendas30: 0 });
+            if (req.query.debug) debug.push({ sku: it.seller_sku, inventory_id: it.inventory_id, respostaCrua: d });
+          } catch (e) {
+            if (req.query.debug) debug.push({ sku: it.seller_sku, erro: e.message });
+          }
+        }));
+        if (i + 5 < itensLimitados.length) await sleep(300);
+      }
+
+      return res.json({
+        ok: true,
+        rows,
+        totalAnunciosAtivos: itemIds.length,
+        totalNoFull: itensFull.length,
+        totalProcessadosAgora: itensLimitados.length,
+        ...(req.query.debug ? { debug } : {}),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.error("ml-vendas estoque error:", e.message);
       return res.status(500).json({ error: e.message });
     }
   }
@@ -213,6 +307,7 @@ module.exports = async function handler(req, res) {
       skuMatch: skuFiltro ? { sku: skuFiltro, title: skuTitle, qty: skuQty, revenue: Math.round(skuRevenue * 100) / 100 } : null,
       skuVendasDetalhe: skuFiltro ? skuVendasDetalhe.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 100) : undefined,
       skusVendidosNoPeriodo: skuFiltro ? [...new Set(products.map(p => p.sku).filter(s => s && s !== "—"))].slice(0, 60) : undefined,
+      allProducts: products.slice(0, 300).map(p => ({ sku: p.sku, qty: p.qty })), // usado pra montar o vendas30 do estoque automático
       dailyEvolution,
       topSellers,
       lowSellers,
