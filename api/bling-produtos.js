@@ -65,12 +65,13 @@ export default async function handler(req, res) {
 
       const transferencias = [];
       const debug = [];
-      const notasLimitadas = notas.slice(0, 140); // ~350ms x 140 ≈ 49s, dentro do limite de 60s da função
-      for (const nf of notasLimitadas) {
-        await sleep(350); // Bling limita a 3 requisições/segundo — essa pausa mantém a gente em ~2,8/s com folga
+      const capNotas = Math.min(parseInt(req.query.limite || "90"), 150); // trava de segurança em 150 mesmo se pedirem mais
+      const notasLimitadas = notas.slice(0, capNotas); // com lotes de 3, cada 30 notas ≈ 14-15s reais
+
+      const processarNota = async (nf) => {
         try {
           const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nf.id}`, { headers });
-          if (!detResp.ok) continue;
+          if (!detResp.ok) return;
           const det = await detResp.json();
           const corpo = det.data || {};
           const naturezaId = corpo.naturezaOperacao?.id || null;
@@ -95,6 +96,14 @@ export default async function handler(req, res) {
         } catch (e) {
           if (req.query.debug) debug.push({ id: nf.id, erro: e.message });
         }
+      };
+
+      // Processa em lotes de 3 (limite do Bling é 3 req/s) rodando em paralelo dentro do lote,
+      // bem mais rápido que uma requisição de cada vez.
+      for (let i = 0; i < notasLimitadas.length; i += 3) {
+        const lote = notasLimitadas.slice(i, i + 3);
+        await Promise.all(lote.map(processarNota));
+        if (i + 3 < notasLimitadas.length) await sleep(1000);
       }
 
       return res.json({
