@@ -43,6 +43,15 @@ export default async function handler(req, res) {
   const contaAlvo = state === "filial" ? "filial" : "matriz";
   const firebasePath = contaAlvo === "filial" ? "ml_token_filial" : "ml_token";
 
+  // Nickname esperado pra cada conta — trava o painel pra nunca salvar a
+  // conta errada num caminho errado, mesmo que o navegador já esteja logado
+  // com a conta trocada no Mercado Livre. Configurável por variável de
+  // ambiente (ML_NICKNAME_MATRIZ / ML_NICKNAME_FILIAL) caso precise ajustar.
+  const NICKNAME_ESPERADO = {
+    matriz: (process.env.ML_NICKNAME_MATRIZ || "DIGOOBRASIL").trim().toUpperCase(),
+    filial: (process.env.ML_NICKNAME_FILIAL || "DIGOOBRASILSP").trim().toUpperCase(),
+  };
+
   try {
     const tokenRes = await fetch("https://api.mercadolibre.com/oauth/token", {
       method: "POST",
@@ -57,14 +66,27 @@ export default async function handler(req, res) {
     });
     const tokenData = await tokenRes.json();
     if (tokenData.error) throw new Error(tokenData.error);
+
+    // Confere quem é essa conta ANTES de salvar qualquer coisa
+    const meRes = await fetch("https://api.mercadolibre.com/users/me", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const me = await meRes.json();
+    const nicknameRecebido = String(me.nickname || "").trim().toUpperCase();
+
+    if (nicknameRecebido !== NICKNAME_ESPERADO[contaAlvo]) {
+      const msg = `Conta errada! Era pra conectar "${NICKNAME_ESPERADO[contaAlvo]}" (${contaAlvo}), mas veio "${me.nickname || me.id}". Nada foi salvo — troque de navegador/conta e tente de novo.`;
+      return res.redirect(`${process.env.PANEL_URL}?ml_error=${encodeURIComponent(msg)}`);
+    }
+
     const expires_at = Date.now() + (tokenData.expires_in * 1000);
     await fetch(`${process.env.FIREBASE_URL}/${firebasePath}.json`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ access_token: tokenData.access_token, refresh_token: tokenData.refresh_token, expires_at, user_id: tokenData.user_id }),
+      body: JSON.stringify({ access_token: tokenData.access_token, refresh_token: tokenData.refresh_token, expires_at, user_id: tokenData.user_id, nickname: me.nickname || null }),
     });
     return res.redirect(`${process.env.PANEL_URL}?ml_connected=1&conta=${contaAlvo}`);
   } catch (e) {
-    return res.redirect(`${process.env.PANEL_URL}?ml_error=${e.message}`);
+    return res.redirect(`${process.env.PANEL_URL}?ml_error=${encodeURIComponent(e.message)}`);
   }
 }
