@@ -64,10 +64,23 @@ export default async function handler(req, res) {
         await sleep(350);
       }
 
+      // Lembra quais notas já foram verificadas em execuções anteriores — assim,
+      // em vez de sempre checar as mesmas primeiras N notas (e nunca avançar num
+      // acúmulo grande), cada execução avança no que ainda falta.
+      let notasJaVerificadas = {};
+      if (!req.query.ignorarVerificadas) {
+        try {
+          const vResp = await fetch(`${process.env.FIREBASE_URL}/nfes_verificadas.json`);
+          notasJaVerificadas = (await vResp.json()) || {};
+        } catch (e) { /* segue sem o histórico, verifica tudo de novo */ }
+      }
+
       const transferencias = [];
       const debug = [];
+      const notasPendentes = notas.filter(nf => !notasJaVerificadas[nf.id]);
       const capNotas = Math.min(parseInt(req.query.limite || "90"), 110); // 90 já testado com folga real (~44s); acima disso arrisca estourar os 60s da Vercel
-      const notasLimitadas = notas.slice(0, capNotas);
+      const notasLimitadas = notasPendentes.slice(0, capNotas);
+      const novasVerificadas = {};
 
       const processarNota = async (nf) => {
         try {
@@ -94,6 +107,7 @@ export default async function handler(req, res) {
               natureza: naturezaNome || null,
             });
           }
+          novasVerificadas[nf.id] = true;
         } catch (e) {
           if (req.query.debug) debug.push({ id: nf.id, erro: e.message });
         }
@@ -107,6 +121,17 @@ export default async function handler(req, res) {
         if (i + 3 < notasLimitadas.length) await sleep(1000);
       }
 
+      // Salva as notas verificadas agora, pra próxima execução não repetir o trabalho
+      if (Object.keys(novasVerificadas).length && !req.query.ignorarVerificadas) {
+        try {
+          await fetch(`${process.env.FIREBASE_URL}/nfes_verificadas.json`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(novasVerificadas),
+          });
+        } catch (e) { /* não impede a resposta se essa gravação falhar */ }
+      }
+
       return res.json({
         ok: true,
         transferencias,
@@ -114,7 +139,9 @@ export default async function handler(req, res) {
           debug,
           naturezasEncontradas: naturezasPorId,
           totalNotasEncontradas: notas.length,
-          totalNotasVerificadas: notasLimitadas.length,
+          totalNotasJaVerificadasAntes: notas.length - notasPendentes.length,
+          totalNotasPendentes: notasPendentes.length,
+          totalNotasVerificadasAgora: notasLimitadas.length,
         } : {}),
       });
     }
