@@ -29,20 +29,43 @@ export default async function handler(req, res) {
       const dataInicial = new Date(Date.now() - diasAtras * 86400000).toISOString().slice(0, 10);
       const dataFinal = new Date().toISOString().slice(0, 10);
 
-      const listResp = await fetch(
-        `https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
-        { headers }
-      );
-      if (!listResp.ok) {
-        const txt = await listResp.text();
-        throw new Error(`Bling /nfe ${listResp.status}: ${txt.slice(0, 300)}`);
+      // Busca TODAS as páginas de notas do período (não só a primeira)
+      const notas = [];
+      let pagina = 1;
+      while (pagina <= 5) { // trava de segurança: até 500 notas
+        const listResp = await fetch(
+          `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
+          { headers }
+        );
+        if (!listResp.ok) {
+          const txt = await listResp.text();
+          throw new Error(`Bling /nfe ${listResp.status}: ${txt.slice(0, 300)}`);
+        }
+        const listData = await listResp.json();
+        const items = listData.data || [];
+        notas.push(...items);
+        if (items.length < 100) break;
+        pagina++;
+        await sleep(350);
       }
-      const listData = await listResp.json();
-      const notas = listData.data || [];
+
+      // Busca os nomes das naturezas de operação UMA vez só (várias notas repetem o mesmo ID),
+      // pra não precisar de uma chamada extra por nota.
+      const naturezasPorId = {};
+      try {
+        await sleep(350);
+        const natResp = await fetch(`https://www.bling.com.br/Api/v3/naturezas-operacoes?limite=100`, { headers });
+        if (natResp.ok) {
+          const natData = await natResp.json();
+          (natData.data || []).forEach(n => {
+            naturezasPorId[n.id] = n.descricao || n.nome || n.tipo || "";
+          });
+        }
+      } catch (e) { /* segue sem os nomes, usa só CFOP nesse caso */ }
 
       const transferencias = [];
       const debug = [];
-      const notasLimitadas = notas.slice(0, 40); // evita rodadas gigantes; roda de novo na próxima abertura do painel
+      const notasLimitadas = notas.slice(0, 140); // ~350ms x 140 ≈ 49s, dentro do limite de 60s da função
       for (const nf of notasLimitadas) {
         await sleep(350); // Bling limita a 3 requisições/segundo — essa pausa mantém a gente em ~2,8/s com folga
         try {
@@ -50,14 +73,15 @@ export default async function handler(req, res) {
           if (!detResp.ok) continue;
           const det = await detResp.json();
           const corpo = det.data || {};
-          const naturezaNome = corpo.naturezaOperacao?.nome || corpo.naturezaOperacao || "";
+          const naturezaId = corpo.naturezaOperacao?.id || null;
+          const naturezaNome = naturezasPorId[naturezaId] || corpo.naturezaOperacao?.nome || "";
           const naturezaNorm = String(naturezaNome).toLowerCase();
           const itens = corpo.itens || corpo.itensNota || [];
           const temCfop6152 = itens.some(it => String(it.cfop || it.classificacaoFiscal?.codigo || "").trim() === "6152");
           const naturezaBate = naturezaNorm.includes("transfer") && naturezaNorm.includes("mercadoria");
 
           if (req.query.debug) {
-            debug.push({ id: nf.id, numero: nf.numero, naturezaNome, temCfop6152, naturezaBate, itensAmostra: itens[0] || null });
+            debug.push({ id: nf.id, numero: nf.numero, naturezaId, naturezaNome, temCfop6152, naturezaBate, cfopsDaNota: itens.map(it => it.cfop) });
           }
 
           if (temCfop6152 || naturezaBate) {
@@ -73,7 +97,16 @@ export default async function handler(req, res) {
         }
       }
 
-      return res.json({ ok: true, transferencias, ...(req.query.debug ? { debug, totalNotasEncontradas: notas.length, totalNotasVerificadas: notasLimitadas.length } : {}) });
+      return res.json({
+        ok: true,
+        transferencias,
+        ...(req.query.debug ? {
+          debug,
+          naturezasEncontradas: naturezasPorId,
+          totalNotasEncontradas: notas.length,
+          totalNotasVerificadas: notasLimitadas.length,
+        } : {}),
+      });
     }
 
     // ── Modo padrão: lista de produtos com custo (comportamento original) ──
