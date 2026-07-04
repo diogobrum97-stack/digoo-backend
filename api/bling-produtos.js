@@ -26,8 +26,8 @@ export default async function handler(req, res) {
     // gastar mais uma Serverless Function (limite de 12 no plano Hobby).
     if (req.query.notas) {
       const diasAtras = parseInt(req.query.dias || "5");
-      const dataInicial = new Date(Date.now() - diasAtras * 86400000).toISOString().slice(0, 10);
-      const dataFinal = new Date().toISOString().slice(0, 10);
+      const dataInicial = req.query.dataInicial || new Date(Date.now() - diasAtras * 86400000).toISOString().slice(0, 10);
+      const dataFinal = req.query.dataFinal || new Date().toISOString().slice(0, 10);
 
       // Busca os nomes das naturezas de operação uma vez só, pra resolver o nome de
       // cada nota sem precisar de uma chamada extra por nota (só serve pra exibir o
