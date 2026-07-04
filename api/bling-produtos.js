@@ -1,3 +1,11 @@
+export const config = {
+  maxDuration: 60,
+};
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -34,7 +42,9 @@ export default async function handler(req, res) {
 
       const transferencias = [];
       const debug = [];
-      for (const nf of notas) {
+      const notasLimitadas = notas.slice(0, 40); // evita rodadas gigantes; roda de novo na próxima abertura do painel
+      for (const nf of notasLimitadas) {
+        await sleep(350); // Bling limita a 3 requisições/segundo — essa pausa mantém a gente em ~2,8/s com folga
         try {
           const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nf.id}`, { headers });
           if (!detResp.ok) continue;
@@ -63,7 +73,7 @@ export default async function handler(req, res) {
         }
       }
 
-      return res.json({ ok: true, transferencias, ...(req.query.debug ? { debug, totalNotasVerificadas: notas.length } : {}) });
+      return res.json({ ok: true, transferencias, ...(req.query.debug ? { debug, totalNotasEncontradas: notas.length, totalNotasVerificadas: notasLimitadas.length } : {}) });
     }
 
     // ── Modo padrão: lista de produtos com custo (comportamento original) ──
