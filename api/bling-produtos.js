@@ -75,12 +75,24 @@ export default async function handler(req, res) {
         } catch (e) { /* segue sem o histórico, verifica tudo de novo */ }
       }
 
-      const transferencias = [];
+      // Lembra também quais notas JÁ FORAM CONFIRMADAS como transferência antes —
+      // separado da lista acima, pra não "esquecer" de mostrar uma transferência
+      // que já tinha sido encontrada numa execução anterior só porque ela não
+      // precisou ser verificada de novo dessa vez.
+      let transferenciasConfirmadasAntes = {};
+      try {
+        const cResp = await fetch(`${process.env.FIREBASE_URL}/nfe_transferencias_confirmadas.json`);
+        transferenciasConfirmadasAntes = (await cResp.json()) || {};
+      } catch (e) { /* segue sem o histórico */ }
+
+      const transferencias = Object.values(transferenciasConfirmadasAntes)
+        .filter(t => !dataInicial || !t.dataEmissao || (t.dataEmissao.slice(0, 10) >= dataInicial && t.dataEmissao.slice(0, 10) <= dataFinal));
       const debug = [];
       const notasPendentes = notas.filter(nf => !notasJaVerificadas[nf.id]);
       const capNotas = Math.min(parseInt(req.query.limite || "90"), 110); // 90 já testado com folga real (~44s); acima disso arrisca estourar os 60s da Vercel
       const notasLimitadas = notasPendentes.slice(0, capNotas);
       const novasVerificadas = {};
+      const novasConfirmadas = {};
 
       const processarNota = async (nf) => {
         try {
@@ -100,12 +112,14 @@ export default async function handler(req, res) {
           }
 
           if (temCfop6152 || naturezaBate) {
-            transferencias.push({
+            const registro = {
               id: nf.id,
               numero: nf.numero || corpo.numero,
               dataEmissao: nf.dataEmissao || corpo.dataEmissao || null,
               natureza: naturezaNome || null,
-            });
+            };
+            transferencias.push(registro);
+            novasConfirmadas[nf.id] = registro;
           }
           novasVerificadas[nf.id] = true;
         } catch (e) {
@@ -121,14 +135,24 @@ export default async function handler(req, res) {
         if (i + 3 < notasLimitadas.length) await sleep(1000);
       }
 
-      // Salva as notas verificadas agora, pra próxima execução não repetir o trabalho
-      if (Object.keys(novasVerificadas).length && !req.query.ignorarVerificadas) {
+      // Salva as notas verificadas e as confirmadas agora, pra próxima execução
+      // não repetir o trabalho E não esquecer das transferências já achadas.
+      if (!req.query.ignorarVerificadas) {
         try {
-          await fetch(`${process.env.FIREBASE_URL}/nfes_verificadas.json`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(novasVerificadas),
-          });
+          if (Object.keys(novasVerificadas).length) {
+            await fetch(`${process.env.FIREBASE_URL}/nfes_verificadas.json`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(novasVerificadas),
+            });
+          }
+          if (Object.keys(novasConfirmadas).length) {
+            await fetch(`${process.env.FIREBASE_URL}/nfe_transferencias_confirmadas.json`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(novasConfirmadas),
+            });
+          }
         } catch (e) { /* não impede a resposta se essa gravação falhar */ }
       }
 
@@ -142,6 +166,7 @@ export default async function handler(req, res) {
           totalNotasJaVerificadasAntes: notas.length - notasPendentes.length,
           totalNotasPendentes: notasPendentes.length,
           totalNotasVerificadasAgora: notasLimitadas.length,
+          totalConfirmadasDeExecucoesAnteriores: Object.keys(transferenciasConfirmadasAntes).length,
         } : {}),
       });
     }
