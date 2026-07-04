@@ -95,18 +95,36 @@ module.exports = async function handler(req, res) {
         offset += 100;
       }
 
-      // 2) Detalhe em lotes: sku, título e inventory_id (só quem tem inventory_id está no Full)
+      // 2) Detalhe COMPLETO item por item — o "inventory_id" não vem no
+      // formato resumido em lote (attributes=...), só no detalhe completo
+      // de cada anúncio individualmente.
+      function extrairSku(item) {
+        if (item.seller_sku) return item.seller_sku;
+        const attr = (item.attributes || []).find(a => a.id === "SELLER_SKU");
+        return attr ? attr.value_name : null;
+      }
+      const capBuscaDetalhe = Math.min(itemIds.length, 200);
+      const idsParaBuscar = itemIds.slice(0, capBuscaDetalhe);
       let itensDetalhe = [];
-      for (let i = 0; i < itemIds.length; i += 20) {
-        const chunk = itemIds.slice(i, i + 20);
-        const detailRes = await fetch(
-          `https://api.mercadolibre.com/items?ids=${chunk.join(",")}&attributes=id,seller_sku,title,inventory_id,status`,
-          { headers }
-        );
-        const detailData = await detailRes.json();
-        (detailData || [])
-          .filter(r => r.code === 200 && r.body.seller_sku)
-          .forEach(r => itensDetalhe.push(r.body));
+      const debugItensAmostra = [];
+      for (let i = 0; i < idsParaBuscar.length; i += 10) {
+        const lote = idsParaBuscar.slice(i, i + 10);
+        const resultados = await Promise.all(lote.map(async id => {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/items/${id}`, { headers });
+            const d = await r.json();
+            return d && d.id ? d : null;
+          } catch (e) { return null; }
+        }));
+        resultados.forEach(d => {
+          if (!d) return;
+          const sku = extrairSku(d);
+          if (req.query.debug && debugItensAmostra.length < 3) {
+            debugItensAmostra.push({ id: d.id, sku, tem_inventory_id: !!d.inventory_id, inventory_id: d.inventory_id || null, logistic_type: d.shipping?.logistic_type || null });
+          }
+          if (sku) itensDetalhe.push({ id: d.id, seller_sku: sku, title: d.title, inventory_id: d.inventory_id || null });
+        });
+        if (i + 10 < idsParaBuscar.length) await sleep(300);
       }
 
       const itensFull = itensDetalhe.filter(it => it.inventory_id);
@@ -140,7 +158,7 @@ module.exports = async function handler(req, res) {
         totalAnunciosAtivos: itemIds.length,
         totalNoFull: itensFull.length,
         totalProcessadosAgora: itensLimitados.length,
-        ...(req.query.debug ? { debug } : {}),
+        ...(req.query.debug ? { debug, debugItensAmostra } : {}),
         updated_at: new Date().toISOString(),
       });
     } catch (e) {
