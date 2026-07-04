@@ -80,20 +80,24 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       if (!me.id) return res.status(401).json({ error: "Token inválido" });
 
-      // 1) Lista de anúncios ativos
+      // 1) Lista de anúncios ativos E pausados (um anúncio pausado ainda pode
+      // ter estoque parado no Full, e não pode ficar de fora da conta)
       let itemIds = [];
-      let offset = 0;
-      for (let page = 0; page < 5; page++) {
-        const r = await fetch(
-          `https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=100&offset=${offset}`,
-          { headers }
-        );
-        const d = await r.json();
-        const results = d.results || [];
-        itemIds.push(...results);
-        if (results.length < 100) break;
-        offset += 100;
+      for (const status of ["active", "paused"]) {
+        let offset = 0;
+        for (let page = 0; page < 5; page++) {
+          const r = await fetch(
+            `https://api.mercadolibre.com/users/${me.id}/items/search?status=${status}&limit=100&offset=${offset}`,
+            { headers }
+          );
+          const d = await r.json();
+          const results = d.results || [];
+          itemIds.push(...results);
+          if (results.length < 100) break;
+          offset += 100;
+        }
       }
+      itemIds = [...new Set(itemIds)]; // remove duplicatas se algum item aparecer nas duas buscas
 
       // 2) Detalhe COMPLETO item por item — o "inventory_id" não vem no
       // formato resumido em lote (attributes=...), só no detalhe completo
@@ -133,7 +137,7 @@ module.exports = async function handler(req, res) {
 
       // 3) Saldo do Full por item, em lotes de 5 em paralelo
       const debug = [];
-      const rows = [];
+      const rowsPorSku = {}; // agrega por SKU — um mesmo SKU pode ter mais de um anúncio
       for (let i = 0; i < itensLimitados.length; i += 5) {
         const lote = itensLimitados.slice(i, i + 5);
         await Promise.all(lote.map(async it => {
@@ -143,8 +147,13 @@ module.exports = async function handler(req, res) {
             // Nome exato do campo de saldo ainda não confirmado contra a API real —
             // tenta as variações mais prováveis e guarda a resposta crua no debug
             const aptas = d.available_quantity ?? d.total ?? d.quantity ?? 0;
-            rows.push({ sku: it.seller_sku, produto: it.title || "", aptas, transf: 0, pendente: 0, vendas30: 0 });
-            if (req.query.debug) debug.push({ sku: it.seller_sku, inventory_id: it.inventory_id, respostaCrua: d });
+            const chave = String(it.seller_sku).trim();
+            if (rowsPorSku[chave]) {
+              rowsPorSku[chave].aptas += aptas; // soma se já existir esse SKU de outro anúncio
+            } else {
+              rowsPorSku[chave] = { sku: chave, produto: it.title || "", aptas, transf: 0, pendente: 0, vendas30: 0 };
+            }
+            if (req.query.debug) debug.push({ sku: it.seller_sku, item_id: it.id, inventory_id: it.inventory_id, respostaCrua: d });
           } catch (e) {
             if (req.query.debug) debug.push({ sku: it.seller_sku, erro: e.message });
           }
@@ -152,13 +161,15 @@ module.exports = async function handler(req, res) {
         if (i + 5 < itensLimitados.length) await sleep(300);
       }
 
+      const rows = Object.values(rowsPorSku);
+
       return res.json({
         ok: true,
         rows,
         totalAnunciosAtivos: itemIds.length,
         totalNoFull: itensFull.length,
         totalProcessadosAgora: itensLimitados.length,
-        ...(req.query.debug ? { debug, debugItensAmostra } : {}),
+        ...(req.query.debug ? { debug, debugItensAmostra, todosOsSkusEncontrados: rows.map(r => r.sku) } : {}),
         updated_at: new Date().toISOString(),
       });
     } catch (e) {
