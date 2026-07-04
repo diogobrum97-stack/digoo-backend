@@ -138,7 +138,7 @@ module.exports = async function handler(req, res) {
       // 3) Saldo do Full por item, em lotes de 5 em paralelo
       const debug = [];
       const rowsPorSku = {}; // agrega por SKU — um mesmo SKU pode ter mais de um anúncio
-      const inventoryJaContado = new Set(); // evita contar 2x anúncios sincronizados/catálogo que dividem o MESMO estoque físico
+      const inventoryJaContado = new Set(); // evita contar 2x anúncios sincronizados/catálogo que dividem o MESMO inventory_id
       for (let i = 0; i < itensLimitados.length; i += 5) {
         const lote = itensLimitados.slice(i, i + 5);
         await Promise.all(lote.map(async it => {
@@ -150,27 +150,15 @@ module.exports = async function handler(req, res) {
             const aptas = d.available_quantity ?? d.total ?? d.quantity ?? 0;
             const chave = String(it.seller_sku).trim();
 
-            // "external_references" do tipo "item" indica que esse MESMO estoque físico
-            // também pertence a outro anúncio (catálogo/sincronizado) — se esse outro
-            // anúncio já foi contado (ou vai ser), não soma de novo, senão duplica.
-            const itensLigados = [it.id, ...((d.external_references || []).filter(e => e.type === "item").map(e => e.id))].sort();
-            const clusterKey = itensLigados.join(",");
+            if (req.query.debug) debug.push({ sku: it.seller_sku, item_id: it.id, inventory_id: it.inventory_id, jaContado: inventoryJaContado.has(it.inventory_id), respostaCrua: d });
 
-            if (req.query.debug) debug.push({ sku: it.seller_sku, item_id: it.id, inventory_id: it.inventory_id, clusterKey, jaContado: inventoryJaContado.has(clusterKey), respostaCrua: d });
+            if (!rowsPorSku[chave]) rowsPorSku[chave] = { sku: chave, produto: it.title || "", aptas: 0, transf: 0, pendente: 0, vendas30: 0 };
 
-            if (inventoryJaContado.has(clusterKey)) {
-              // já contamos esse estoque físico por outro anúncio do mesmo cluster — só
-              // garante que a linha do SKU existe, sem somar de novo
-              if (!rowsPorSku[chave]) rowsPorSku[chave] = { sku: chave, produto: it.title || "", aptas: 0, transf: 0, pendente: 0, vendas30: 0 };
-              return;
-            }
-            inventoryJaContado.add(clusterKey);
-
-            if (rowsPorSku[chave]) {
-              rowsPorSku[chave].aptas += aptas; // soma se já existir esse SKU de outro anúncio (com estoque físico DIFERENTE)
-            } else {
-              rowsPorSku[chave] = { sku: chave, produto: it.title || "", aptas, transf: 0, pendente: 0, vendas30: 0 };
-            }
+            // Dois anúncios (catálogo/sincronizados) que compartilham o MESMO inventory_id
+            // são o mesmo estoque físico — conta só uma vez, não importa quantos anúncios apontem pra ele.
+            if (inventoryJaContado.has(it.inventory_id)) return;
+            inventoryJaContado.add(it.inventory_id);
+            rowsPorSku[chave].aptas += aptas;
           } catch (e) {
             if (req.query.debug) debug.push({ sku: it.seller_sku, erro: e.message });
           }
