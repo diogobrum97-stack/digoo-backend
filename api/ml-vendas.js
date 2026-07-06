@@ -149,8 +149,9 @@ module.exports = async function handler(req, res) {
             // tenta as variações mais prováveis e guarda a resposta crua no debug
             const aptas = d.available_quantity ?? d.total ?? d.quantity ?? 0;
             const chave = String(it.seller_sku).trim();
+            const transf = (d.not_available_detail || []).filter(x => x.status === "transfer").reduce((s, x) => s + (x.quantity || 0), 0);
 
-            if (req.query.debug) debug.push({ sku: it.seller_sku, item_id: it.id, inventory_id: it.inventory_id, jaContado: inventoryJaContado.has(it.inventory_id), respostaCrua: d });
+            if (req.query.debug) debug.push({ sku: it.seller_sku, item_id: it.id, inventory_id: it.inventory_id, jaContado: inventoryJaContado.has(it.inventory_id), transf, respostaCrua: d });
 
             if (!rowsPorSku[chave]) rowsPorSku[chave] = { sku: chave, produto: it.title || "", aptas: 0, transf: 0, pendente: 0, vendas30: 0 };
 
@@ -159,6 +160,7 @@ module.exports = async function handler(req, res) {
             if (inventoryJaContado.has(it.inventory_id)) return;
             inventoryJaContado.add(it.inventory_id);
             rowsPorSku[chave].aptas += aptas;
+            rowsPorSku[chave].transf += transf;
           } catch (e) {
             if (req.query.debug) debug.push({ sku: it.seller_sku, erro: e.message });
           }
