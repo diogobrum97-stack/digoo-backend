@@ -25,22 +25,42 @@ export default async function handler(req, res) {
     // campos que ainda não mapeamos (tipo o total de IPI da nota).
     if (req.query.notaCompleta) {
       const numeroAlvo = String(req.query.notaCompleta).trim();
-      const dataInicial = req.query.dataInicial || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
-      const dataFinal = req.query.dataFinal || new Date().toISOString().slice(0, 10);
       let encontrada = null;
-      let pagina = 1;
-      while (pagina <= 5 && !encontrada) {
-        const listResp = await fetch(
-          `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
-          { headers }
-        );
-        const listData = await listResp.json();
-        const items = listData.data || [];
-        encontrada = items.find(nf => Number(nf.numero) === Number(numeroAlvo));
-        if (items.length < 100) break;
-        pagina++;
+      let tentativas = [];
+
+      // Tentativa 1: buscar direto pelo número, sem filtro de data nem tipo
+      try {
+        const diretoResp = await fetch(`https://www.bling.com.br/Api/v3/nfe?numero=${numeroAlvo}&limite=10`, { headers });
+        const diretoData = await diretoResp.json();
+        const itemsDireto = diretoData.data || [];
+        tentativas.push({ metodo: "busca direta por numero=", encontrou: itemsDireto.length });
+        encontrada = itemsDireto.find(nf => Number(nf.numero) === Number(numeroAlvo)) || itemsDireto[0];
+      } catch (e) {
+        tentativas.push({ metodo: "busca direta por numero=", erro: e.message });
       }
-      if (!encontrada) return res.status(404).json({ error: `Nota ${numeroAlvo} não encontrada nos últimos ${Math.round((Date.now() - new Date(dataInicial)) / 86400000)} dias` });
+
+      // Tentativa 2 (fallback): varre por data, janela bem maior (180 dias), sem filtrar por tipo
+      if (!encontrada) {
+        const dataInicial = req.query.dataInicial || new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10);
+        const dataFinal = req.query.dataFinal || new Date().toISOString().slice(0, 10);
+        let totalVarrido = 0;
+        let pagina = 1;
+        while (pagina <= 10 && !encontrada) {
+          const listResp = await fetch(
+            `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}`,
+            { headers }
+          );
+          const listData = await listResp.json();
+          const items = listData.data || [];
+          totalVarrido += items.length;
+          encontrada = items.find(nf => Number(nf.numero) === Number(numeroAlvo));
+          if (items.length < 100) break;
+          pagina++;
+        }
+        tentativas.push({ metodo: `varredura por data (${dataInicial} a ${dataFinal}, sem filtro de tipo)`, totalNotasVarridas: totalVarrido });
+      }
+
+      if (!encontrada) return res.status(404).json({ error: `Nota ${numeroAlvo} não encontrada`, tentativas });
       const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${encontrada.id}`, { headers });
       const detData = await detResp.json();
       return res.json(detData);
