@@ -36,7 +36,7 @@ export default async function handler(req, res) {
         );
         const listData = await listResp.json();
         const items = listData.data || [];
-        encontrada = items.find(nf => String(nf.numero) === numeroAlvo);
+        encontrada = items.find(nf => Number(nf.numero) === Number(numeroAlvo));
         if (items.length < 100) break;
         pagina++;
       }
