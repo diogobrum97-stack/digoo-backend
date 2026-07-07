@@ -20,6 +20,32 @@ export default async function handler(req, res) {
       Accept: "application/json",
     };
 
+    // ── Modo "notaCompleta": devolve o JSON bruto e completo de UMA nota
+    // específica (por número), sem cortar nada — usado só pra investigar
+    // campos que ainda não mapeamos (tipo o total de IPI da nota).
+    if (req.query.notaCompleta) {
+      const numeroAlvo = String(req.query.notaCompleta).trim();
+      const dataInicial = req.query.dataInicial || new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+      const dataFinal = req.query.dataFinal || new Date().toISOString().slice(0, 10);
+      let encontrada = null;
+      let pagina = 1;
+      while (pagina <= 5 && !encontrada) {
+        const listResp = await fetch(
+          `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
+          { headers }
+        );
+        const listData = await listResp.json();
+        const items = listData.data || [];
+        encontrada = items.find(nf => String(nf.numero) === numeroAlvo);
+        if (items.length < 100) break;
+        pagina++;
+      }
+      if (!encontrada) return res.status(404).json({ error: `Nota ${numeroAlvo} não encontrada nos últimos ${Math.round((Date.now() - new Date(dataInicial)) / 86400000)} dias` });
+      const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${encontrada.id}`, { headers });
+      const detData = await detResp.json();
+      return res.json(detData);
+    }
+
     // ── Modo "notas": detecta notas fiscais de transferência de mercadoria
     // pra filial (CFOP 6152 e/ou natureza contendo "transferência de
     // mercadoria"). Fica no mesmo arquivo/rota do bling-produtos pra não
