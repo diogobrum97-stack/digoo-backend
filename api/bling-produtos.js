@@ -163,6 +163,13 @@ export default async function handler(req, res) {
               numero: nf.numero || corpo.numero,
               dataEmissao: nf.dataEmissao || corpo.dataEmissao || null,
               natureza: naturezaNome || null,
+              itens: itens.map(it => ({
+                sku: it.codigo || null,
+                produto: it.descricao || "",
+                ncm: String(it.classificacaoFiscal || "").replace(/\D/g, ""),
+                quantidade: Number(it.quantidade) || 0,
+                valorUnit: Number(it.valor) || 0,
+              })).filter(it => it.sku),
             };
             transferencias.push(registro);
             novasConfirmadas[nf.id] = registro;
