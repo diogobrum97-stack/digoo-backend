@@ -9,7 +9,6 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
-    // Tokens
     const [mlR, blingR] = await Promise.all([
       fetch(`${process.env.FIREBASE_URL}/ml_token.json`),
       fetch(`${process.env.FIREBASE_URL}/bling_token.json`),
@@ -26,115 +25,70 @@ export default async function handler(req, res) {
     const dias = parseInt(req.query.dias || "30");
     const dateFrom = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10) + "T00:00:00.000-03:00";
 
-    // 1) Busca o ID do vendedor
+    // 1) ID do vendedor
     const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: mlHeaders });
     const me = await meRes.json();
     if (!me.id) return res.status(401).json({ error: "Token ML inválido" });
 
-    // 2) Lista pedidos cancelados do ML (paginado, até 200)
-    const cancelados = [];
-    let offset = 0;
-    while (offset < 200) {
-      await sleep(300);
-      const r = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=cancelled&order.date_created.from=${encodeURIComponent(dateFrom)}&limit=50&offset=${offset}`,
-        { headers: mlHeaders }
-      );
-      const d = await r.json();
-      const results = d.results || [];
-      cancelados.push(...results);
-      if (results.length < 50) break;
-      offset += 50;
-    }
+    // 2) Pedidos cancelados (máx 50 pra caber no tempo)
+    const cancelRes = await fetch(
+      `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=cancelled&order.date_created.from=${encodeURIComponent(dateFrom)}&limit=50&offset=0`,
+      { headers: mlHeaders }
+    );
+    const cancelData = await cancelRes.json();
+    const cancelados = cancelData.results || [];
 
-    if (cancelados.length === 0) return res.json({ ok: true, itens: [], totalCancelados: 0 });
+    if (cancelados.length === 0) return res.json({ ok: true, itens: [], totalCancelados: 0, totalNotasEncontradas: 0 });
 
-    // 3) Para cada pedido cancelado, busca a NF no Bling pelo número do pedido
-    // O Bling grava o número do pedido ML em "informaçõesAdicionais" / "numero_loja_virtual"
-    // Estratégia: busca as NFs dos últimos (dias+5) dias e filtra pelo número do pedido nas informações adicionais
-    const dataInicial = new Date(Date.now() - (dias + 5) * 86400000).toISOString().slice(0, 10);
-    const dataFinal = new Date().toISOString().slice(0, 10);
+    // 3) Para cada pedido, busca a NF no Bling diretamente pelo numeroPedidoLoja
+    // Usa o endpoint de listagem com filtro por número do pedido externo
+    // Em lotes de 3 pra respeitar o rate limit do Bling (3 req/s)
+    let notasEncontradas = 0;
+    const itens = [];
 
-    // Busca notas do Bling (paginado)
-    const notasBling = [];
-    let pagina = 1;
-    while (pagina <= 10) {
-      await sleep(350);
-      const r = await fetch(
-        `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
-        { headers: blingHeaders }
-      );
-      if (!r.ok) break;
-      const d = await r.json();
-      const items = d.data || [];
-      notasBling.push(...items);
-      if (items.length < 100) break;
-      pagina++;
-    }
+    for (let i = 0; i < cancelados.length; i += 3) {
+      const lote = cancelados.slice(i, i + 3);
+      const resultados = await Promise.all(lote.map(async pedido => {
+        const numeroPedido = String(pedido.id);
+        const valor = pedido.total_amount || 0;
+        const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
+        const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
+        const produto = pedido.order_items?.[0]?.item?.title || "—";
 
-    // Busca detalhe das notas em lotes de 3 (limite rate do Bling)
-    // para achar o número do pedido ML nas informações adicionais
-    const mapaNotaPorPedido = {}; // numeroPedidoML -> { nfNumero, nfSituacao, nfId }
-    for (let i = 0; i < notasBling.length; i += 3) {
-      const lote = notasBling.slice(i, i + 3);
-      await Promise.all(lote.map(async (nf) => {
+        let nf = null;
         try {
-          const r = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nf.id}`, { headers: blingHeaders });
-          if (!r.ok) return;
-          const d = await r.json();
-          const corpo = d.data || {};
-          // Campo correto confirmado: "numeroPedidoLoja" na raiz da nota
-          const numeroPedidoLoja = corpo.numeroPedidoLoja || corpo.numeroLojaVirtual || "";
-          const infoAdicional = corpo.informacoesAdicionais || "";
-
-          // Registra pelo campo direto (mais confiável)
-          if (numeroPedidoLoja) {
-            const numLimpo = String(numeroPedidoLoja).trim();
-            mapaNotaPorPedido[numLimpo] = {
-              nfNumero: nf.numero || corpo.numero,
-              nfSituacao: corpo.situacao?.descricao || corpo.situacao || "—",
-              nfId: nf.id,
-            };
-          }
-
-          // Fallback: tenta extrair número de 10-20 dígitos das informações adicionais
-          if (!numeroPedidoLoja) {
-            const matchPedido = infoAdicional.match(/\b(\d{10,20})\b/g);
-            if (matchPedido) {
-              matchPedido.forEach(numPedido => {
-                mapaNotaPorPedido[numPedido] = {
-                  nfNumero: nf.numero || corpo.numero,
-                  nfSituacao: corpo.situacao?.descricao || corpo.situacao || nf.situacao || "—",
-                  nfId: nf.id,
-                };
-              });
+          // Busca NF pelo numeroPedidoLoja (campo confirmado no Bling)
+          const nfRes = await fetch(
+            `https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=10&numeroPedidoLoja=${numeroPedido}&tipo=1`,
+            { headers: blingHeaders }
+          );
+          if (nfRes.ok) {
+            const nfData = await nfRes.json();
+            const encontradas = nfData.data || [];
+            if (encontradas.length > 0) {
+              const primeira = encontradas[0];
+              notasEncontradas++;
+              nf = {
+                nfNumero: primeira.numero,
+                nfSituacao: primeira.situacao?.descricao || String(primeira.situacao || "—"),
+                nfId: primeira.id,
+              };
             }
           }
         } catch (e) { /* ignora erro individual */ }
+
+        const status = !nf
+          ? "sem_nf"
+          : /cancelad/i.test(String(nf.nfSituacao)) ? "nf_cancelada" : "nf_pendente";
+
+        return { numeroPedido, comprador, produto, valor, dataCancelamento, nf, status };
       }));
-      if (i + 3 < notasBling.length) await sleep(1000);
+
+      itens.push(...resultados);
+      if (i + 3 < cancelados.length) await sleep(1000);
     }
 
-    // 4) Monta o resultado cruzado
-    const itens = cancelados.map(pedido => {
-      const numeroPedido = String(pedido.id);
-      const nf = mapaNotaPorPedido[numeroPedido] || null;
-      const valor = pedido.total_amount || 0;
-      const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
-      const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
-      const itemPrincipal = pedido.order_items?.[0];
-      const produto = itemPrincipal?.item?.title || "—";
-
-      // Status do cruzamento
-      let status;
-      if (!nf) status = "sem_nf";           // não encontrou NF — pode já ter sido cancelada há mais tempo
-      else if (/cancelad/i.test(String(nf.nfSituacao))) status = "nf_cancelada"; // NF já cancelada ✓
-      else status = "nf_pendente";            // NF existe mas não está cancelada ⚠
-
-      return { numeroPedido, comprador, produto, valor, dataCancelamento, nf, status };
-    });
-
-    // Ordena: pendentes primeiro, depois sem NF, depois canceladas
+    // Ordena: NF pendente primeiro, sem NF depois, canceladas por último
     const ordem = { nf_pendente: 0, sem_nf: 1, nf_cancelada: 2 };
     itens.sort((a, b) => (ordem[a.status] ?? 9) - (ordem[b.status] ?? 9));
 
@@ -142,7 +96,7 @@ export default async function handler(req, res) {
       ok: true,
       itens,
       totalCancelados: cancelados.length,
-      totalNotasEncontradas: Object.keys(mapaNotaPorPedido).length,
+      totalNotasEncontradas: notasEncontradas,
       periodo: `${dias} dias`,
     });
 
