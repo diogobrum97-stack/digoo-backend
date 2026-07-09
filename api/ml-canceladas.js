@@ -83,20 +83,32 @@ export default async function handler(req, res) {
           if (!r.ok) return;
           const d = await r.json();
           const corpo = d.data || {};
-          // Procura o número do pedido ML nas informações adicionais e em outros campos comuns
-          const infoAdicional = corpo.informacoesAdicionais || corpo.informacoesComplementares || "";
-          const numeroLojaVirtual = corpo.numeroLojaVirtual || corpo.numeroPedidoCompra || "";
-          // O número do pedido ML é um número longo (ex: 1234567890)
-          const textosBusca = [infoAdicional, numeroLojaVirtual].join(" ");
-          const matchPedido = textosBusca.match(/\b(\d{10,20})\b/g);
-          if (matchPedido) {
-            matchPedido.forEach(numPedido => {
-              mapaNotaPorPedido[numPedido] = {
-                nfNumero: nf.numero || corpo.numero,
-                nfSituacao: corpo.situacao?.descricao || corpo.situacao || nf.situacao || "—",
-                nfId: nf.id,
-              };
-            });
+          // Campo correto confirmado: "numeroPedidoLoja" na raiz da nota
+          const numeroPedidoLoja = corpo.numeroPedidoLoja || corpo.numeroLojaVirtual || "";
+          const infoAdicional = corpo.informacoesAdicionais || "";
+
+          // Registra pelo campo direto (mais confiável)
+          if (numeroPedidoLoja) {
+            const numLimpo = String(numeroPedidoLoja).trim();
+            mapaNotaPorPedido[numLimpo] = {
+              nfNumero: nf.numero || corpo.numero,
+              nfSituacao: corpo.situacao?.descricao || corpo.situacao || "—",
+              nfId: nf.id,
+            };
+          }
+
+          // Fallback: tenta extrair número de 10-20 dígitos das informações adicionais
+          if (!numeroPedidoLoja) {
+            const matchPedido = infoAdicional.match(/\b(\d{10,20})\b/g);
+            if (matchPedido) {
+              matchPedido.forEach(numPedido => {
+                mapaNotaPorPedido[numPedido] = {
+                  nfNumero: nf.numero || corpo.numero,
+                  nfSituacao: corpo.situacao?.descricao || corpo.situacao || nf.situacao || "—",
+                  nfId: nf.id,
+                };
+              });
+            }
           }
         } catch (e) { /* ignora erro individual */ }
       }));
