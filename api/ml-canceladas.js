@@ -74,28 +74,18 @@ export default async function handler(req, res) {
         }
       }
 
-      // Testa LUDIMILAFARINAZO — pack_id = "2000013806969319"
-      const nick = "ludimilafarinazo";
-      const packId = "2000013806969319";
-      const candidatas = idx.get(nick) || [];
-
-      const resultados = [];
-      for (const c of candidatas) {
-        const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${c.id}`, { headers: blingH2 });
-        const dd = await dr.json();
-        resultados.push({
-          nfId: c.id,
-          numero: c.numero,
-          numeroPedidoLoja: dd.data?.numeroPedidoLoja,
-          bate: String(dd.data?.numeroPedidoLoja||"") === packId,
-          status_http: dr.status,
-        });
-      }
-
+      // DEBUG: mostra apelidos extraídos e busca LUDIMILA
+      const todos_nomes = (d.data||[]).map(nf => nf.contato?.nome || nf.nome || "");
+      const ludimila = todos_nomes.filter(n => /ludimila/i.test(n));
+      const amostra = (d.data||[]).slice(0,10).map(nf => ({
+        numero: nf.numero,
+        nome_raw: nf.contato?.nome || nf.nome || null,
+      }));
       return res.json({
-        candidatas_encontradas: candidatas.length,
-        resultados,
         total_nfs_listagem: d.data?.length,
+        nomes_com_ludimila: ludimila,
+        todos_apelidos_idx: [...idx.keys()].slice(0, 40),
+        amostra_10: amostra,
       });
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
