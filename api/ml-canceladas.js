@@ -2,6 +2,13 @@ export const config = { maxDuration: 60 };
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// Extrai o apelido ML do nome do contato no Bling
+// "Hugo Da Silva Carneiro (carneirohugo58)" → "carneirohugo58"
+function extrairApelido(nomeContato) {
+  const m = String(nomeContato || "").match(/\(([^)]+)\)\s*$/);
+  return m ? m[1].toLowerCase().trim() : null;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -24,7 +31,6 @@ export default async function handler(req, res) {
 
     const dias = parseInt(req.query.dias || "30");
     const dateFrom = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10) + "T00:00:00.000-03:00";
-    // Formato que o Bling aceita: yyyy-mm-dd
     const blingDateFrom = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10);
 
     // 1) ID do vendedor ML
@@ -44,50 +50,58 @@ export default async function handler(req, res) {
       return res.json({ ok: true, itens: [], totalCancelados: 0, totalNotasEncontradas: 0 });
     }
 
-    // 3) Busca NFs do Bling por período — todas de uma vez, em páginas
-    //    O campo `numeroPedidoLoja` vem na listagem básica da v3, sem precisar
-    //    buscar detalhe de cada nota. Buscamos até 5 páginas (250 NFs) pra cobrir
-    //    30 dias de operação tranquilamente.
-    const nfPorPedido = new Map(); // numeroPedidoLoja (string) → { nfNumero, nfSituacao, nfId }
+    // 3) Busca NFs do Bling por período — páginas de 100, até 5 páginas
+    //    Monta DOIS índices pra cruzamento:
+    //      - por apelido ML extraído do nome do contato  (principal)
+    //      - por numeroPedidoLoja                        (fallback, se vier preenchido)
+    const nfPorApelido    = new Map(); // apelido_lower → NF
+    const nfPorPedidoLoja = new Map(); // numeroPedidoLoja → NF
 
     for (let pagina = 1; pagina <= 5; pagina++) {
       const url = `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDateFrom}&tipo=1`;
       const r = await fetch(url, { headers: blingHeaders });
-
-      if (!r.ok) break; // acabaram as páginas ou erro
+      if (!r.ok) break;
 
       const data = await r.json();
       const notas = data.data || [];
-
-      if (notas.length === 0) break; // última página
+      if (notas.length === 0) break;
 
       for (const nf of notas) {
+        const nfInfo = {
+          nfNumero: nf.numero,
+          nfSituacao: nf.situacao?.descricao || String(nf.situacao || "—"),
+          nfId: nf.id,
+        };
+
+        // Índice por apelido
+        const apelido = extrairApelido(nf.contato?.nome || nf.nome || "");
+        if (apelido && !nfPorApelido.has(apelido)) {
+          nfPorApelido.set(apelido, nfInfo);
+        }
+
+        // Índice por numeroPedidoLoja (fallback)
         const pedidoLoja = String(nf.numeroPedidoLoja || "").trim();
-        if (!pedidoLoja) continue;
-        // Guarda só a primeira NF encontrada por pedido (em caso de duplicata)
-        if (!nfPorPedido.has(pedidoLoja)) {
-          nfPorPedido.set(pedidoLoja, {
-            nfNumero: nf.numero,
-            nfSituacao: nf.situacao?.descricao || String(nf.situacao || "—"),
-            nfId: nf.id,
-          });
+        if (pedidoLoja && !nfPorPedidoLoja.has(pedidoLoja)) {
+          nfPorPedidoLoja.set(pedidoLoja, nfInfo);
         }
       }
 
-      if (notas.length < 100) break; // última página (incompleta)
-      await sleep(350); // respeita rate limit do Bling (~3 req/s)
+      if (notas.length < 100) break;
+      await sleep(350);
     }
 
-    // 4) Cruza os pedidos cancelados com o Map de NFs
+    // 4) Cruza cada pedido cancelado do ML com as NFs do Bling
     let notasEncontradas = 0;
     const itens = cancelados.map(pedido => {
       const numeroPedido = String(pedido.id);
       const valor = pedido.total_amount || 0;
+      const nick = (pedido.buyer?.nickname || "").toLowerCase().trim();
       const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
       const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
       const produto = pedido.order_items?.[0]?.item?.title || "—";
 
-      const nf = nfPorPedido.get(numeroPedido) || null;
+      // Tenta pelo apelido primeiro, fallback por numeroPedidoLoja
+      const nf = nfPorApelido.get(nick) || nfPorPedidoLoja.get(numeroPedido) || null;
       if (nf) notasEncontradas++;
 
       const status = !nf
@@ -98,7 +112,7 @@ export default async function handler(req, res) {
     });
 
     // 5) Ordena: nf_pendente primeiro, sem_nf depois, nf_cancelada por último
-    //    Dentro de cada grupo: mais recente primeiro (por dataCancelamento)
+    //    Dentro de cada grupo: mais recente primeiro
     const ordemStatus = { nf_pendente: 0, sem_nf: 1, nf_cancelada: 2 };
     itens.sort((a, b) => {
       const ds = (ordemStatus[a.status] ?? 9) - (ordemStatus[b.status] ?? 9);
