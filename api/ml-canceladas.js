@@ -52,16 +52,17 @@ export default async function handler(req, res) {
       } catch(e) { claims = { error: e.message }; }
 
       return res.json({
-        pedido_status: pedido.status,
-        pedido_substatus: pedido.status_detail,
-        shipment_id: shipmentId,
-        shipment_status: shipment?.status,
-        shipment_substatus: shipment?.substatus,
-        shipment_return_details: shipment?.return_details,
-        claims: claims?.results?.map(c => ({ id: c.id, type: c.type, stage: c.stage, status: c.status })) || claims,
-        pedido_campos: Object.keys(pedido),
-        pedido_shipping_raw: pedido.shipping || pedido.shipments || null,
-      });
+  pedido_raw: pedido,  // ← mostra tudo que o ML retornou
+  pedido_status: pedido.status,
+  pedido_substatus: pedido.status_detail,
+  shipment_id: shipmentId,
+  shipment_status: shipment?.status,
+  shipment_substatus: shipment?.substatus,
+  shipment_return_details: shipment?.return_details,
+  claims: claims?.results?.map(c => ({ id: c.id, type: c.type, stage: c.stage, status: c.status })) || claims,
+  pedido_campos: Object.keys(pedido),
+  pedido_shipping_raw: pedido.shipping || pedido.shipments || null,
+});
     } catch(e) {
       return res.status(500).json({ error: e.message });
     }
