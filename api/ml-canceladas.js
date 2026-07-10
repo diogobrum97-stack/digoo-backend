@@ -2,11 +2,24 @@ export const config = { maxDuration: 60 };
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Extrai o apelido ML do nome do contato no Bling
-// "Hugo Da Silva Carneiro (carneirohugo58)" → "carneirohugo58"
 function extrairApelido(nomeContato) {
   const m = String(nomeContato || "").match(/\(([^)]+)\)\s*$/);
   return m ? m[1].toLowerCase().trim() : null;
+}
+
+// Situações do Bling v3 — campo situacao vem como número inteiro
+const SITUACAO_BLING = {
+  4:  "Autorizada",
+  9:  "Cancelada",
+  15: "Pendente autorização",
+  0:  "Pendente",
+  12: "Emitida",
+};
+
+function parseSituacao(s) {
+  if (!s && s !== 0) return "—";
+  if (typeof s === "object" && s.descricao) return s.descricao;
+  return SITUACAO_BLING[Number(s)] || String(s);
 }
 
 export default async function handler(req, res) {
@@ -51,11 +64,8 @@ export default async function handler(req, res) {
     }
 
     // 3) Busca NFs do Bling por período — páginas de 100, até 5 páginas
-    //    Monta DOIS índices pra cruzamento:
-    //      - por apelido ML extraído do nome do contato  (principal)
-    //      - por numeroPedidoLoja                        (fallback, se vier preenchido)
-    const nfPorApelido    = new Map(); // apelido_lower → NF
-    const nfPorPedidoLoja = new Map(); // numeroPedidoLoja → NF
+    const nfPorApelido    = new Map();
+    const nfPorPedidoLoja = new Map();
 
     for (let pagina = 1; pagina <= 5; pagina++) {
       const url = `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDateFrom}&tipo=1`;
@@ -69,17 +79,15 @@ export default async function handler(req, res) {
       for (const nf of notas) {
         const nfInfo = {
           nfNumero: nf.numero,
-          nfSituacao: nf.situacao?.descricao || String(nf.situacao || "—"),
+          nfSituacao: parseSituacao(nf.situacao),
           nfId: nf.id,
         };
 
-        // Índice por apelido
         const apelido = extrairApelido(nf.contato?.nome || nf.nome || "");
         if (apelido && !nfPorApelido.has(apelido)) {
           nfPorApelido.set(apelido, nfInfo);
         }
 
-        // Índice por numeroPedidoLoja (fallback)
         const pedidoLoja = String(nf.numeroPedidoLoja || "").trim();
         if (pedidoLoja && !nfPorPedidoLoja.has(pedidoLoja)) {
           nfPorPedidoLoja.set(pedidoLoja, nfInfo);
@@ -90,7 +98,7 @@ export default async function handler(req, res) {
       await sleep(350);
     }
 
-    // 4) Cruza cada pedido cancelado do ML com as NFs do Bling
+    // 4) Cruza pedidos cancelados com NFs
     let notasEncontradas = 0;
     const itens = cancelados.map(pedido => {
       const numeroPedido = String(pedido.id);
@@ -100,7 +108,6 @@ export default async function handler(req, res) {
       const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
       const produto = pedido.order_items?.[0]?.item?.title || "—";
 
-      // Tenta pelo apelido primeiro, fallback por numeroPedidoLoja
       const nf = nfPorApelido.get(nick) || nfPorPedidoLoja.get(numeroPedido) || null;
       if (nf) notasEncontradas++;
 
