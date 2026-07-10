@@ -182,7 +182,7 @@ export default async function handler(req, res) {
       // Janela: desde a criação do pedido até 2h após o cancelamento
       // (2h de margem pra NF emitida ligeiramente depois do cancelamento por atraso de sistema)
       const janelaDe  = criadoEm;
-      const janelaAte = canceladoEm + (2 * 60 * 60 * 1000);
+      const janelaAte = canceladoEm + (30 * 60 * 1000); // 30 min de margem
 
       // Filtra candidatas que têm dataEmissao dentro da janela
       const dentroJanela = candidatas.filter(nf => {
