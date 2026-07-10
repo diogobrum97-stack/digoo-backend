@@ -7,15 +7,14 @@ function extrairApelido(nomeContato) {
   return m ? m[1].toLowerCase().trim() : null;
 }
 
-// Situações do Bling v3 — campo situacao vem como número inteiro
 const SITUACAO_BLING = {
-  4:  "Autorizada",
-  9:  "Cancelada",
-  15: "Pendente autorização",
   0:  "Pendente",
+  4:  "Autorizada",
+  5:  "Autorizada",
+  9:  "Cancelada",
   12: "Emitida",
+  15: "Pendente autorização",
 };
-
 function parseSituacao(s) {
   if (!s && s !== 0) return "—";
   if (typeof s === "object" && s.descricao) return s.descricao;
@@ -27,6 +26,46 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  // DEBUG temporário — remove depois
+  if (req.query.debug_pedido) {
+    try {
+      const pedidoId = req.query.debug_pedido;
+      const mlR2 = await fetch(`${process.env.FIREBASE_URL}/ml_token.json`);
+      const mlToken2 = await mlR2.json();
+      const headers2 = { Authorization: `Bearer ${mlToken2.access_token}` };
+
+      const pedidoRes = await fetch(`https://api.mercadolibre.com/orders/${pedidoId}`, { headers: headers2 });
+      const pedido = await pedidoRes.json();
+
+      const shipmentId = pedido.shipments?.id || pedido.shipping?.id || null;
+      let shipment = null;
+      if (shipmentId) {
+        const shipRes = await fetch(`https://api.mercadolibre.com/shipments/${shipmentId}`, { headers: headers2 });
+        shipment = await shipRes.json();
+      }
+
+      let claims = null;
+      try {
+        const claimRes = await fetch(`https://api.mercadolibre.com/post-purchase/v1/claims/search?order_id=${pedidoId}`, { headers: headers2 });
+        claims = await claimRes.json();
+      } catch(e) { claims = { error: e.message }; }
+
+      return res.json({
+        pedido_status: pedido.status,
+        pedido_substatus: pedido.status_detail,
+        shipment_id: shipmentId,
+        shipment_status: shipment?.status,
+        shipment_substatus: shipment?.substatus,
+        shipment_return_details: shipment?.return_details,
+        claims: claims?.results?.map(c => ({ id: c.id, type: c.type, stage: c.stage, status: c.status })) || claims,
+        pedido_campos: Object.keys(pedido),
+        pedido_shipping_raw: pedido.shipping || pedido.shipments || null,
+      });
+    } catch(e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
 
   try {
     const [mlR, blingR] = await Promise.all([
@@ -119,7 +158,6 @@ export default async function handler(req, res) {
     });
 
     // 5) Ordena: nf_pendente primeiro, sem_nf depois, nf_cancelada por último
-    //    Dentro de cada grupo: mais recente primeiro
     const ordemStatus = { nf_pendente: 0, sem_nf: 1, nf_cancelada: 2 };
     itens.sort((a, b) => {
       const ds = (ordemStatus[a.status] ?? 9) - (ordemStatus[b.status] ?? 9);
