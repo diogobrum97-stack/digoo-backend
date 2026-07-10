@@ -9,13 +9,13 @@ function extrairApelido(nomeContato) {
 
 // Situações do Bling v3 — campo situacao vem como número inteiro
 const SITUACAO_BLING = {
-  4:  "Autorizada",
-  9:  "Cancelada",
-  15: "Pendente autorização",
   0:  "Pendente",
+  4:  "Autorizada",
+  5:  "Autorizada",   // ← adiciona esse
+  9:  "Cancelada",
   12: "Emitida",
+  15: "Pendente autorização",
 };
-
 function parseSituacao(s) {
   if (!s && s !== 0) return "—";
   if (typeof s === "object" && s.descricao) return s.descricao;
