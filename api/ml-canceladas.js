@@ -155,6 +155,7 @@ export default async function handler(req, res) {
           nfNumero: nf.numero,
           nfSituacao: parseSituacao(nf.situacao),
           nfId: nf.id,
+          dataEmissao: nf.dataEmissao || null, // "2026-07-08 18:05:38" — vem na listagem básica
         };
         const apelido = extrairApelido(nf.contato?.nome || nf.nome || "");
         if (apelido) {
@@ -171,28 +172,44 @@ export default async function handler(req, res) {
       await sleep(350);
     }
 
-    // 4) Confirmação via detalhe do Bling
-    // Verifica se numeroPedidoLoja da NF bate com pack_id OU order_id do pedido ML
-    async function confirmarNF(packId, orderId, candidatas) {
-      for (const nfInfo of candidatas) {
-        try {
-          const r = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfInfo.nfId}`, { headers: blingHeaders });
-          if (!r.ok) continue;
-          const d = await r.json();
-          const pedidoLojaNF = String(d.data?.numeroPedidoLoja || "").trim();
-          if (pedidoLojaNF && (pedidoLojaNF === packId || pedidoLojaNF === orderId)) return nfInfo;
-        } catch(e) { /* ignora */ }
-      }
-      return null;
+    // 4) Confirmação da NF por janela temporal
+    // A NF correta foi emitida DEPOIS da criação do pedido e ANTES (ou até 2h após) do cancelamento
+    // Isso evita falso positivo quando o comprador tem mais de uma NF no período
+    function confirmarNFPorTempo(pedido, candidatas) {
+      const criadoEm  = new Date(pedido.date_created || 0).getTime();
+      const canceladoEm = new Date(pedido.last_updated || pedido.date_closed || 0).getTime();
+
+      // Janela: desde a criação do pedido até 2h após o cancelamento
+      // (2h de margem pra NF emitida ligeiramente depois do cancelamento por atraso de sistema)
+      const janelaDe  = criadoEm;
+      const janelaAte = canceladoEm + (2 * 60 * 60 * 1000);
+
+      // Filtra candidatas que têm dataEmissao dentro da janela
+      const dentroJanela = candidatas.filter(nf => {
+        if (!nf.dataEmissao) return false;
+        const emitidaEm = new Date(nf.dataEmissao.replace(" ", "T") + "-03:00").getTime();
+        return emitidaEm >= janelaDe && emitidaEm <= janelaAte;
+      });
+
+      if (dentroJanela.length === 0) return null;
+      if (dentroJanela.length === 1) return dentroJanela[0];
+
+      // Se ainda tem mais de uma dentro da janela, pega a mais próxima da criação do pedido
+      dentroJanela.sort((a, b) => {
+        const ta = new Date(a.dataEmissao.replace(" ", "T") + "-03:00").getTime();
+        const tb = new Date(b.dataEmissao.replace(" ", "T") + "-03:00").getTime();
+        return Math.abs(ta - criadoEm) - Math.abs(tb - criadoEm);
+      });
+      return dentroJanela[0];
     }
 
-    // 5) Processa pedidos em lotes de 5 paralelos
+    // 5) Processa pedidos em lotes de 10 paralelos (sem req extra, tudo em memória)
     const itens = [];
 
-    for (let i = 0; i < cancelados.length; i += 5) {
-      const lote = cancelados.slice(i, i + 5);
+    for (let i = 0; i < cancelados.length; i += 10) {
+      const lote = cancelados.slice(i, i + 10);
 
-      const resultados = await Promise.all(lote.map(async pedido => {
+      const resultados = lote.map(pedido => {
         const orderId  = String(pedido.id || "");
         const packId   = String(pedido.pack_id || "");
         const nick     = (pedido.buyer?.nickname || "").toLowerCase().trim();
@@ -202,22 +219,17 @@ export default async function handler(req, res) {
         const produto  = pedido.order_items?.[0]?.item?.title || "—";
         const emTransito = detectarTransito(pedido);
 
-        // Tenta match direto no índice por pack_id ou order_id
+        // Tenta match direto pelo numeroPedidoLoja (pack_id ou order_id)
         let nf = nfPorPackId.get(packId) || nfPorPackId.get(orderId) || null;
 
-        // Se não achou direto, tenta por apelido com confirmação via detalhe
+        // Se não achou direto, tenta por apelido com confirmação por janela temporal
         if (!nf && nick) {
           const candidatas = nfPorApelido.get(nick) || [];
           if (candidatas.length > 0) {
-            nf = await confirmarNF(packId, orderId, candidatas);
+            nf = confirmarNFPorTempo(pedido, candidatas);
           }
         }
 
-        // Status final:
-        // - sem NF → sem_nf (filtramos no front mas mantemos no backend pra referência)
-        // - NF cancelada → nf_cancelada
-        // - NF autorizada + em trânsito → em_transito
-        // - NF autorizada + sem trânsito → nf_pendente
         let status;
         if (!nf) {
           status = "sem_nf";
@@ -230,10 +242,9 @@ export default async function handler(req, res) {
         }
 
         return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status };
-      }));
+      });
 
       itens.push(...resultados);
-      if (i + 5 < cancelados.length) await sleep(300);
     }
 
     const notasEncontradas = itens.filter(it => it.nf).length;
