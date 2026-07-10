@@ -55,40 +55,48 @@ export default async function handler(req, res) {
 
   // DEBUG: inspeciona listagem do Bling
   if (req.query.debug_bling) {
-    try {
-      const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
-      const blingToken2 = await blingR2.json();
-      const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
-      const blingDate = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
-      const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=5&dataEmissaoInicial=${blingDate}&tipo=1`, { headers: blingH2 });
-      const d = await r.json();
-      // Busca detalhe da primeira NF
-      const primeiraId = d.data?.[0]?.id;
-      let detalhe = null;
-      if (primeiraId) {
-        const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${primeiraId}`, { headers: blingH2 });
-        detalhe = await dr.json();
+  try {
+    const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+    const blingToken2 = await blingR2.json();
+    const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
+    const blingDate = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
+    
+    // Busca listagem
+    const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=100&dataEmissaoInicial=${blingDate}&tipo=1`, { headers: blingH2 });
+    const d = await r.json();
+    
+    // Monta índice por apelido
+    const idx = new Map();
+    for (const nf of (d.data||[])) {
+      const m = String(nf.contato?.nome||"").match(/\(([^)]+)\)\s*$/);
+      const apelido = m ? m[1].toLowerCase().trim() : null;
+      if (apelido) {
+        if (!idx.has(apelido)) idx.set(apelido, []);
+        idx.get(apelido).push({ id: nf.id, numero: nf.numero });
       }
-      return res.json({
-        status: r.status,
-        primeiras: d.data?.map(n => ({
-          id: n.id,
-          numero: n.numero,
-          contato: n.contato,
-          nome: n.nome,
-          numeroPedidoLoja: n.numeroPedidoLoja,
-          dataEmissao: n.dataEmissao,
-          situacao: n.situacao,
-          todos_campos: Object.keys(n),
-        })),
-        detalhe_primeira: {
-          numeroPedidoLoja: detalhe?.data?.numeroPedidoLoja,
-          numero: detalhe?.data?.numero,
-          contato_nome: detalhe?.data?.contato?.nome,
-        },
+    }
+    
+    // Testa confirmação pra SOSINFOMADALENA1
+    const nick = "sosinfomadalena1";
+    const orderId = "2000017320898144";
+    const candidatas = idx.get(nick) || [];
+    
+    const resultados = [];
+    for (const c of candidatas) {
+      const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${c.id}`, { headers: blingH2 });
+      const dd = await dr.json();
+      resultados.push({
+        nfId: c.id,
+        numero: c.numero,
+        numeroPedidoLoja: dd.data?.numeroPedidoLoja,
+        bate: String(dd.data?.numeroPedidoLoja||"") === orderId,
+        status_http: dr.status,
       });
-    } catch(e) { return res.status(500).json({ error: e.message }); }
-  }
+    }
+    
+    return res.json({ candidatas_encontradas: candidatas.length, resultados });
+  } catch(e) { return res.status(500).json({ error: e.message }); }
+}
 
   // DEBUG: inspeciona campos do orders/search
   if (req.query.debug_search) {
