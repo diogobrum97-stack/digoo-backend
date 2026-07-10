@@ -22,29 +22,23 @@ function parseSituacao(s) {
 }
 
 function detectarTransito(pedido) {
-  const shipStatus = pedido.shipping?.status || pedido.shipments?.status || null;
+  const shipStatus = pedido.shipping?.status || null;
 
   // Produto fisicamente voltando
   if (["shipped", "to_be_agreed", "ready_to_ship", "handling", "in_transit"].includes(shipStatus)) {
-    return "em_transito";
+    return true;
   }
 
-  // Produto chegou (delivered) — verifica se é devolução ativa
+  // Produto entregue de volta — verifica pagamento reembolsado
   if (shipStatus === "delivered") {
-    // Pagamento reembolsado = devolução processada
-    const paymentStatus = pedido.payments?.[0]?.status || "";
-    if (/refund/i.test(paymentStatus)) return "em_transito";
-
-    // Tags do pedido indicam devolução
-    const tags = pedido.tags || [];
-    if (tags.some(t => /return|devolu/i.test(String(t)))) return "em_transito";
-
-    // status_detail do pedido indica devolução
-    const statusDetail = String(pedido.status_detail || "");
-    if (/refund|return|bpp/i.test(statusDetail)) return "em_transito";
+    const payments = pedido.payments || [];
+    const payArr = Array.isArray(payments) ? payments : [payments];
+    if (payArr.some(p => /refund/i.test(String(p?.status || "")))) return true;
+    // fallback: status_detail
+    if (/refund|return|bpp/i.test(String(pedido.status_detail || ""))) return true;
   }
 
-  return null;
+  return false;
 }
 
 export default async function handler(req, res) {
@@ -53,7 +47,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // DEBUG temporário
+  // DEBUG: inspeciona campos de um pedido específico via /orders/{id}
   if (req.query.debug_pedido) {
     try {
       const pedidoId = req.query.debug_pedido;
@@ -80,9 +74,38 @@ export default async function handler(req, res) {
         pack_id: pedido.pack_id,
         shipment_id: shipmentId,
         shipment_status: shipment?.status,
+        payments_status: (pedido.payments || []).map(p => p?.status),
         claims: claims?.results?.map(c => ({ id: c.id, type: c.type, stage: c.stage, status: c.status })) || claims,
         pedido_campos: Object.keys(pedido),
-        pedido_shipping_raw: pedido.shipping || pedido.shipments || null,
+        pedido_shipping_raw: pedido.shipping || null,
+      });
+    } catch(e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
+  // DEBUG: inspeciona campos que chegam via orders/search (não via /orders/{id})
+  if (req.query.debug_search) {
+    try {
+      const mlR2 = await fetch(`${process.env.FIREBASE_URL}/ml_token.json`);
+      const mlToken2 = await mlR2.json();
+      const headers2 = { Authorization: `Bearer ${mlToken2.access_token}` };
+      const meRes2 = await fetch("https://api.mercadolibre.com/users/me", { headers: headers2 });
+      const me2 = await meRes2.json();
+      const dateFrom2 = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10) + "T00:00:00.000-03:00";
+      const r2 = await fetch(
+        `https://api.mercadolibre.com/orders/search?seller=${me2.id}&order.status=cancelled&order.date_created.from=${encodeURIComponent(dateFrom2)}&limit=3&offset=0`,
+        { headers: headers2 }
+      );
+      const d2 = await r2.json();
+      const primeiro = d2.results?.[0] || {};
+      return res.json({
+        campos_disponiveis: Object.keys(primeiro),
+        shipping_raw: primeiro.shipping,
+        payments_raw: primeiro.payments,
+        status_detail: primeiro.status_detail,
+        pack_id: primeiro.pack_id,
+        transito_detectado: detectarTransito(primeiro),
       });
     } catch(e) {
       return res.status(500).json({ error: e.message });
@@ -125,15 +148,15 @@ export default async function handler(req, res) {
     }
 
     // 3) Busca NFs do Bling por período
-    // Índice por apelido (lista de todas as NFs) e por numeroPedidoLoja (pack_id)
-    const nfPorApelido    = new Map(); // apelido → [nfInfo, ...]
-    const nfPorPackId     = new Map(); // pack_id (numeroPedidoLoja) → nfInfo
+    // nfPorPackId: numeroPedidoLoja (= pack_id do ML) → nfInfo
+    // nfPorApelido: apelido → [nfInfo, ...] (todas as NFs do comprador)
+    const nfPorApelido = new Map();
+    const nfPorPackId  = new Map();
 
     for (let pagina = 1; pagina <= 5; pagina++) {
       const url = `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDateFrom}&tipo=1`;
       const r = await fetch(url, { headers: blingHeaders });
       if (!r.ok) break;
-
       const data = await r.json();
       const notas = data.data || [];
       if (notas.length === 0) break;
@@ -144,15 +167,11 @@ export default async function handler(req, res) {
           nfSituacao: parseSituacao(nf.situacao),
           nfId: nf.id,
         };
-
-        // Índice por apelido — guarda TODAS as NFs do apelido
         const apelido = extrairApelido(nf.contato?.nome || nf.nome || "");
         if (apelido) {
           if (!nfPorApelido.has(apelido)) nfPorApelido.set(apelido, []);
           nfPorApelido.get(apelido).push(nfInfo);
         }
-
-        // Índice por numeroPedidoLoja = pack_id do ML
         const pedidoLoja = String(nf.numeroPedidoLoja || "").trim();
         if (pedidoLoja && !nfPorPackId.has(pedidoLoja)) {
           nfPorPackId.set(pedidoLoja, nfInfo);
@@ -163,19 +182,16 @@ export default async function handler(req, res) {
       await sleep(350);
     }
 
-    // 4) Confirmação via detalhe do Bling: verifica numeroPedidoLoja === pack_id
-    async function confirmarNFPorPackId(packId, nfCandidatas, numeroPedido) {
-      for (const nfInfo of nfCandidatas) {
+    // 4) Confirmação via detalhe do Bling
+    // Verifica se numeroPedidoLoja da NF bate com pack_id OU order_id do pedido ML
+    async function confirmarNF(packId, orderId, candidatas) {
+      for (const nfInfo of candidatas) {
         try {
-          const r = await fetch(
-            `https://www.bling.com.br/Api/v3/nfe/${nfInfo.nfId}`,
-            { headers: blingHeaders }
-          );
+          const r = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfInfo.nfId}`, { headers: blingHeaders });
           if (!r.ok) continue;
           const d = await r.json();
           const pedidoLojaNF = String(d.data?.numeroPedidoLoja || "").trim();
-          // Aceita match por pack_id OU por order_id (pedidos sem pack)
-          if (pedidoLojaNF === packId || (numeroPedido && pedidoLojaNF === numeroPedido)) return nfInfo;
+          if (pedidoLojaNF && (pedidoLojaNF === packId || pedidoLojaNF === orderId)) return nfInfo;
         } catch(e) { /* ignora */ }
       }
       return null;
@@ -183,60 +199,58 @@ export default async function handler(req, res) {
 
     // 5) Processa pedidos em lotes de 5 paralelos
     const itens = [];
-    const loteSize = 5;
 
-    for (let i = 0; i < cancelados.length; i += loteSize) {
-      const lote = cancelados.slice(i, i + loteSize);
+    for (let i = 0; i < cancelados.length; i += 5) {
+      const lote = cancelados.slice(i, i + 5);
 
       const resultados = await Promise.all(lote.map(async pedido => {
-        const numeroPedido = String(pedido.id);
-        // pack_id é o que o Bling usa como numeroPedidoLoja
-        const packId = String(pedido.pack_id || pedido.id || "").trim();
-        const valor = pedido.total_amount || 0;
-        const nick = (pedido.buyer?.nickname || "").toLowerCase().trim();
+        const orderId  = String(pedido.id || "");
+        const packId   = String(pedido.pack_id || "");
+        const nick     = (pedido.buyer?.nickname || "").toLowerCase().trim();
         const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
+        const valor    = pedido.total_amount || 0;
         const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
-        const produto = pedido.order_items?.[0]?.item?.title || "—";
+        const produto  = pedido.order_items?.[0]?.item?.title || "—";
+        const emTransito = detectarTransito(pedido);
 
-        // Detecta trânsito
-        const transitoStatus = detectarTransito(pedido);
+        // Tenta match direto no índice por pack_id ou order_id
+        let nf = nfPorPackId.get(packId) || nfPorPackId.get(orderId) || null;
 
-        // Match direto pelo pack_id no índice da listagem (pack_id = numeroPedidoLoja no Bling)
-        // Tenta pack_id primeiro, depois order_id como fallback
-        let nf = nfPorPackId.get(packId) || nfPorPackId.get(numeroPedido) || null;
-
-        // Se não achou direto na listagem, tenta por apelido confirmando via detalhe do Bling
-        // A confirmação verifica se numeroPedidoLoja == packId OU == numeroPedido
+        // Se não achou direto, tenta por apelido com confirmação via detalhe
         if (!nf && nick) {
           const candidatas = nfPorApelido.get(nick) || [];
           if (candidatas.length > 0) {
-            nf = await confirmarNFPorPackId(packId, candidatas, numeroPedido);
+            nf = await confirmarNF(packId, orderId, candidatas);
           }
         }
 
-        // Status final
+        // Status final:
+        // - sem NF → sem_nf (filtramos no front mas mantemos no backend pra referência)
+        // - NF cancelada → nf_cancelada
+        // - NF autorizada + em trânsito → em_transito
+        // - NF autorizada + sem trânsito → nf_pendente
         let status;
-        if (transitoStatus) {
-          status = "em_transito";
-        } else if (!nf) {
+        if (!nf) {
           status = "sem_nf";
         } else if (/cancelad/i.test(String(nf.nfSituacao))) {
           status = "nf_cancelada";
+        } else if (emTransito) {
+          status = "em_transito";
         } else {
           status = "nf_pendente";
         }
 
-        return { numeroPedido, comprador, produto, valor, dataCancelamento, nf, status };
+        return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status };
       }));
 
       itens.push(...resultados);
-      if (i + loteSize < cancelados.length) await sleep(300);
+      if (i + 5 < cancelados.length) await sleep(300);
     }
 
     const notasEncontradas = itens.filter(it => it.nf).length;
 
-    // 6) Ordena: em_transito, nf_pendente, sem_nf, nf_cancelada
-    const ordemStatus = { em_transito: 0, nf_pendente: 1, sem_nf: 2, nf_cancelada: 3 };
+    // 6) Ordena: nf_pendente primeiro, em_transito, nf_cancelada, sem_nf por último
+    const ordemStatus = { nf_pendente: 0, em_transito: 1, nf_cancelada: 2, sem_nf: 3 };
     itens.sort((a, b) => {
       const ds = (ordemStatus[a.status] ?? 9) - (ordemStatus[b.status] ?? 9);
       if (ds !== 0) return ds;
