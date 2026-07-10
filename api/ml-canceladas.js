@@ -74,8 +74,9 @@ export default async function handler(req, res) {
         }
       }
 
-      const nick = "sosinfomadalena1";
-      const orderId = "2000017320898144";
+      // Testa LUDIMILAFARINAZO — pack_id = "2000013806969319"
+      const nick = "ludimilafarinazo";
+      const packId = "2000013806969319";
       const candidatas = idx.get(nick) || [];
 
       const resultados = [];
@@ -86,7 +87,7 @@ export default async function handler(req, res) {
           nfId: c.id,
           numero: c.numero,
           numeroPedidoLoja: dd.data?.numeroPedidoLoja,
-          bate: String(dd.data?.numeroPedidoLoja||"") === orderId,
+          bate: String(dd.data?.numeroPedidoLoja||"") === packId,
           status_http: dr.status,
         });
       }
@@ -200,14 +201,14 @@ export default async function handler(req, res) {
 
     // 4) Confirmação via detalhe do Bling
     // numeroPedidoLoja no detalhe = order_id do ML
-    async function confirmarNFPorOrderId(orderId, candidatas) {
+    async function confirmarNFPorOrderId(packId, candidatas) {
       for (const nfInfo of candidatas) {
         try {
           const r = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfInfo.nfId}`, { headers: blingHeaders });
           if (!r.ok) continue;
           const d = await r.json();
           const numeroPedidoLoja = String(d.data?.numeroPedidoLoja || "").trim();
-          if (numeroPedidoLoja === orderId) return nfInfo;
+          if (numeroPedidoLoja === packId) return nfInfo;
         } catch(e) { /* ignora */ }
       }
       return null;
@@ -228,14 +229,15 @@ export default async function handler(req, res) {
         const produto   = pedido.order_items?.[0]?.item?.title || "—";
         const emTransito = detectarTransito(pedido);
 
-        // Match direto pelo order_id no índice da listagem
-        let nf = nfPorOrderId.get(orderId) || null;
+        // Match direto pelo pack_id no índice da listagem (pack_id = numeroPedidoLoja no Bling)
+        const packId = String(pedido.pack_id || "").trim();
+        let nf = nfPorOrderId.get(packId) || null;
 
-        // Se não achou, tenta por apelido confirmando via detalhe
+        // Se não achou, tenta por apelido confirmando via detalhe do Bling
         if (!nf && nick) {
           const candidatas = nfPorApelido.get(nick) || [];
           if (candidatas.length > 0) {
-            nf = await confirmarNFPorOrderId(orderId, candidatas);
+            nf = await confirmarNFPorOrderId(packId, candidatas);
           }
         }
 
