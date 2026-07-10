@@ -22,19 +22,11 @@ function parseSituacao(s) {
 }
 
 function detectarTransito(pedido) {
-  // Mediação ativa = devolução em andamento (caminho mais confiável)
-  // No cancelamento simples mediations é [] ou não existe
-  // Na devolução ativa tem ao menos um item com code "mediations" ou "returns"
-  const mediations = pedido.mediations || [];
+  // Usa APENAS mediations — é o campo mais confiável e vem no search
+  // Cancelamento simples: mediations = []
+  // Devolução ativa: mediations tem ao menos 1 item
+  const mediations = pedido.mediations;
   if (Array.isArray(mediations) && mediations.length > 0) return true;
-
-  // Fallback: payments com status_detail nulo + payments refunded
-  // (no cancelamento simples status_detail = "bpp_refunded", na devolução = null)
-  const payments = Array.isArray(pedido.payments) ? pedido.payments : [];
-  const temReembolso = payments.some(p => /refund/i.test(String(p?.status || "")));
-  const ehCancelamentoSimples = payments.some(p => /bpp_refunded/i.test(String(p?.status_detail || "")));
-  if (temReembolso && !ehCancelamentoSimples) return true;
-
   return false;
 }
 
