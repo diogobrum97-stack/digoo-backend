@@ -21,22 +21,15 @@ function parseSituacao(s) {
   return SITUACAO_BLING[Number(s)] || String(s);
 }
 
-// Detecta se o pedido cancelado tem devolução em andamento
-// usando o campo shipping que já vem no objeto do pedido
 function detectarTransito(pedido) {
   const shipStatus = pedido.shipping?.status || pedido.shipments?.status || null;
   const statusDetail = pedido.status_detail || "";
-
-  // Produto ainda voltando
   if (["shipped", "to_be_agreed", "ready_to_ship", "handling", "in_transit"].includes(shipStatus)) {
     return "em_transito";
   }
-
-  // Produto chegou mas ainda em processo de devolução/reembolso
   if (shipStatus === "delivered" && /refund|return|bpp/i.test(statusDetail)) {
     return "em_transito";
   }
-
   return null;
 }
 
@@ -46,7 +39,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // DEBUG — remove depois
+  // DEBUG temporário
   if (req.query.debug_pedido) {
     try {
       const pedidoId = req.query.debug_pedido;
@@ -70,10 +63,9 @@ export default async function handler(req, res) {
         pedido_raw: pedido,
         pedido_status: pedido.status,
         pedido_substatus: pedido.status_detail,
+        pack_id: pedido.pack_id,
         shipment_id: shipmentId,
         shipment_status: shipment?.status,
-        shipment_substatus: shipment?.substatus,
-        shipment_return_details: shipment?.return_details,
         claims: claims?.results?.map(c => ({ id: c.id, type: c.type, stage: c.stage, status: c.status })) || claims,
         pedido_campos: Object.keys(pedido),
         pedido_shipping_raw: pedido.shipping || pedido.shipments || null,
@@ -118,10 +110,10 @@ export default async function handler(req, res) {
       return res.json({ ok: true, itens: [], totalCancelados: 0, totalNotasEncontradas: 0 });
     }
 
-    // 3) Busca NFs do Bling por período — páginas de 100, até 5 páginas
-    // Monta índice por apelido E por nfId (para confirmação posterior)
-    const nfPorApelido = new Map();    // apelido → [nfInfo, ...]  (lista pra checar todas)
-    const nfPorPedidoLoja = new Map(); // numeroPedidoLoja → nfInfo
+    // 3) Busca NFs do Bling por período
+    // Índice por apelido (lista de todas as NFs) e por numeroPedidoLoja (pack_id)
+    const nfPorApelido    = new Map(); // apelido → [nfInfo, ...]
+    const nfPorPackId     = new Map(); // pack_id (numeroPedidoLoja) → nfInfo
 
     for (let pagina = 1; pagina <= 5; pagina++) {
       const url = `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDateFrom}&tipo=1`;
@@ -139,17 +131,17 @@ export default async function handler(req, res) {
           nfId: nf.id,
         };
 
-        // Índice por apelido — guarda TODAS as NFs do apelido (não só a primeira)
+        // Índice por apelido — guarda TODAS as NFs do apelido
         const apelido = extrairApelido(nf.contato?.nome || nf.nome || "");
         if (apelido) {
           if (!nfPorApelido.has(apelido)) nfPorApelido.set(apelido, []);
           nfPorApelido.get(apelido).push(nfInfo);
         }
 
-        // Índice por numeroPedidoLoja (fallback direto se vier preenchido)
+        // Índice por numeroPedidoLoja = pack_id do ML
         const pedidoLoja = String(nf.numeroPedidoLoja || "").trim();
-        if (pedidoLoja && !nfPorPedidoLoja.has(pedidoLoja)) {
-          nfPorPedidoLoja.set(pedidoLoja, nfInfo);
+        if (pedidoLoja && !nfPorPackId.has(pedidoLoja)) {
+          nfPorPackId.set(pedidoLoja, nfInfo);
         }
       }
 
@@ -157,10 +149,8 @@ export default async function handler(req, res) {
       await sleep(350);
     }
 
-    // 4) Para cada pedido cancelado, tenta confirmar a NF via detalhe do Bling
-    // Busca em lotes de 5 paralelos pra não estourar rate limit
-    async function confirmarNFPorPedido(numeroPedido, nfCandidatas) {
-      // Testa cada NF candidata buscando o detalhe e verificando numeroPedidoLoja
+    // 4) Confirmação via detalhe do Bling: verifica numeroPedidoLoja === pack_id
+    async function confirmarNFPorPackId(packId, nfCandidatas) {
       for (const nfInfo of nfCandidatas) {
         try {
           const r = await fetch(
@@ -170,13 +160,13 @@ export default async function handler(req, res) {
           if (!r.ok) continue;
           const d = await r.json();
           const pedidoLojaNF = String(d.data?.numeroPedidoLoja || "").trim();
-          if (pedidoLojaNF === numeroPedido) return nfInfo; // match confirmado!
-        } catch(e) { /* ignora erro individual */ }
+          if (pedidoLojaNF === packId) return nfInfo;
+        } catch(e) { /* ignora */ }
       }
-      return null; // nenhuma bateu
+      return null;
     }
 
-    // Processa em lotes de 5 pedidos paralelos
+    // 5) Processa pedidos em lotes de 5 paralelos
     const itens = [];
     const loteSize = 5;
 
@@ -185,34 +175,31 @@ export default async function handler(req, res) {
 
       const resultados = await Promise.all(lote.map(async pedido => {
         const numeroPedido = String(pedido.id);
+        // pack_id é o que o Bling usa como numeroPedidoLoja
+        const packId = String(pedido.pack_id || pedido.id || "").trim();
         const valor = pedido.total_amount || 0;
         const nick = (pedido.buyer?.nickname || "").toLowerCase().trim();
         const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
         const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
         const produto = pedido.order_items?.[0]?.item?.title || "—";
 
-        // Detecta trânsito pelo campo shipping que já vem no objeto
+        // Detecta trânsito
         const transitoStatus = detectarTransito(pedido);
 
-        // Tenta match direto por numeroPedidoLoja primeiro (mais rápido)
-        let nf = nfPorPedidoLoja.get(numeroPedido) || null;
+        // Match direto pelo pack_id no índice da listagem
+        let nf = nfPorPackId.get(packId) || null;
 
-        // Se não achou direto, tenta por apelido com confirmação via detalhe do Bling
+        // Se não achou direto, tenta por apelido confirmando via detalhe
         if (!nf && nick) {
           const candidatas = nfPorApelido.get(nick) || [];
-          if (candidatas.length === 1) {
-            // Só uma NF do comprador — confirma via detalhe
-            nf = await confirmarNFPorPedido(numeroPedido, candidatas);
-          } else if (candidatas.length > 1) {
-            // Várias NFs do mesmo comprador — confirma via detalhe obrigatoriamente
-            nf = await confirmarNFPorPedido(numeroPedido, candidatas);
+          if (candidatas.length > 0) {
+            nf = await confirmarNFPorPackId(packId, candidatas);
           }
         }
 
-        // Determina status final
+        // Status final
         let status;
         if (transitoStatus) {
-          // Tem devolução em andamento — independente da NF
           status = "em_transito";
         } else if (!nf) {
           status = "sem_nf";
@@ -222,12 +209,7 @@ export default async function handler(req, res) {
           status = "nf_pendente";
         }
 
-        return {
-          numeroPedido, comprador, produto, valor, dataCancelamento, nf, status,
-          // debug: expõe shipment_status pra validar
-          _shipStatus: pedido.shipping?.status || pedido.shipments?.status || null,
-          _statusDetail: pedido.status_detail || null,
-        };
+        return { numeroPedido, comprador, produto, valor, dataCancelamento, nf, status };
       }));
 
       itens.push(...resultados);
@@ -236,7 +218,7 @@ export default async function handler(req, res) {
 
     const notasEncontradas = itens.filter(it => it.nf).length;
 
-    // 5) Ordena: em_transito primeiro (avisar), nf_pendente, sem_nf, nf_cancelada por último
+    // 6) Ordena: em_transito, nf_pendente, sem_nf, nf_cancelada
     const ordemStatus = { em_transito: 0, nf_pendente: 1, sem_nf: 2, nf_cancelada: 3 };
     itens.sort((a, b) => {
       const ds = (ordemStatus[a.status] ?? 9) - (ordemStatus[b.status] ?? 9);
