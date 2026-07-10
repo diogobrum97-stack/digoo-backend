@@ -33,7 +33,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // DEBUG: inspeciona campos de um pedido específico
+  // DEBUG: pedido específico
   if (req.query.debug_pedido) {
     try {
       const pedidoId = req.query.debug_pedido;
@@ -53,52 +53,53 @@ export default async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
-  // DEBUG: inspeciona listagem do Bling
+  // DEBUG: testa confirmação via detalhe do Bling pra SOSINFOMADALENA1
   if (req.query.debug_bling) {
-  try {
-    const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
-    const blingToken2 = await blingR2.json();
-    const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
-    const blingDate = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
-    
-    // Busca listagem
-    const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=100&dataEmissaoInicial=${blingDate}&tipo=1`, { headers: blingH2 });
-    const d = await r.json();
-    
-    // Monta índice por apelido
-    const idx = new Map();
-    for (const nf of (d.data||[])) {
-      const m = String(nf.contato?.nome||"").match(/\(([^)]+)\)\s*$/);
-      const apelido = m ? m[1].toLowerCase().trim() : null;
-      if (apelido) {
-        if (!idx.has(apelido)) idx.set(apelido, []);
-        idx.get(apelido).push({ id: nf.id, numero: nf.numero });
-      }
-    }
-    
-    // Testa confirmação pra SOSINFOMADALENA1
-    const nick = "sosinfomadalena1";
-    const orderId = "2000017320898144";
-    const candidatas = idx.get(nick) || [];
-    
-    const resultados = [];
-    for (const c of candidatas) {
-      const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${c.id}`, { headers: blingH2 });
-      const dd = await dr.json();
-      resultados.push({
-        nfId: c.id,
-        numero: c.numero,
-        numeroPedidoLoja: dd.data?.numeroPedidoLoja,
-        bate: String(dd.data?.numeroPedidoLoja||"") === orderId,
-        status_http: dr.status,
-      });
-    }
-    
-    return res.json({ candidatas_encontradas: candidatas.length, resultados });
-  } catch(e) { return res.status(500).json({ error: e.message }); }
-}
+    try {
+      const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken2 = await blingR2.json();
+      const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
+      const blingDate = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
 
-  // DEBUG: inspeciona campos do orders/search
+      const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=100&dataEmissaoInicial=${blingDate}&tipo=1`, { headers: blingH2 });
+      const d = await r.json();
+
+      const idx = new Map();
+      for (const nf of (d.data||[])) {
+        const m = String(nf.contato?.nome||"").match(/\(([^)]+)\)\s*$/);
+        const apelido = m ? m[1].toLowerCase().trim() : null;
+        if (apelido) {
+          if (!idx.has(apelido)) idx.set(apelido, []);
+          idx.get(apelido).push({ id: nf.id, numero: nf.numero });
+        }
+      }
+
+      const nick = "sosinfomadalena1";
+      const orderId = "2000017320898144";
+      const candidatas = idx.get(nick) || [];
+
+      const resultados = [];
+      for (const c of candidatas) {
+        const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${c.id}`, { headers: blingH2 });
+        const dd = await dr.json();
+        resultados.push({
+          nfId: c.id,
+          numero: c.numero,
+          numeroPedidoLoja: dd.data?.numeroPedidoLoja,
+          bate: String(dd.data?.numeroPedidoLoja||"") === orderId,
+          status_http: dr.status,
+        });
+      }
+
+      return res.json({
+        candidatas_encontradas: candidatas.length,
+        resultados,
+        total_nfs_listagem: d.data?.length,
+      });
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+
+  // DEBUG: campos do orders/search
   if (req.query.debug_search) {
     try {
       const mlR2 = await fetch(`${process.env.FIREBASE_URL}/ml_token.json`);
@@ -115,8 +116,6 @@ export default async function handler(req, res) {
       const primeiro = d2.results?.[0] || {};
       return res.json({
         campos_disponiveis: Object.keys(primeiro),
-        shipping_raw: primeiro.shipping,
-        payments_raw: primeiro.payments,
         tags: primeiro.tags,
         mediations: primeiro.mediations,
         status_detail: primeiro.status_detail,
@@ -138,11 +137,11 @@ export default async function handler(req, res) {
     if (!mlToken?.access_token) return res.status(401).json({ error: "ML Matriz não conectado" });
     if (!blingToken?.access_token) return res.status(401).json({ error: "Bling não conectado" });
 
-    const mlHeaders   = { Authorization: `Bearer ${mlToken.access_token}` };
+    const mlHeaders    = { Authorization: `Bearer ${mlToken.access_token}` };
     const blingHeaders = { Authorization: `Bearer ${blingToken.access_token}`, Accept: "application/json" };
 
     const dias = parseInt(req.query.dias || "30");
-    const dateFrom     = new Date(Date.now() - dias*86400000).toISOString().slice(0,10) + "T00:00:00.000-03:00";
+    const dateFrom      = new Date(Date.now() - dias*86400000).toISOString().slice(0,10) + "T00:00:00.000-03:00";
     const blingDateFrom = new Date(Date.now() - dias*86400000).toISOString().slice(0,10);
 
     // 1) ID do vendedor ML
@@ -163,10 +162,10 @@ export default async function handler(req, res) {
     }
 
     // 3) Busca NFs do Bling — até 5 páginas de 100
-    // Índice por apelido (extraído do nome do contato) → [nfInfo, ...]
-    const nfPorApelido  = new Map();
-    // Índice por numeroPedidoLoja (order_id do ML) → nfInfo (se vier na listagem)
-    const nfPorOrderId  = new Map();
+    // nfPorApelido: apelido → [nfInfo, ...]
+    // nfPorOrderId: numeroPedidoLoja (se vier na listagem) → nfInfo
+    const nfPorApelido = new Map();
+    const nfPorOrderId = new Map();
 
     for (let pagina = 1; pagina <= 5; pagina++) {
       const url = `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDateFrom}&tipo=1`;
@@ -178,13 +177,12 @@ export default async function handler(req, res) {
 
       for (const nf of notas) {
         const nfInfo = {
-          nfNumero:   nf.numero,
-          nfSituacao: parseSituacao(nf.situacao),
-          nfId:       nf.id,
+          nfNumero:    nf.numero,
+          nfSituacao:  parseSituacao(nf.situacao),
+          nfId:        nf.id,
           dataEmissao: nf.dataEmissao || null,
         };
 
-        // Índice por apelido — tenta contato.nome primeiro, depois nome direto
         const nomeContato = nf.contato?.nome || nf.nome || "";
         const apelido = extrairApelido(nomeContato);
         if (apelido) {
@@ -192,11 +190,8 @@ export default async function handler(req, res) {
           nfPorApelido.get(apelido).push(nfInfo);
         }
 
-        // Índice por numeroPedidoLoja (só se vier preenchido na listagem)
         const pedidoLoja = String(nf.numeroPedidoLoja || "").trim();
-        if (pedidoLoja) {
-          nfPorOrderId.set(pedidoLoja, nfInfo);
-        }
+        if (pedidoLoja) nfPorOrderId.set(pedidoLoja, nfInfo);
       }
 
       if (notas.length < 100) break;
@@ -204,7 +199,7 @@ export default async function handler(req, res) {
     }
 
     // 4) Confirmação via detalhe do Bling
-    // numeroPedidoLoja no detalhe = order_id do ML (confirmado nos testes)
+    // numeroPedidoLoja no detalhe = order_id do ML
     async function confirmarNFPorOrderId(orderId, candidatas) {
       for (const nfInfo of candidatas) {
         try {
@@ -218,7 +213,7 @@ export default async function handler(req, res) {
       return null;
     }
 
-    // 5) Processa pedidos em lotes de 5 paralelos
+    // 5) Processa em lotes de 5 paralelos
     const itens = [];
 
     for (let i = 0; i < cancelados.length; i += 5) {
@@ -233,10 +228,10 @@ export default async function handler(req, res) {
         const produto   = pedido.order_items?.[0]?.item?.title || "—";
         const emTransito = detectarTransito(pedido);
 
-        // Tenta match direto pelo order_id no índice da listagem
+        // Match direto pelo order_id no índice da listagem
         let nf = nfPorOrderId.get(orderId) || null;
 
-        // Se não achou direto, tenta por apelido confirmando via detalhe
+        // Se não achou, tenta por apelido confirmando via detalhe
         if (!nf && nick) {
           const candidatas = nfPorApelido.get(nick) || [];
           if (candidatas.length > 0) {
