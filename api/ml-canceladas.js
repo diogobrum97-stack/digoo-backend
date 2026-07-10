@@ -22,11 +22,11 @@ function parseSituacao(s) {
 }
 
 function detectarTransito(pedido) {
-  // Usa APENAS mediations — é o campo mais confiável e vem no search
-  // Cancelamento simples: mediations = []
-  // Devolução ativa: mediations tem ao menos 1 item
-  const mediations = pedido.mediations;
-  if (Array.isArray(mediations) && mediations.length > 0) return true;
+  // A tag "delivered" indica que o produto foi fisicamente entregue/devolvido
+  // Cancelamento simples: sem "delivered" nas tags (produto nunca saiu)
+  // Devolução em andamento: tem "delivered" (produto voltou ou está voltando)
+  const tags = pedido.tags || [];
+  if (Array.isArray(tags) && tags.includes("delivered")) return true;
   return false;
 }
 
