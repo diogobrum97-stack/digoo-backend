@@ -172,61 +172,46 @@ export default async function handler(req, res) {
       await sleep(350);
     }
 
-    // 4) Confirmação da NF por janela temporal
-    // A NF correta foi emitida DEPOIS da criação do pedido e ANTES (ou até 2h após) do cancelamento
-    // Isso evita falso positivo quando o comprador tem mais de uma NF no período
-    function confirmarNFPorTempo(pedido, candidatas) {
-      const criadoEm  = new Date(pedido.date_created || 0).getTime();
-
-      // Janela: desde a criação do pedido até 24h depois
-      // A NF é emitida logo após a venda ser confirmada — sempre dentro de algumas horas
-      // O cancelamento pode vir dias depois, então não usamos ele como referência
-      const janelaDe  = criadoEm;
-      const janelaAte = criadoEm + (24 * 60 * 60 * 1000); // 24h após criação do pedido
-
-      // Filtra candidatas que têm dataEmissao dentro da janela
-      const dentroJanela = candidatas.filter(nf => {
-        if (!nf.dataEmissao) return false;
-        const emitidaEm = new Date(nf.dataEmissao.replace(" ", "T") + "-03:00").getTime();
-        return emitidaEm >= janelaDe && emitidaEm <= janelaAte;
-      });
-
-      if (dentroJanela.length === 0) return null;
-      if (dentroJanela.length === 1) return dentroJanela[0];
-
-      // Se ainda tem mais de uma dentro da janela, pega a mais próxima da criação do pedido
-      dentroJanela.sort((a, b) => {
-        const ta = new Date(a.dataEmissao.replace(" ", "T") + "-03:00").getTime();
-        const tb = new Date(b.dataEmissao.replace(" ", "T") + "-03:00").getTime();
-        return Math.abs(ta - criadoEm) - Math.abs(tb - criadoEm);
-      });
-      return dentroJanela[0];
+    // 4) Confirmação via detalhe do Bling
+    // numeroPedidoLoja no Bling = order_id do ML (confirmado nos testes)
+    // Busca em lotes de 5 paralelos para não estourar rate limit
+    async function confirmarNFPorOrderId(orderId, candidatas) {
+      for (const nfInfo of candidatas) {
+        try {
+          const r = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfInfo.nfId}`, { headers: blingHeaders });
+          if (!r.ok) continue;
+          const d = await r.json();
+          const numeroPedidoLoja = String(d.data?.numeroPedidoLoja || "").trim();
+          if (numeroPedidoLoja === orderId) return nfInfo;
+        } catch(e) { /* ignora */ }
+      }
+      return null;
     }
 
-    // 5) Processa pedidos em lotes de 10 paralelos (sem req extra, tudo em memória)
+    // 5) Processa pedidos em lotes de 5 paralelos
     const itens = [];
 
-    for (let i = 0; i < cancelados.length; i += 10) {
-      const lote = cancelados.slice(i, i + 10);
+    for (let i = 0; i < cancelados.length; i += 5) {
+      const lote = cancelados.slice(i, i + 5);
 
-      const resultados = lote.map(pedido => {
-        const orderId  = String(pedido.id || "");
-        const packId   = String(pedido.pack_id || "");
-        const nick     = (pedido.buyer?.nickname || "").toLowerCase().trim();
+      const resultados = await Promise.all(lote.map(async pedido => {
+        const orderId   = String(pedido.id || "");
+        const nick      = (pedido.buyer?.nickname || "").toLowerCase().trim();
         const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
-        const valor    = pedido.total_amount || 0;
+        const valor     = pedido.total_amount || 0;
         const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
-        const produto  = pedido.order_items?.[0]?.item?.title || "—";
+        const produto   = pedido.order_items?.[0]?.item?.title || "—";
         const emTransito = detectarTransito(pedido);
 
-        // Tenta match direto pelo numeroPedidoLoja (pack_id ou order_id)
-        let nf = nfPorPackId.get(packId) || nfPorPackId.get(orderId) || null;
+        // Match direto pelo order_id no índice da listagem (numeroPedidoLoja)
+        let nf = nfPorPackId.get(orderId) || null;
 
-        // Se não achou direto, tenta por apelido com confirmação por janela temporal
+        // Se não achou direto, tenta por apelido confirmando via detalhe do Bling
+        // O detalhe retorna numeroPedidoLoja que bate exato com o order_id do ML
         if (!nf && nick) {
           const candidatas = nfPorApelido.get(nick) || [];
           if (candidatas.length > 0) {
-            nf = confirmarNFPorTempo(pedido, candidatas);
+            nf = await confirmarNFPorOrderId(orderId, candidatas);
           }
         }
 
@@ -242,9 +227,10 @@ export default async function handler(req, res) {
         }
 
         return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status };
-      });
+      }));
 
       itens.push(...resultados);
+      if (i + 5 < cancelados.length) await sleep(300);
     }
 
     const notasEncontradas = itens.filter(it => it.nf).length;
