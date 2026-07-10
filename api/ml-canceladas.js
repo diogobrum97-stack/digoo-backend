@@ -177,12 +177,12 @@ export default async function handler(req, res) {
     // Isso evita falso positivo quando o comprador tem mais de uma NF no período
     function confirmarNFPorTempo(pedido, candidatas) {
       const criadoEm  = new Date(pedido.date_created || 0).getTime();
-      const canceladoEm = new Date(pedido.last_updated || pedido.date_closed || 0).getTime();
 
-      // Janela: desde a criação do pedido até 2h após o cancelamento
-      // (2h de margem pra NF emitida ligeiramente depois do cancelamento por atraso de sistema)
+      // Janela: desde a criação do pedido até 24h depois
+      // A NF é emitida logo após a venda ser confirmada — sempre dentro de algumas horas
+      // O cancelamento pode vir dias depois, então não usamos ele como referência
       const janelaDe  = criadoEm;
-      const janelaAte = canceladoEm + (30 * 60 * 1000); // 30 min de margem
+      const janelaAte = criadoEm + (24 * 60 * 60 * 1000); // 24h após criação do pedido
 
       // Filtra candidatas que têm dataEmissao dentro da janela
       const dentroJanela = candidatas.filter(nf => {
