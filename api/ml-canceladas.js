@@ -53,7 +53,7 @@ export default async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
-  // DEBUG: shipment específico
+  // DEBUG: shipment específico com return_details e sibling
   if (req.query.debug_shipment) {
     try {
       const mlR2 = await fetch(`${process.env.FIREBASE_URL}/ml_token.json`);
@@ -61,11 +61,20 @@ export default async function handler(req, res) {
       const headers2 = { Authorization: `Bearer ${mlToken2.access_token}` };
       const sr = await fetch(`https://api.mercadolibre.com/shipments/${req.query.debug_shipment}`, { headers: headers2 });
       const sd = await sr.json();
+      // Busca sibling (shipment de devolução) se existir
+      let sibling = null;
+      if (sd.sibling) {
+        const sibRes = await fetch(`https://api.mercadolibre.com/shipments/${sd.sibling}`, { headers: headers2 });
+        sibling = await sibRes.json();
+      }
       return res.json({
         status_http: sr.status,
         shipment_status: sd.status,
         shipment_substatus: sd.substatus,
-        campos: Object.keys(sd),
+        return_details: sd.return_details,
+        sibling_id: sd.sibling,
+        sibling_status: sibling?.status,
+        sibling_substatus: sibling?.substatus,
       });
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
