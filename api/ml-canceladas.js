@@ -53,17 +53,32 @@ export default async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
-  // DEBUG: testa confirmação via detalhe do Bling pra SOSINFOMADALENA1
+  // DEBUG: shipment específico
+  if (req.query.debug_shipment) {
+    try {
+      const mlR2 = await fetch(`${process.env.FIREBASE_URL}/ml_token.json`);
+      const mlToken2 = await mlR2.json();
+      const headers2 = { Authorization: `Bearer ${mlToken2.access_token}` };
+      const sr = await fetch(`https://api.mercadolibre.com/shipments/${req.query.debug_shipment}`, { headers: headers2 });
+      const sd = await sr.json();
+      return res.json({
+        status_http: sr.status,
+        shipment_status: sd.status,
+        shipment_substatus: sd.substatus,
+        campos: Object.keys(sd),
+      });
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+
+  // DEBUG: listagem Bling
   if (req.query.debug_bling) {
     try {
       const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
       const blingToken2 = await blingR2.json();
       const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
       const blingDate = new Date(Date.now() - 30*86400000).toISOString().slice(0,10);
-
       const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=100&dataEmissaoInicial=${blingDate}&tipo=1`, { headers: blingH2 });
       const d = await r.json();
-
       const idx = new Map();
       for (const nf of (d.data||[])) {
         const m = String(nf.contato?.nome||"").match(/\(([^)]+)\)\s*$/);
@@ -73,19 +88,14 @@ export default async function handler(req, res) {
           idx.get(apelido).push({ id: nf.id, numero: nf.numero });
         }
       }
-
-      // DEBUG: mostra apelidos extraídos e busca LUDIMILA
       const todos_nomes = (d.data||[]).map(nf => nf.contato?.nome || nf.nome || "");
-      const ludimila = todos_nomes.filter(n => /ludimila/i.test(n));
-      const amostra = (d.data||[]).slice(0,10).map(nf => ({
-        numero: nf.numero,
-        nome_raw: nf.contato?.nome || nf.nome || null,
-      }));
       return res.json({
         total_nfs_listagem: d.data?.length,
-        nomes_com_ludimila: ludimila,
         todos_apelidos_idx: [...idx.keys()].slice(0, 40),
-        amostra_10: amostra,
+        amostra_10: (d.data||[]).slice(0,10).map(nf => ({
+          numero: nf.numero,
+          nome_raw: nf.contato?.nome || nf.nome || null,
+        })),
       });
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
@@ -153,10 +163,8 @@ export default async function handler(req, res) {
     }
 
     // 3) Busca NFs do Bling — até 5 páginas de 100
-    // nfPorApelido: apelido → [nfInfo, ...]
-    // nfPorOrderId: numeroPedidoLoja (se vier na listagem) → nfInfo
-    const nfPorApelido = new Map();
-    const nfPorOrderId = new Map();
+    const nfPorApelido = new Map(); // apelido → [nfInfo, ...]
+    const nfPorPackId  = new Map(); // numeroPedidoLoja (pack_id) → nfInfo
 
     for (let pagina = 1; pagina <= 5; pagina++) {
       const url = `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDateFrom}&tipo=1`;
@@ -182,7 +190,7 @@ export default async function handler(req, res) {
         }
 
         const pedidoLoja = String(nf.numeroPedidoLoja || "").trim();
-        if (pedidoLoja) nfPorOrderId.set(pedidoLoja, nfInfo);
+        if (pedidoLoja) nfPorPackId.set(pedidoLoja, nfInfo);
       }
 
       if (notas.length < 100) break;
@@ -190,8 +198,8 @@ export default async function handler(req, res) {
     }
 
     // 4) Confirmação via detalhe do Bling
-    // numeroPedidoLoja no detalhe = order_id do ML
-    async function confirmarNFPorOrderId(packId, candidatas) {
+    // numeroPedidoLoja no detalhe = pack_id do ML
+    async function confirmarNF(packId, candidatas) {
       for (const nfInfo of candidatas) {
         try {
           const r = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfInfo.nfId}`, { headers: blingHeaders });
@@ -212,22 +220,23 @@ export default async function handler(req, res) {
 
       const resultados = await Promise.all(lote.map(async pedido => {
         const orderId   = String(pedido.id || "");
+        const packId    = String(pedido.pack_id || "").trim();
         const nick      = (pedido.buyer?.nickname || "").toLowerCase().trim();
         const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
         const valor     = pedido.total_amount || 0;
         const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
         const produto   = pedido.order_items?.[0]?.item?.title || "—";
         const emTransito = detectarTransito(pedido);
+        const shipmentId = pedido.shipping?.id || null;
 
-        // Match direto pelo pack_id no índice da listagem (pack_id = numeroPedidoLoja no Bling)
-        const packId = String(pedido.pack_id || "").trim();
-        let nf = nfPorOrderId.get(packId) || null;
+        // Match direto pelo pack_id
+        let nf = (packId ? nfPorPackId.get(packId) : null) || null;
 
-        // Se não achou, tenta por apelido confirmando via detalhe do Bling
+        // Se não achou direto, tenta por apelido confirmando via detalhe
         if (!nf && nick) {
           const candidatas = nfPorApelido.get(nick) || [];
           if (candidatas.length > 0) {
-            nf = await confirmarNFPorOrderId(packId, candidatas);
+            nf = await confirmarNF(packId, candidatas);
           }
         }
 
@@ -237,33 +246,31 @@ export default async function handler(req, res) {
         } else if (/cancelad/i.test(String(nf.nfSituacao))) {
           status = "nf_cancelada";
         } else if (emTransito) {
-          status = "em_transito";
+          status = "em_transito"; // refinado depois com shipment
         } else {
           status = "nf_pendente";
         }
 
-        const _shipmentId = pedido.shipping?.id || null;
-        return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status, _shipmentId };
+        return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status, _shipmentId: shipmentId };
       }));
 
       itens.push(...resultados);
       if (i + 5 < cancelados.length) await sleep(300);
     }
 
-    // 6) Para os em_transito, busca shipment_status real pra diferenciar
-    //    "em_transito" → ainda voltando (aguardar)
-    //    "devolucao_recebida" → produto chegou, pode cancelar NF
+    // 6) Refina em_transito buscando shipment_status real
+    // Se shipment_status === "delivered" → devolucao_recebida (pode cancelar NF)
+    // Outros → mantém em_transito (ainda voltando)
     const emTransitoItens = itens.filter(it => it.status === "em_transito" && it._shipmentId);
     if (emTransitoItens.length > 0) {
       await Promise.all(emTransitoItens.map(async it => {
         try {
           const sr = await fetch(`https://api.mercadolibre.com/shipments/${it._shipmentId}`, { headers: mlHeaders });
+          if (!sr.ok) return; // mantém em_transito se erro
           const sd = await sr.json();
-          const shipStatus = sd.status || "";
-          if (shipStatus === "delivered") {
+          if (sd.status === "delivered") {
             it.status = "devolucao_recebida";
           }
-          // shipped, in_transit, to_be_agreed, ready_to_ship → mantém em_transito
         } catch(e) { /* mantém em_transito */ }
       }));
     }
