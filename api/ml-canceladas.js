@@ -267,27 +267,10 @@ export default async function handler(req, res) {
       if (i + 5 < cancelados.length) await sleep(300);
     }
 
-    // 6) Refina em_transito buscando shipment_status real
-    // Se shipment_status === "delivered" → devolucao_recebida (pode cancelar NF)
-    // Outros → mantém em_transito (ainda voltando)
-    const emTransitoItens = itens.filter(it => it.status === "em_transito" && it._shipmentId);
-    if (emTransitoItens.length > 0) {
-      await Promise.all(emTransitoItens.map(async it => {
-        try {
-          const sr = await fetch(`https://api.mercadolibre.com/shipments/${it._shipmentId}`, { headers: mlHeaders });
-          if (!sr.ok) return; // mantém em_transito se erro
-          const sd = await sr.json();
-          if (sd.status === "delivered") {
-            it.status = "devolucao_recebida";
-          }
-        } catch(e) { /* mantém em_transito */ }
-      }));
-    }
-
     const notasEncontradas = itens.filter(it => it.nf).length;
 
-    // 7) Ordena: nf_pendente, devolucao_recebida, em_transito, nf_cancelada, sem_nf
-    const ordemStatus = { nf_pendente: 0, devolucao_recebida: 1, em_transito: 2, nf_cancelada: 3, sem_nf: 4 };
+    // 6) Ordena: nf_pendente, em_transito, nf_cancelada, sem_nf
+    const ordemStatus = { nf_pendente: 0, em_transito: 1, nf_cancelada: 2, sem_nf: 3 };
     itens.sort((a, b) => {
       const ds = (ordemStatus[a.status] ?? 9) - (ordemStatus[b.status] ?? 9);
       if (ds !== 0) return ds;
