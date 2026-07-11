@@ -242,17 +242,36 @@ export default async function handler(req, res) {
           status = "nf_pendente";
         }
 
-        return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status };
+        const _shipmentId = pedido.shipping?.id || null;
+        return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status, _shipmentId };
       }));
 
       itens.push(...resultados);
       if (i + 5 < cancelados.length) await sleep(300);
     }
 
+    // 6) Para os em_transito, busca shipment_status real pra diferenciar
+    //    "em_transito" → ainda voltando (aguardar)
+    //    "devolucao_recebida" → produto chegou, pode cancelar NF
+    const emTransitoItens = itens.filter(it => it.status === "em_transito" && it._shipmentId);
+    if (emTransitoItens.length > 0) {
+      await Promise.all(emTransitoItens.map(async it => {
+        try {
+          const sr = await fetch(`https://api.mercadolibre.com/shipments/${it._shipmentId}`, { headers: mlHeaders });
+          const sd = await sr.json();
+          const shipStatus = sd.status || "";
+          if (shipStatus === "delivered") {
+            it.status = "devolucao_recebida";
+          }
+          // shipped, in_transit, to_be_agreed, ready_to_ship → mantém em_transito
+        } catch(e) { /* mantém em_transito */ }
+      }));
+    }
+
     const notasEncontradas = itens.filter(it => it.nf).length;
 
-    // 6) Ordena: nf_pendente, em_transito, nf_cancelada, sem_nf
-    const ordemStatus = { nf_pendente: 0, em_transito: 1, nf_cancelada: 2, sem_nf: 3 };
+    // 7) Ordena: nf_pendente, devolucao_recebida, em_transito, nf_cancelada, sem_nf
+    const ordemStatus = { nf_pendente: 0, devolucao_recebida: 1, em_transito: 2, nf_cancelada: 3, sem_nf: 4 };
     itens.sort((a, b) => {
       const ds = (ordemStatus[a.status] ?? 9) - (ordemStatus[b.status] ?? 9);
       if (ds !== 0) return ds;
