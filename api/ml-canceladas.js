@@ -33,7 +33,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // DEBUG: pedido específico
+  // DEBUG: pedido específico + claims
   if (req.query.debug_pedido) {
     try {
       const pedidoId = req.query.debug_pedido;
@@ -42,6 +42,13 @@ export default async function handler(req, res) {
       const headers2 = { Authorization: `Bearer ${mlToken2.access_token}` };
       const pedidoRes = await fetch(`https://api.mercadolibre.com/orders/${pedidoId}`, { headers: headers2 });
       const pedido = await pedidoRes.json();
+      // Busca claims do pedido
+      let claims = null;
+      try {
+        const cr = await fetch(`https://api.mercadolibre.com/post-purchase/v1/claims/search?order_id=${pedidoId}`, { headers: headers2 });
+        const cd = await cr.json();
+        claims = (cd.data||[]).map(c => ({ id: c.id, type: c.type, stage: c.stage, status: c.status, resolution: c.resolution?.reason }));
+      } catch(e) { claims = { error: e.message }; }
       return res.json({
         pedido_status: pedido.status,
         pack_id: pedido.pack_id,
@@ -49,6 +56,7 @@ export default async function handler(req, res) {
         tags: pedido.tags,
         payments_status: (pedido.payments||[]).map(p=>p?.status),
         pedido_shipping_raw: pedido.shipping||null,
+        claims,
       });
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
