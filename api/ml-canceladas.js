@@ -126,6 +126,45 @@ export default async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
+  // DEBUG: inspeciona NF pelo número (saída tipo=1 ou entrada tipo=2)
+  if (req.query.debug_nf) {
+    try {
+      const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken2 = await blingR2.json();
+      const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
+      const blingDate = new Date(Date.now() - 120*86400000).toISOString().slice(0,10);
+      const numero = req.query.debug_nf;
+      const resultados = [];
+      for (const tipo of [1, 2]) {
+        for (let pagina = 1; pagina <= 5; pagina++) {
+          const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDate}&tipo=${tipo}`, { headers: blingH2 });
+          const d = await r.json();
+          const notas = d.data || [];
+          const encontrada = notas.find(n => String(n.numero) === String(numero));
+          if (encontrada) {
+            // Busca detalhe completo
+            const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${encontrada.id}`, { headers: blingH2 });
+            const dd = await dr.json();
+            resultados.push({
+              tipo,
+              numero: encontrada.numero,
+              id: encontrada.id,
+              situacao: encontrada.situacao,
+              contato_nome: encontrada.contato?.nome,
+              apelido_extraido: (() => { const m = String(encontrada.contato?.nome||"").match(/\(([^)]+)\)\s*$/); return m ? m[1].toLowerCase().trim() : null; })(),
+              numeroPedidoLoja_listagem: encontrada.numeroPedidoLoja,
+              numeroPedidoLoja_detalhe: dd.data?.numeroPedidoLoja,
+              dataEmissao: encontrada.dataEmissao,
+            });
+            break;
+          }
+          if (notas.length < 100) break;
+        }
+      }
+      return res.json({ numero_buscado: numero, resultados });
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+
   // DEBUG: listagem Bling
   if (req.query.debug_bling) {
     try {
