@@ -126,6 +126,30 @@ export default async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
+  // DEBUG: pedidos de venda Bling cancelados
+  if (req.query.debug_pedidos_bling) {
+    try {
+      const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken2 = await blingR2.json();
+      const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
+      const blingDate = new Date(Date.now() - 120*86400000).toISOString().slice(0,10);
+      // situacao 9 = cancelado no Bling
+      const r = await fetch(`https://www.bling.com.br/Api/v3/pedidos/vendas?pagina=1&limite=10&dataInicial=${blingDate}&situacao=9`, { headers: blingH2 });
+      const d = await r.json();
+      const pedidos = (d.data || []).slice(0, 5).map(p => ({
+        _campos: Object.keys(p),
+        id: p.id,
+        numero: p.numero,
+        situacao: p.situacao,
+        numeroPedidoLoja: p.numeroPedidoLoja,
+        contato_nome: p.contato?.nome,
+        data: p.data,
+        totalProdutos: p.totalProdutos,
+      }));
+      return res.json({ status: r.status, total: d.data?.length, pedidos, erro: d.error || null });
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+
   // DEBUG: lista primeiras NFs de entrada (tipo=0) cruas
   if (req.query.debug_entrada) {
     try {
@@ -164,7 +188,7 @@ export default async function handler(req, res) {
           const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDate}&tipo=${tipo}`, { headers: blingH2 });
           const d = await r.json();
           const notas = d.data || [];
-          const encontrada = notas.find(n => String(n.numero) === String(numero));
+          const encontrada = notas.find(n => String(n.numero).replace(/^0+/,"") === String(numero).replace(/^0+/,""));
           if (encontrada) {
             // Busca detalhe completo
             const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${encontrada.id}`, { headers: blingH2 });
