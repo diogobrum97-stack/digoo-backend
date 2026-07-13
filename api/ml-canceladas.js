@@ -137,12 +137,13 @@ export default async function handler(req, res) {
       const r = await fetch(`https://www.bling.com.br/Api/v3/pedidos/vendas?pagina=1&limite=10&dataInicial=${blingDate}&situacao=9`, { headers: blingH2 });
       const d = await r.json();
       const pedidos = (d.data || []).slice(0, 5).map(p => ({
-        _campos: Object.keys(p),
         id: p.id,
         numero: p.numero,
+        numeroLoja: p.numeroLoja,
         situacao: p.situacao,
         numeroPedidoLoja: p.numeroPedidoLoja,
         contato_nome: p.contato?.nome,
+        apelido: (() => { const m = String(p.contato?.nome||"").match(/\(([^)]+)\)\s*$/); return m ? m[1].toLowerCase().trim() : null; })(),
         data: p.data,
         totalProdutos: p.totalProdutos,
       }));
