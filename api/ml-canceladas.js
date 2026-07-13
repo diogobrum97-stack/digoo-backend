@@ -103,14 +103,38 @@ export default async function handler(req, res) {
       }
       const temJoyce = apelidos.includes("joycecostanascimento");
       const temLudimila = apelidos.includes("ludimilafarinazo");
+      // Mostra detalhes das NFs de joyce e ludimila se encontradas
+      const nfsDetalhe = (d.data||[])
+        .filter(n => {
+          const m = String(n.contato?.nome||"").match(/\(([^)]+)\)\s*$/);
+          const ap = m ? m[1].toLowerCase().trim() : null;
+          return ap === "joycecostanascimento" || ap === "ludimilafarinazo";
+        })
+        .map(n => ({ id: n.id, numero: n.numero, contato_nome: n.contato?.nome, numeroPedidoLoja: n.numeroPedidoLoja }));
+
+      // Testa confirmação via detalhe pra joyce
+      const joycePack = "2000013680506389";
+      const resultadosConfirmacao = [];
+      for (const nf of nfsDetalhe) {
+        const dr = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nf.id}`, { headers: blingH2 });
+        const dd = await dr.json();
+        resultadosConfirmacao.push({
+          nfId: nf.id,
+          numero: nf.numero,
+          numeroPedidoLoja_detalhe: dd.data?.numeroPedidoLoja,
+          bate_joyce: String(dd.data?.numeroPedidoLoja||"") === joycePack,
+          status_http: dr.status,
+        });
+      }
+
       return res.json({
         pagina,
         status_http: r.status,
         total_nfs: d.data?.length,
         tem_joycecostanascimento: temJoyce,
         tem_ludimilafarinazo: temLudimila,
-        numeros_nfs: (d.data||[]).map(n => n.numero),
-        apelidos_encontrados: apelidos,
+        nfs_joyce_ludimila: nfsDetalhe,
+        confirmacao_detalhe: resultadosConfirmacao,
       });
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
