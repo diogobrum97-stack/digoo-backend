@@ -182,7 +182,7 @@ export default async function handler(req, res) {
     const nfPorPackId  = new Map();
     let paginasBling = 0;
 
-    for (let pagina = 1; pagina <= 5; pagina++) {
+    for (let pagina = 1; pagina <= 8; pagina++) {
       const url = `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${blingDateFrom}&tipo=1`;
       const r = await fetch(url, { headers: blingHeaders });
       if (!r.ok) {
