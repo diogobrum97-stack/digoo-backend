@@ -255,50 +255,44 @@ export default async function handler(req, res) {
       return null;
     }
 
-    // 5) Processa em lotes de 5 paralelos
+    // 5) Processa pedidos de forma serial para não estourar rate limit do Bling
     const itens = [];
 
-    for (let i = 0; i < cancelados.length; i += 5) {
-      const lote = cancelados.slice(i, i + 5);
+    for (const pedido of cancelados) {
+      const orderId   = String(pedido.id || "");
+      const packId    = String(pedido.pack_id || "").trim();
+      const nick      = (pedido.buyer?.nickname || "").toLowerCase().trim();
+      const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
+      const valor     = pedido.total_amount || 0;
+      const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
+      const produto   = pedido.order_items?.[0]?.item?.title || "—";
+      const emTransito = detectarTransito(pedido);
+      const shipmentId = pedido.shipping?.id || null;
 
-      const resultados = await Promise.all(lote.map(async pedido => {
-        const orderId   = String(pedido.id || "");
-        const packId    = String(pedido.pack_id || "").trim();
-        const nick      = (pedido.buyer?.nickname || "").toLowerCase().trim();
-        const comprador = pedido.buyer?.nickname || pedido.buyer?.first_name || "—";
-        const valor     = pedido.total_amount || 0;
-        const dataCancelamento = pedido.last_updated || pedido.date_closed || null;
-        const produto   = pedido.order_items?.[0]?.item?.title || "—";
-        const emTransito = detectarTransito(pedido);
-        const shipmentId = pedido.shipping?.id || null;
+      // Match direto pelo pack_id no índice da listagem
+      let nf = (packId ? nfPorPackId.get(packId) : null) || null;
 
-        // Match direto pelo pack_id
-        let nf = (packId ? nfPorPackId.get(packId) : null) || null;
-
-        // Se não achou direto, tenta por apelido confirmando via detalhe
-        if (!nf && nick) {
-          const candidatas = nfPorApelido.get(nick) || [];
-          if (candidatas.length > 0) {
-            nf = await confirmarNF(packId, candidatas);
-          }
+      // Se não achou direto, tenta por apelido confirmando via detalhe do Bling
+      if (!nf && nick) {
+        const candidatas = nfPorApelido.get(nick) || [];
+        if (candidatas.length > 0) {
+          nf = await confirmarNF(packId, candidatas);
+          if (nf) await sleep(200); // pausa após cada confirmação bem-sucedida
         }
+      }
 
-        let status;
-        if (!nf) {
-          status = "sem_nf";
-        } else if (/cancelad/i.test(String(nf.nfSituacao))) {
-          status = "nf_cancelada";
-        } else if (emTransito) {
-          status = "em_transito";
-        } else {
-          status = "nf_pendente";
-        }
+      let status;
+      if (!nf) {
+        status = "sem_nf";
+      } else if (/cancelad/i.test(String(nf.nfSituacao))) {
+        status = "nf_cancelada";
+      } else if (emTransito) {
+        status = "em_transito";
+      } else {
+        status = "nf_pendente";
+      }
 
-        return { numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status, _shipmentId: shipmentId };
-      }));
-
-      itens.push(...resultados);
-      if (i + 5 < cancelados.length) await sleep(300);
+      itens.push({ numeroPedido: orderId, comprador, produto, valor, dataCancelamento, nf, status, _shipmentId: shipmentId });
     }
 
     const notasEncontradas = itens.filter(it => it.nf).length;
