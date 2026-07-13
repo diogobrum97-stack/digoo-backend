@@ -126,6 +126,43 @@ export default async function handler(req, res) {
     } catch(e) { return res.status(500).json({ error: e.message }); }
   }
 
+  // DEBUG: lista primeiras NFs de entrada (tipo=2) cruas
+  if (req.query.debug_entrada) {
+    try {
+      const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken2 = await blingR2.json();
+      const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
+      const blingDate = new Date(Date.now() - 120*86400000).toISOString().slice(0,10);
+      const r = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=10&dataEmissaoInicial=${blingDate}&tipo=2`, { headers: blingH2 });
+      const d = await r.json();
+      // Retorna as notas cruas pra ver todos os campos disponíveis
+      const notas = (d.data || []).slice(0, 3).map(n => ({
+        _campos: Object.keys(n),
+        id: n.id,
+        numero: n.numero,
+        numero_raw: n.numero,
+        tipo: n.tipo,
+        situacao: n.situacao,
+        contato: n.contato,
+        numeroPedidoLoja: n.numeroPedidoLoja,
+        dataEmissao: n.dataEmissao,
+        naturezaOperacao: n.naturezaOperacao,
+      }));
+      // Também testa sem filtro de tipo pra ver se tipo=2 existe
+      const r2 = await fetch(`https://www.bling.com.br/Api/v3/nfe?pagina=1&limite=5&dataEmissaoInicial=${blingDate}`, { headers: blingH2 });
+      const d2 = await r2.json();
+      const semFiltro = (d2.data || []).slice(0, 3).map(n => ({ id: n.id, numero: n.numero, tipo: n.tipo, natureza: n.naturezaOperacao?.nome }));
+      return res.json({
+        status_tipo2: r.status,
+        total_tipo2: d.data?.length,
+        notas_tipo2: notas,
+        status_sem_filtro: r2.status,
+        notas_sem_filtro: semFiltro,
+        erro_tipo2: d.error || null,
+      });
+    } catch(e) { return res.status(500).json({ error: e.message }); }
+  }
+
   // DEBUG: inspeciona NF pelo número (saída tipo=1 ou entrada tipo=2)
   if (req.query.debug_nf) {
     try {
