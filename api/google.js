@@ -207,10 +207,13 @@ export default async function handler(req, res) {
       }
       const emailsTexto = emails.map(e => `${e.from} ${e.subject}`).join(" ").toLowerCase();
       const driveTexto  = drive.arquivos.map(a => a.name).join(" ").toLowerCase();
+      const tudo        = emailsTexto + " " + driveTexto;
+
       const checklist = FORNECEDORES_FIXOS.map(f => {
-        const nome = f.nome.toLowerCase();
-        const cnpj = f.cnpj.replace(/\D/g, "");
-        const encontrado = emailsTexto.includes(nome) || driveTexto.includes(nome) || driveTexto.includes(cnpj);
+        const cnpjLimpo  = f.cnpj.replace(/\D/g, ""); // só dígitos
+        const cnpjParcial = cnpjLimpo.slice(0, 8); // primeiros 8 dígitos (raiz do CNPJ)
+        // Busca pelo CNPJ completo (com ou sem formatação) ou pelos primeiros 8 dígitos (raiz)
+        const encontrado = tudo.includes(cnpjLimpo) || tudo.includes(f.cnpj) || tudo.includes(cnpjParcial);
         return { ...f, encontrado };
       });
       return res.json({
