@@ -298,6 +298,14 @@ Retorne APENAS JSON válido neste formato exato:
         emailsLidos: todosIds.length,
         arquivosDrive: arquivosDrive.length,
         pastaDrive: subpasta ? `NFS-e ${nomeMes}` : null,
+        _debug: {
+          msgsNFSeCount: msgsNFSe.length,
+          msgsResiconCount: msgsResicon.length,
+          todosIdsCount: todosIds.length,
+          dtInicio, dtFim,
+          subpastaEncontrada: !!subpasta,
+          emailsSubjects: emailsTexto.map(e => e.subject),
+        },
         ...resultado,
       });
     }
