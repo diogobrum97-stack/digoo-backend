@@ -184,6 +184,34 @@ export default async function handler(req, res) {
     const dtInicio = `${ano}/${mesNum}/01`;
     const dtFim    = `${ano}/${mesNum}/31`;
 
+    // ── Debug Gmail ───────────────────────────────────────────
+    if (action === "debug_gmail") {
+      // Testa se o token funciona e busca emails de NFS-e
+      const meRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+        headers: { Authorization: `Bearer ${at}` }
+      });
+      const me = await meRes.json();
+      // Testa a query de NFS-e
+      const q1 = `NFS-e after:${ano}/${mesNum}/01 before:${ano}/${mesNum}/31`;
+      const r1 = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(q1)}&maxResults=10`, { headers: { Authorization: `Bearer ${at}` } });
+      const d1 = await r1.json();
+      // Testa query mais ampla
+      const q2 = `after:${ano}/${mesNum}/01 before:${ano}/${mesNum}/31 from:osasco`;
+      const r2 = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(q2)}&maxResults=5`, { headers: { Authorization: `Bearer ${at}` } });
+      const d2 = await r2.json();
+      return res.json({ email: me.emailAddress, q1, q1_count: d1.messages?.length || 0, q1_status: r1.status, q2, q2_count: d2.messages?.length || 0 });
+    }
+
+    // ── Debug Drive ───────────────────────────────────────────
+    if (action === "debug_drive") {
+      const PASTA_PAI = "1urmoc9OshM2NMU4SwET24bDFcxNly1XU";
+      // Lista tudo na pasta pai
+      const q = encodeURIComponent(`'${PASTA_PAI}' in parents and trashed=false`);
+      const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType)&pageSize=20`, { headers: { Authorization: `Bearer ${at}` } });
+      const d = await r.json();
+      return res.json({ status: r.status, files: d.files, error: d.error });
+    }
+
     // ── Buscar NFS-e ─────────────────────────────────────────
     if (action === "buscar") {
       if (!ANTHROPIC_KEY) throw new Error("ANTHROPIC_API_KEY não configurada");
