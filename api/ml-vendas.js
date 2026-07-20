@@ -6,11 +6,9 @@ module.exports = async function handler(req, res) {
 
   let token = req.query.token;
 
-  // Modo "estoque": se não vier token na URL, busca automaticamente o token
-  // da Filial salvo no Firebase — igual o bling-produtos.js já faz com o
-  // Bling. Assim dá pra testar essa URL direto no navegador sem precisar
-  // copiar/colar token manualmente.
-  if (req.query.estoque && !token && process.env.FIREBASE_URL) {
+  // Busca token da Filial automaticamente do Firebase se não vier na URL
+  // (usado pelos modos estoque e custos que operam na conta da Filial)
+  if ((req.query.estoque || req.query.custos) && !token && process.env.FIREBASE_URL) {
     try {
       const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
       const tData = await tR.json();
@@ -73,14 +71,6 @@ module.exports = async function handler(req, res) {
   // Modo "custos": busca custo unitário por SKU nos dados fiscais dos anúncios
   // Usado pelo cálculo de CMP — busca token da Filial automaticamente
   if (req.query.custos) {
-    if (!token && process.env.FIREBASE_URL) {
-      try {
-        const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
-        const tData = await tR.json();
-        token = tData?.access_token;
-      } catch(e) {}
-    }
-    if (!token) return res.status(401).json({ error: "Token ausente" });
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers });
