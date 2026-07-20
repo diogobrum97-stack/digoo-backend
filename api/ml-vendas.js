@@ -70,6 +70,72 @@ module.exports = async function handler(req, res) {
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+  // Modo "custos": busca custo unitário por SKU nos dados fiscais dos anúncios
+  // Usado pelo cálculo de CMP — busca token da Filial automaticamente
+  if (req.query.custos) {
+    if (!token && process.env.FIREBASE_URL) {
+      try {
+        const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
+        const tData = await tR.json();
+        token = tData?.access_token;
+      } catch(e) {}
+    }
+    if (!token) return res.status(401).json({ error: "Token ausente" });
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ error: "Token inválido" });
+
+      const skusFiltro = (req.query.skus || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+
+      // Lista anúncios ativos + pausados
+      let itemIds = [];
+      for (const status of ["active", "paused"]) {
+        let offset = 0;
+        for (let page = 0; page < 5; page++) {
+          const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=${status}&limit=100&offset=${offset}`, { headers });
+          const d = await r.json();
+          const results = d.results || [];
+          itemIds.push(...results);
+          if (results.length < 100) break;
+          offset += 100;
+        }
+      }
+      itemIds = [...new Set(itemIds)];
+
+      // Busca detalhe de cada item (inclui cost nos fiscal_data)
+      const custoPorSku = {};
+      for (let i = 0; i < Math.min(itemIds.length, 200); i += 10) {
+        const lote = itemIds.slice(i, i + 10);
+        const resultados = await Promise.all(lote.map(async id => {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/items/${id}`, { headers });
+            return await r.json();
+          } catch(e) { return null; }
+        }));
+        for (const d of resultados) {
+          if (!d?.id) continue;
+          const sku = d.seller_sku || (d.attributes||[]).find(a=>a.id==="SELLER_SKU")?.value_name;
+          if (!sku) continue;
+          const skuKey = String(sku).trim().toLowerCase();
+          // Só processa SKUs que estamos buscando (se filtro informado)
+          if (skusFiltro.length > 0 && !skusFiltro.includes(skuKey)) continue;
+          // Custo vem em sale_terms como "COST_PRICE" ou em cost diretamente
+          const costTerm = (d.sale_terms||[]).find(t => t.id === "COST_PRICE");
+          const cost = costTerm?.value_struct?.amount ?? costTerm?.value_name ?? d.cost ?? null;
+          if (!custoPorSku[skuKey] && cost != null) {
+            custoPorSku[skuKey] = { sku, cost: parseFloat(cost) || 0, item_id: d.id };
+          }
+        }
+      }
+
+      return res.json({ ok: true, custos: custoPorSku });
+    } catch(e) {
+      return res.status(500).json({ error: e.message });
+    }
+  }
+
   // Modo "estoque": puxa o saldo do Full automaticamente, sem precisar da
   // planilha manual. Fica no mesmo arquivo/rota do ml-vendas pra não gastar
   // mais uma Serverless Function (limite de 12 no plano Hobby da Vercel).
