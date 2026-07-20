@@ -117,6 +117,14 @@ module.exports = async function handler(req, res) {
           if (!custoPorSku[skuKey] && cost != null) {
             custoPorSku[skuKey] = { sku, cost: parseFloat(cost) || 0, item_id: d.id };
           }
+          // Debug: mostra campos disponíveis nos primeiros 3 itens com SKU filtrado
+          if (req.query.debug && skusFiltro.includes(skuKey)) {
+            custoPorSku[`_debug_${skuKey}`] = {
+              sale_terms: d.sale_terms,
+              cost: d.cost,
+              costTerm,
+            };
+          }
         }
       }
 
