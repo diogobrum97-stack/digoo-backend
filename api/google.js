@@ -199,56 +199,49 @@ Content-Type: ${mimeType}
       });
     }
 
-    // Extrair dados de PDF via texto (pdf-parse) + regex — sem depender de IA
+    // Extrair dados de PDF via Claude API (backend tem a chave)
     if(action === "extractPdf") {
       const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
       const { base64, nome } = body;
-      console.log("extractPdf chamado — body keys:", Object.keys(body), "base64 length:", base64?.length || 0);
-      if(!base64) return res.status(400).json({error:"base64 obrigatório", bodyKeys: Object.keys(body), bodyType: typeof req.body});
+      if(!base64) return res.status(400).json({error:"base64 obrigatório"});
+
+      // Tenta os dois nomes possíveis da variável (com e sem typo)
+      const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPI_API_KEY;
+      if(!ANTHROPIC_KEY) return res.status(500).json({error:"ANTHROPIC_API_KEY não configurada"});
 
       try {
-        const { createRequire } = await import("module");
-        const require = createRequire(import.meta.url);
-        const pdfParse = require("pdf-parse");
-        const pdfBuffer = Buffer.from(base64, "base64");
-        const data = await pdfParse(pdfBuffer);
-        const texto = data.text || "";
+        const iaResp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "pdfs-2024-09-25"
+          },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 200,
+            messages: [{
+              role: "user",
+              content: [
+                { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
+                { type: "text", text: `Extraia deste documento fiscal brasileiro:
+1. O valor total líquido em reais (número apenas, ex: 2225.00)
+2. A competência no formato MM/AAAA — use a data de emissão se não houver competência explícita
 
-        // Extrair valor — busca "Valor Líquido" ou "Valor Total" ou "Valor do Serviço"
-        let valor = 0;
-        const valorPatterns = [
-          /Valor L[íi]quido da NFS-?e[\s\S]{0,30}R\$\s*([\d.,]+)/i,
-          /Valor L[íi]quido[\s\S]{0,20}R\$\s*([\d.,]+)/i,
-          /VALOR TOTAL[\s\S]{0,20}R\$\s*([\d.,]+)/i,
-          /Valor do Servi[çc]o[\s\S]{0,20}R\$\s*([\d.,]+)/i,
-          /R\$\s*([\d]{1,3}(?:\.\d{3})*,\d{2})/g,
-        ];
-        for(const pat of valorPatterns) {
-          const m = texto.match(pat);
-          if(m) {
-            const raw = m[1].replace(/\./g,"").replace(",",".");
-            const v = parseFloat(raw);
-            if(v > 0) { valor = v; break; }
-          }
-        }
+Responda APENAS em JSON sem texto extra:
+{"valor": 2225.00, "competencia": "07/2026"}` }
+              ]
+            }]
+          })
+        });
 
-        // Extrair competência — busca data de emissão ou competência
-        let competencia = "";
-        const compPatterns = [
-          /Compet[êe]ncia da NFS-?e[\s\S]{0,10}(\d{2}\/\d{2}\/\d{4})/i,
-          /Data[\s\S]{0,20}emiss[ãa]o[\s\S]{0,10}(\d{2}\/\d{2}\/\d{4})/i,
-          /(\d{2}\/\d{2}\/\d{4})/,
-        ];
-        for(const pat of compPatterns) {
-          const m = texto.match(pat);
-          if(m) {
-            const parts = m[1].split("/");
-            if(parts.length === 3) { competencia = `${parts[1]}/${parts[2]}`; break; }
-          }
-        }
-
-        console.log("extractPdf — valor:", valor, "comp:", competencia, "texto preview:", texto.slice(0,200));
-        return res.json({ ok: true, valor, competencia });
+        const iaData = await iaResp.json();
+        console.log("Claude response:", JSON.stringify(iaData).slice(0,300));
+        const texto = iaData.content?.[0]?.text || "{}";
+        const clean = texto.replace(/```json|```/g,"").trim();
+        const result = JSON.parse(clean);
+        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "" });
 
       } catch(e) {
         console.error("extractPdf error:", e.message);
