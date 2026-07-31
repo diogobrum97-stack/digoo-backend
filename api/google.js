@@ -125,6 +125,80 @@ export default async function handler(req, res) {
       return res.json({ ok: true, draftId: d.id });
     }
 
+
+    // Upload de arquivo para o Google Drive
+    if (action === "uploadDrive") {
+      const token = await getGoogleToken();
+      const body  = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      const { nome, base64: fileBase64, mimeType, pastaPath } = body;
+
+      // Garante/cria estrutura de pastas
+      async function getOrCreateFolder(name, parentId) {
+        const q = `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`;
+        const searchResp = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)`, {
+          headers: { Authorization: `Bearer ${token.access_token}` }
+        });
+        const searchData = await searchResp.json();
+        if(searchData.files && searchData.files.length > 0) return searchData.files[0].id;
+        const createResp = await fetch("https://www.googleapis.com/drive/v3/files", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token.access_token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: [parentId] })
+        });
+        const createData = await createResp.json();
+        return createData.id;
+      }
+
+      // Navega/cria pasta por path
+      let parentId = "root";
+      for(const part of pastaPath.split("/")) {
+        if(part.trim()) parentId = await getOrCreateFolder(part.trim(), parentId);
+      }
+
+      // Upload do arquivo
+      const fileBuffer = Buffer.from(fileBase64, "base64");
+      const boundary = "boundary_digoo_upload";
+      const metaJson = JSON.stringify({ name: nome, parents: [parentId] });
+      const multipart = Buffer.concat([
+        Buffer.from(`--${boundary}
+Content-Type: application/json; charset=UTF-8
+
+${metaJson}
+--${boundary}
+Content-Type: ${mimeType}
+
+`),
+        fileBuffer,
+        Buffer.from(`
+--${boundary}--`)
+      ]);
+      const uploadResp = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token.access_token}`,
+          "Content-Type": `multipart/related; boundary=${boundary}`,
+          "Content-Length": multipart.length
+        },
+        body: multipart
+      });
+      const uploadData = await uploadResp.json();
+      if(!uploadResp.ok) throw new Error(uploadData.error?.message || "Erro no upload");
+
+      // Tornar publico pra visualização no iframe
+      await fetch(`https://www.googleapis.com/drive/v3/files/${uploadData.id}/permissions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token.access_token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "reader", type: "anyone" })
+      });
+
+      return res.json({
+        ok: true,
+        driveId: uploadData.id,
+        driveUrl: uploadData.webViewLink,
+        viewUrl: `https://drive.google.com/file/d/${uploadData.id}/preview`
+      });
+    }
+
     return res.status(400).json({ error: "Ação inválida" });
 
   } catch(e) {
@@ -132,3 +206,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: e.message });
   }
 }
+
