@@ -3,10 +3,29 @@
     {
       "source": "/api/(.*)",
       "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" }
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type, Authorization"
+        }
       ]
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/ml-auth?action=refresh&conta=matriz&cron=1",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/ml-auth?action=refresh&conta=filial&cron=1",
+      "schedule": "5 * * * *"
     }
   ]
 }
