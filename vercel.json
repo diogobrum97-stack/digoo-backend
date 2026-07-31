@@ -17,15 +17,5 @@
         }
       ]
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/ml-auth?action=refresh&conta=matriz&cron=1",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/ml-auth?action=refresh&conta=filial&cron=1",
-      "schedule": "5 * * * *"
-    }
   ]
 }
