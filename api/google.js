@@ -207,7 +207,9 @@ Content-Type: ${mimeType}
       if(!base64) return res.status(400).json({error:"base64 obrigatório", bodyKeys: Object.keys(body), bodyType: typeof req.body});
 
       try {
-        const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
+        const { createRequire } = await import("module");
+        const require = createRequire(import.meta.url);
+        const pdfParse = require("pdf-parse");
         const pdfBuffer = Buffer.from(base64, "base64");
         const data = await pdfParse(pdfBuffer);
         const texto = data.text || "";
