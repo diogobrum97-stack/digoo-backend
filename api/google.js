@@ -1,4 +1,4 @@
-export const config = { maxDuration: 30 };
+export const config = { maxDuration: 30, api: { bodyParser: { sizeLimit: '10mb' } } };
 
 const FIREBASE_URL  = process.env.FIREBASE_URL;
 const CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
@@ -203,7 +203,8 @@ Content-Type: ${mimeType}
     if(action === "extractPdf") {
       const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
       const { base64, nome } = body;
-      if(!base64) return res.status(400).json({error:"base64 obrigatório"});
+      console.log("extractPdf chamado — body keys:", Object.keys(body), "base64 length:", base64?.length || 0);
+      if(!base64) return res.status(400).json({error:"base64 obrigatório", bodyKeys: Object.keys(body), bodyType: typeof req.body});
 
       try {
         const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
