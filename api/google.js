@@ -199,6 +199,52 @@ Content-Type: ${mimeType}
       });
     }
 
+    // Extrair dados de PDF via Claude API (backend tem a chave)
+    if(action === "extractPdf") {
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+      const { base64, nome } = body;
+      if(!base64) return res.status(400).json({error:"base64 obrigatório"});
+
+      const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+      if(!ANTHROPIC_KEY) return res.status(500).json({error:"ANTHROPIC_API_KEY não configurada"});
+
+      const iaResp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": ANTHROPIC_KEY,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "pdfs-2024-09-25"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 200,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
+              { type: "text", text: `Extraia deste documento fiscal brasileiro:
+1. O valor total líquido em reais (número apenas, ex: 2225.00)
+2. A competência no formato MM/AAAA — use a data de emissão se não houver competência explícita
+
+Responda APENAS em JSON sem texto extra:
+{"valor": 2225.00, "competencia": "07/2026"}` }
+            ]
+          }]
+        })
+      });
+
+      const iaData = await iaResp.json();
+      const texto = iaData.content?.[0]?.text || "{}";
+      const clean = texto.replace(/```json|```/g,"").trim();
+      try {
+        const result = JSON.parse(clean);
+        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "" });
+      } catch(e) {
+        return res.json({ ok: false, valor: 0, competencia: "", raw: texto });
+      }
+    }
+
     return res.status(400).json({ error: "Ação inválida" });
 
   } catch(e) {
