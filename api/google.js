@@ -201,7 +201,7 @@ Content-Type: ${mimeType}
 
     // Extrair dados de PDF via Claude API (backend tem a chave)
     // v2 — extrai prestador, numeroNF, cnpj
-    if(action === "extractPdf") {
+    if(action === "extractPdfV2" || action === "extractPdf") {
       const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
       const { base64, nome } = body;
       if(!base64) return res.status(400).json({error:"base64 obrigatório"});
