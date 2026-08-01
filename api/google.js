@@ -62,7 +62,7 @@ export default async function handler(req, res) {
     authUrl.searchParams.set("client_id",     CLIENT_ID);
     authUrl.searchParams.set("redirect_uri",  REDIRECT_URI);
     authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("scope",         "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.compose");
+    authUrl.searchParams.set("scope",         "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/drive.file");
     authUrl.searchParams.set("access_type",   "offline");
     authUrl.searchParams.set("prompt",        "consent");
     return res.redirect(authUrl.toString());
@@ -200,8 +200,7 @@ Content-Type: ${mimeType}
     }
 
     // Extrair dados de PDF via Claude API (backend tem a chave)
-    // v2 — extrai prestador, numeroNF, cnpj
-    if(action === "extractPdfV2" || action === "extractPdf") {
+    if(action === "extractPdf") {
       const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
       const { base64, nome } = body;
       if(!base64) return res.status(400).json({error:"base64 obrigatório"});
@@ -245,7 +244,7 @@ Responda APENAS em JSON sem texto extra:
         const texto = iaData.content?.[0]?.text || "{}";
         const clean = texto.replace(/```json|```/g,"").trim();
         const result = JSON.parse(clean);
-        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "", prestador: result.prestador || "", numeroNF: result.numeroNF || "", cnpj: result.cnpj || "" });
+        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "" });
 
       } catch(e) {
         console.error("extractPdf error:", e.message);
