@@ -220,17 +220,20 @@ Content-Type: ${mimeType}
           },
           body: JSON.stringify({
             model: "claude-haiku-4-5-20251001",
-            max_tokens: 200,
+            max_tokens: 300,
             messages: [{
               role: "user",
               content: [
                 { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
                 { type: "text", text: `Extraia deste documento fiscal brasileiro:
-1. O valor total líquido em reais (número apenas, ex: 2225.00)
-2. A competência no formato MM/AAAA — use a data de emissão se não houver competência explícita
+1. valor: valor total líquido em reais (número apenas, ex: 2225.00)
+2. competencia: no formato MM/AAAA — use a data de emissão se não houver competência explícita
+3. prestador: nome do emitente/prestador do serviço
+4. numeroNF: número da NF/NFS-e
+5. cnpj: CNPJ do emitente/prestador (formato XX.XXX.XXX/XXXX-XX)
 
 Responda APENAS em JSON sem texto extra:
-{"valor": 2225.00, "competencia": "07/2026"}` }
+{"valor": 2225.00, "competencia": "07/2026", "prestador": "Nome Empresa", "numeroNF": "12", "cnpj": "58.350.709/0001-05"}` }
               ]
             }]
           })
@@ -256,4 +259,5 @@ Responda APENAS em JSON sem texto extra:
     return res.status(500).json({ error: e.message });
   }
 }
+
 
