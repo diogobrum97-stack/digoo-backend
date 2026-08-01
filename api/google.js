@@ -244,7 +244,7 @@ Responda APENAS em JSON sem texto extra:
         const texto = iaData.content?.[0]?.text || "{}";
         const clean = texto.replace(/```json|```/g,"").trim();
         const result = JSON.parse(clean);
-        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "" });
+        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "", prestador: result.prestador || "", numeroNF: result.numeroNF || "", cnpj: result.cnpj || "" });
 
       } catch(e) {
         console.error("extractPdf error:", e.message);
