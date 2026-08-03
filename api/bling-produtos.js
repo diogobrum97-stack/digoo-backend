@@ -14,7 +14,15 @@ export default async function handler(req, res) {
   try {
     const r = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
     const token = await r.json();
-    if (!token || !token.access_token) throw new Error("Bling não conectado — rode oauth_bling.py");
+    if (!token || !token.access_token) throw new Error("Bling não conectado");
+    
+    // Verificar se o token expirou (expires_in é em segundos, saved_at em ms)
+    const savedAt = token.saved_at || 0;
+    const expiresIn = (token.expires_in || 3600) * 1000;
+    const expirou = Date.now() > savedAt + expiresIn - 60000; // 1 min de margem
+    if (expirou) {
+      return res.status(401).json({ erro: "Token Bling expirado — reconecte em Config → APIs" });
+    }
     const headers = {
       Authorization: `Bearer ${token.access_token}`,
       Accept: "application/json",
@@ -255,3 +263,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: e.message });
   }
 }
+
