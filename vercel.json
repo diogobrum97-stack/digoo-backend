@@ -21,7 +21,7 @@
   "crons": [
     {
       "path": "/api/ml-vendas?cron=prices",
-      "schedule": "0 5 * * *"
+      "schedule": "30 3 * * *"
     }
   ]
 }
