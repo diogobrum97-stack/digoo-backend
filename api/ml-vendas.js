@@ -8,7 +8,7 @@ module.exports = async function handler(req, res) {
 
   // Busca token da Filial automaticamente do Firebase se não vier na URL
   // (usado pelos modos estoque e custos que operam na conta da Filial)
-  if ((req.query.estoque || req.query.custos) && !token && process.env.FIREBASE_URL) {
+  if ((req.query.estoque || req.query.custos || req.query.action === "testads" || req.query.cron === "prices") && !token && process.env.FIREBASE_URL) {
     try {
       const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
       const tData = await tR.json();
