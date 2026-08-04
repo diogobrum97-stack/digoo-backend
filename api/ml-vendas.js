@@ -31,13 +31,20 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       const userId = me.id;
 
-      // Testar endpoint de campanhas
-      const adsRes = await fetch(
+      // Testar múltiplos endpoints de ADS
+      const endpoints = [
         `https://api.mercadolibre.com/advertising/product_ads/sellers/${userId}/campaigns?limit=3`,
-        { headers: { Authorization: `Bearer ${token.access_token}` } }
-      );
-      const adsData = await adsRes.json();
-      return res.json({ ok: true, status: adsRes.status, userId, adsData });
+        `https://api.mercadolibre.com/advertising/advertisers?seller_id=${userId}`,
+        `https://api.mercadolibre.com/advertising/product_ads/sellers/${userId}/ad_groups?limit=3`,
+      ];
+
+      const results = await Promise.all(endpoints.map(async url => {
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token.access_token}` } });
+        const data = await r.json();
+        return { url: url.replace(`https://api.mercadolibre.com`, ""), status: r.status, data };
+      }));
+
+      return res.json({ ok: true, userId, results });
     } catch(e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
