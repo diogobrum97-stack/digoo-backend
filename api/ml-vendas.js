@@ -18,6 +18,87 @@ module.exports = async function handler(req, res) {
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
+  // Modo "checkPrices": cron diário que detecta mudanças de preço e registra no Firebase
+  if (req.query.action === "checkPrices" || req.query.cron === "prices") {
+    const FIREBASE_URL = process.env.FIREBASE_URL;
+    try {
+      const tokenRes = await fetch(`${FIREBASE_URL}/ml_token_filial.json`);
+      const token = await tokenRes.json();
+      if (!token?.access_token) return res.json({ ok: false, msg: "Token Filial não encontrado" });
+
+      // Buscar preços atuais via prices=1
+      const pricesRes = await fetch(
+        `https://api.mercadolibre.com/users/me`,
+        { headers: { Authorization: `Bearer ${token.access_token}` } }
+      );
+      const me = await pricesRes.json();
+      if (!me.id) return res.json({ ok: false, msg: "Token inválido" });
+
+      // Buscar anúncios ativos e preços
+      let itemIds = [];
+      for (let page = 0; page < 3; page++) {
+        const r = await fetch(
+          `https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=100&offset=${page*100}`,
+          { headers: { Authorization: `Bearer ${token.access_token}` } }
+        );
+        const d = await r.json();
+        itemIds.push(...(d.results || []));
+        if ((d.results || []).length < 100) break;
+      }
+
+      const prices = [];
+      for (let i = 0; i < itemIds.length; i += 20) {
+        const chunk = itemIds.slice(i, i + 20);
+        const r = await fetch(
+          `https://api.mercadolibre.com/items?ids=${chunk.join(",")}&attributes=id,price,seller_sku,status`,
+          { headers: { Authorization: `Bearer ${token.access_token}` } }
+        );
+        const items = await r.json();
+        for (const { body } of items) {
+          if (body?.seller_sku) prices.push({ sku: body.seller_sku, price: body.price });
+        }
+      }
+
+      // Buscar last_known_prices do Firebase
+      const knownRes = await fetch(`${FIREBASE_URL}/last_known_prices.json`);
+      const known = (await knownRes.json()) || {};
+
+      const detected = [];
+      const updates = {};
+
+      for (const item of prices) {
+        const sku = item.sku;
+        const precoAtual = Number(item.price);
+        const precoConhecido = known[sku];
+        if (precoConhecido === undefined || precoConhecido === null) {
+          updates[`last_known_prices/${sku}`] = precoAtual;
+        } else if (Math.abs(Number(precoConhecido) - precoAtual) > 0.009) {
+          updates[`price_changes/${sku}`] = {
+            changedAt: Date.now(),
+            changedBy: "cron-automático",
+            priceBefore: Number(precoConhecido),
+            priceAfter: precoAtual,
+            vendas30AtChange: 0,
+          };
+          updates[`last_known_prices/${sku}`] = precoAtual;
+          detected.push({ sku, before: precoConhecido, after: precoAtual });
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await fetch(`${FIREBASE_URL}/.json`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+      }
+
+      return res.json({ ok: true, skusVerificados: prices.length, mudancasDetectadas: detected.length, mudancas: detected });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Modo "prices": lista preço atual de todos os anúncios ativos (sku, id, price).
   // Fica no mesmo arquivo/rota do ml-vendas pra não gastar mais uma Serverless
   // Function (limite de 12 no plano Hobby da Vercel). Usado pro acompanhamento
