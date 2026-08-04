@@ -18,6 +18,31 @@ module.exports = async function handler(req, res) {
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
+  // Modo "testads": testa acesso à API de ADS do ML
+  if (req.query.action === "testads") {
+    try {
+      const tokenRes = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
+      const token = await tokenRes.json();
+      if (!token?.access_token) return res.json({ ok: false, msg: "Token não encontrado" });
+
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", {
+        headers: { Authorization: `Bearer ${token.access_token}` }
+      });
+      const me = await meRes.json();
+      const userId = me.id;
+
+      // Testar endpoint de campanhas
+      const adsRes = await fetch(
+        `https://api.mercadolibre.com/advertising/product_ads/sellers/${userId}/campaigns?limit=3`,
+        { headers: { Authorization: `Bearer ${token.access_token}` } }
+      );
+      const adsData = await adsRes.json();
+      return res.json({ ok: true, status: adsRes.status, userId, adsData });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Modo "checkPrices": cron diário que detecta mudanças de preço e registra no Firebase
   if (req.query.action === "checkPrices" || req.query.cron === "prices") {
     const FIREBASE_URL = process.env.FIREBASE_URL;
@@ -510,5 +535,6 @@ module.exports = async function handler(req, res) {
 module.exports.config = {
   maxDuration: 60,
 };
+
 
 
