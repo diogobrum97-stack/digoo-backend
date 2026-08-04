@@ -287,7 +287,7 @@ module.exports = async function handler(req, res) {
     const totalOrders = countData.paging?.total || 0;
 
     // Busca primeiros 1000 pedidos em paralelo (lotes de 50, max 20 requisições)
-    const maxPages = Math.min(Math.ceil(totalOrders / 50), 20);
+    const maxPages = Math.min(Math.ceil(totalOrders / 50), 40); // até 2000 pedidos
     const pageRequests = [];
     for (let i = 0; i < maxPages; i++) {
       pageRequests.push(
@@ -423,3 +423,4 @@ module.exports = async function handler(req, res) {
 module.exports.config = {
   maxDuration: 60,
 };
+
