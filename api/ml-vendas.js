@@ -66,8 +66,8 @@ module.exports = async function handler(req, res) {
       if (!itemId) return res.json({ ok: false, msg: "Nenhum item encontrado" });
 
       const [expRes, perfRes] = await Promise.all([
-        fetch(`https://api.mercadolibre.com/reputation/items/${itemId}/purchase_experience/integrators`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`https://api.mercadolibre.com/user-product/${itemId}/performance`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`https://api.mercadolibre.com/reputation/items/${itemId}/purchase_experience/integrators?locale=pt_BR`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`https://api.mercadolibre.com/user-product/${itemId}/performance?locale=pt_BR`, { headers: { Authorization: `Bearer ${token}` } }),
       ]);
 
       return res.json({
