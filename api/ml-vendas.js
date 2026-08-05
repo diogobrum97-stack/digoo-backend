@@ -50,6 +50,65 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Modo "experiencia": busca experiência de compra de todos os itens ativos
+  if (req.query.action === "experiencia") {
+    try {
+      const meRes2 = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${token}` } });
+      const meData2 = await meRes2.json();
+      const uid = meData2.id;
+
+      // Buscar todos os itens ativos (até 200)
+      let allItems = [];
+      for(let offset = 0; offset < 200; offset += 50) {
+        const r = await fetch(
+          `https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=${offset}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const d = await r.json();
+        if(!d.results?.length) break;
+        allItems = allItems.concat(d.results);
+        if(d.results.length < 50) break;
+      }
+
+      // Buscar experiência de compra em paralelo (lotes de 20)
+      const results = [];
+      for(let i = 0; i < allItems.length; i += 20) {
+        const batch = allItems.slice(i, i + 20);
+        const batchResults = await Promise.all(batch.map(async itemId => {
+          try {
+            const r = await fetch(
+              `https://api.mercadolibre.com/reputation/items/${itemId}/purchase_experience/integrators?locale=pt_BR`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            const d = await r.json();
+            if(d.reputation) {
+              return {
+                itemId,
+                title: d.title?.text,
+                color: d.reputation.color,
+                level: d.reputation.text,
+                value: d.reputation.value,
+                actions: d.actions?.map(a => a.text) || [],
+                sku: d.up_id,
+              };
+            }
+            return null;
+          } catch(e) { return null; }
+        }));
+        results.push(...batchResults.filter(Boolean));
+      }
+
+      // Filtrar só os com problema (red ou yellow)
+      const problemas = results
+        .filter(r => r.color === "red" || r.color === "yellow")
+        .sort((a,b) => a.value - b.value); // pior primeiro
+
+      return res.json({ ok: true, total: allItems.length, problemas, todos: results.length });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Modo "testquality": testa endpoints de experiência de compra e performance
   if (req.query.action === "testquality") {
     try {
