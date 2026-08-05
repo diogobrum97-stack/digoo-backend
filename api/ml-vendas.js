@@ -53,9 +53,14 @@ module.exports = async function handler(req, res) {
   // Modo "testquality": testa acesso à API de qualidade de anúncio
   if (req.query.action === "testquality") {
     try {
+      // Buscar userId via /users/me
+      const meRes2 = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${token}` } });
+      const meData2 = await meRes2.json();
+      const uid = meData2.id;
+
       // Buscar um item do vendedor pra testar
       const itemsRes = await fetch(
-        `https://api.mercadolibre.com/users/${userId}/items/search?limit=1`,
+        `https://api.mercadolibre.com/users/${uid}/items/search?limit=1`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       const itemsData = await itemsRes.json();
