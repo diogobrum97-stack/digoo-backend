@@ -383,11 +383,15 @@ module.exports = async function handler(req, res) {
       dateToStr = toD.toISOString().split(".")[0] + ".000-03:00";
       days = Math.max(1, Math.ceil((toD - fromD) / 86400000));
     } else if (req.query.today === "1") {
-      // Só o dia atual — 00:00 até agora
+      // Só o dia atual em BRT (UTC-3) — 00:00 até agora
       days = 1;
-      const hoje = new Date();
-      dateFromStr = hoje.toISOString().split("T")[0] + "T00:00:00.000-03:00";
-      dateToStr = hoje.toISOString().split("T")[0] + "T" + hoje.toTimeString().slice(0,8) + ".000-03:00";
+      const agora = new Date();
+      // Converter para BRT subtraindo 3h
+      const agoraBRT = new Date(agora.getTime() - 3 * 60 * 60 * 1000);
+      const dataBRT = agoraBRT.toISOString().split("T")[0];
+      const horaBRT = agoraBRT.toISOString().split("T")[1].slice(0,8);
+      dateFromStr = `${dataBRT}T00:00:00.000-03:00`;
+      dateToStr = `${dataBRT}T${horaBRT}.000-03:00`;
     } else {
       days = parseInt(req.query.days || "7");
       const dateTo = new Date();
