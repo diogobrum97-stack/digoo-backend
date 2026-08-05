@@ -122,11 +122,35 @@ module.exports = async function handler(req, res) {
         });
       }
 
+      // Buscar detalhes de problemas para cada item problemático
+      const problemasComDetalhes = await Promise.all(
+        problemasBrutos.map(async p => {
+          let detalhes = [];
+          try {
+            const dr = await fetch(
+              `https://api.mercadolibre.com/reputation/items/${p.itemId}/purchase_experience/problems?locale=pt_BR`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            const dd = await dr.json();
+            if(Array.isArray(dd)) {
+              detalhes = dd.map(prob => ({
+                tipo: prob.type?.text || prob.label || "",
+                descricao: prob.description?.text || prob.title?.text || "",
+                comoMelhorar: prob.solution?.text || prob.how_to_improve?.text || "",
+                quantidade: prob.quantity || prob.count || 0,
+                acao: prob.action?.text || "",
+              }));
+            }
+          } catch(e) {}
+          return { ...p, detalhes };
+        })
+      );
+
       // Montar lista com detalhes e deduplicar por up_id (catálogo + tradicional)
       const vistos = new Set();
       const problemas = [];
-      for(const p of problemasBrutos) {
-        const chave = p.sku; // up_id retornado pela API de experiência
+      for(const p of problemasComDetalhes) {
+        const chave = p.sku;
         if(vistos.has(chave)) continue;
         vistos.add(chave);
         problemas.push({
