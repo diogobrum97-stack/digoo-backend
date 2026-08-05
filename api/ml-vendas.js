@@ -50,6 +50,38 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // Modo "testquality": testa acesso à API de qualidade de anúncio
+  if (req.query.action === "testquality") {
+    try {
+      // Buscar um item do vendedor pra testar
+      const itemsRes = await fetch(
+        `https://api.mercadolibre.com/users/${userId}/items/search?limit=1`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const itemsData = await itemsRes.json();
+      const itemId = itemsData?.results?.[0];
+      if (!itemId) return res.json({ ok: false, msg: "Nenhum item encontrado" });
+
+      // Testar endpoint de qualidade
+      const qualRes = await fetch(
+        `https://api.mercadolibre.com/items/${itemId}/quality`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const qualData = await qualRes.json();
+
+      // Testar endpoint de health
+      const healthRes = await fetch(
+        `https://api.mercadolibre.com/items/${itemId}/health`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const healthData = await healthRes.json();
+
+      return res.json({ ok: true, itemId, quality: { status: qualRes.status, data: qualData }, health: { status: healthRes.status, data: healthData } });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Modo "checkPrices": cron diário que detecta mudanças de preço e registra no Firebase
   if (req.query.action === "checkPrices" || req.query.cron === "prices") {
     const FIREBASE_URL = process.env.FIREBASE_URL;
