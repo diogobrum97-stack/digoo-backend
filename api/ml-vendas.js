@@ -50,15 +50,13 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // Modo "testquality": testa acesso à API de qualidade de anúncio
+  // Modo "testquality": testa endpoints de experiência de compra e performance
   if (req.query.action === "testquality") {
     try {
-      // Buscar userId via /users/me
       const meRes2 = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${token}` } });
       const meData2 = await meRes2.json();
       const uid = meData2.id;
 
-      // Buscar um item do vendedor pra testar
       const itemsRes = await fetch(
         `https://api.mercadolibre.com/users/${uid}/items/search?limit=1`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -67,21 +65,16 @@ module.exports = async function handler(req, res) {
       const itemId = itemsData?.results?.[0];
       if (!itemId) return res.json({ ok: false, msg: "Nenhum item encontrado" });
 
-      // Testar endpoint de qualidade
-      const qualRes = await fetch(
-        `https://api.mercadolibre.com/items/${itemId}/quality`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const qualData = await qualRes.json();
+      const [expRes, perfRes] = await Promise.all([
+        fetch(`https://api.mercadolibre.com/reputation/items/${itemId}/purchase_experience/integrators`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`https://api.mercadolibre.com/user-product/${itemId}/performance`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
 
-      // Testar endpoint de health
-      const healthRes = await fetch(
-        `https://api.mercadolibre.com/items/${itemId}/health`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      const healthData = await healthRes.json();
-
-      return res.json({ ok: true, itemId, quality: { status: qualRes.status, data: qualData }, health: { status: healthRes.status, data: healthData } });
+      return res.json({
+        ok: true, itemId,
+        experiencia: { status: expRes.status, data: await expRes.json() },
+        performance: { status: perfRes.status, data: await perfRes.json() },
+      });
     } catch(e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
