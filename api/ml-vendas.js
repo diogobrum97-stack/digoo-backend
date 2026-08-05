@@ -99,9 +99,35 @@ module.exports = async function handler(req, res) {
       }
 
       // Filtrar só os com problema (red ou yellow)
-      const problemas = results
+      const problemasBrutos = results
         .filter(r => r.color === "red" || r.color === "yellow")
-        .sort((a,b) => a.value - b.value); // pior primeiro
+        .sort((a,b) => a.value - b.value);
+
+      // Buscar título e SKU real dos itens problemáticos
+      const itemIds = problemasBrutos.map(p => p.itemId).join(",");
+      let itemDetails = {};
+      if(itemIds) {
+        const detRes = await fetch(
+          `https://api.mercadolibre.com/items?ids=${itemIds}&attributes=id,title,seller_custom_field`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const detData = await detRes.json();
+        detData.forEach(d => {
+          if(d.code === 200) {
+            itemDetails[d.body.id] = {
+              title: d.body.title,
+              sku: d.body.seller_custom_field || d.body.id,
+            };
+          }
+        });
+      }
+
+      const problemas = problemasBrutos.map(p => ({
+        ...p,
+        title: itemDetails[p.itemId]?.title || p.title,
+        sku: itemDetails[p.itemId]?.sku || p.sku,
+        link: `https://www.mercadolivre.com.br/anuncio/${p.itemId}`,
+      }));
 
       return res.json({ ok: true, total: allItems.length, problemas, todos: results.length });
     } catch(e) {
