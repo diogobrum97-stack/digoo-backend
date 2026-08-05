@@ -122,12 +122,20 @@ module.exports = async function handler(req, res) {
         });
       }
 
-      const problemas = problemasBrutos.map(p => ({
-        ...p,
-        title: itemDetails[p.itemId]?.title || p.title,
-        sku: itemDetails[p.itemId]?.sku || p.sku,
-        link: `https://www.mercadolivre.com.br/anuncio/${p.itemId}`,
-      }));
+      // Montar lista com detalhes e deduplicar por up_id (catálogo + tradicional)
+      const vistos = new Set();
+      const problemas = [];
+      for(const p of problemasBrutos) {
+        const chave = p.sku; // up_id retornado pela API de experiência
+        if(vistos.has(chave)) continue;
+        vistos.add(chave);
+        problemas.push({
+          ...p,
+          title: itemDetails[p.itemId]?.title || p.title,
+          sku: itemDetails[p.itemId]?.sku || p.itemId,
+          link: `https://www.mercadolivre.com.br/anuncio/${p.itemId}`,
+        });
+      }
 
       return res.json({ ok: true, total: allItems.length, problemas, todos: results.length });
     } catch(e) {
