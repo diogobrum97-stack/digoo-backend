@@ -46,42 +46,46 @@ module.exports = async function handler(req, res) {
       const inventoryIds = (r2.data || []).map(i => i.body?.inventory_id).filter(Boolean);
       const sampleInventoryId = inventoryIds[0] || null;
 
-      // 3. Buscar TODOS inventory_ids dos 73 itens (em batches de 20)
-      const allItemIds = r1.data?.results || [];
-      const allBatches = [];
-      for (let i = 0; i < allItemIds.length; i += 20) allBatches.push(allItemIds.slice(i, i+20));
-      const allDetails = [];
-      for (const batch of allBatches) {
-        const br = await safeJson(await fetch(`https://api.mercadolibre.com/items?ids=${batch.join(",")}&attributes=id,title,inventory_id`, { headers: { Authorization: `Bearer ${tk}` } }));
-        if (br.data) allDetails.push(...br.data);
-      }
-      const allInventoryIds = allDetails.map(i => i.body?.inventory_id).filter(Boolean);
-
-      // 4. Para cada inventory_id, buscar inbound_reception dos últimos 60 dias
+      // 3. Testar endpoints alternativos de inbound/envio pendente
       const dateFrom = new Date(Date.now() - 60*24*60*60*1000).toISOString().slice(0,10);
-      const dateTo   = new Date(Date.now() + 24*60*60*1000).toISOString().slice(0,10);
-      const inboundResults = [];
-      for (const invId of allInventoryIds) {
-        const r = await safeJson(await fetch(
-          `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=inbound_reception&date_from=${dateFrom}&date_to=${dateTo}&limit=10`,
-          { headers: { Authorization: `Bearer ${tk}` } }
-        ));
-        if (r.status === 200 && r.data?.results?.length) {
-          const item = allDetails.find(i => i.body?.inventory_id === invId);
-          inboundResults.push({
-            inventory_id: invId,
-            title: item?.body?.title || null,
-            item_id: item?.body?.id || null,
-            operations: r.data.results,
-          });
-        }
-      }
+      const dateTo   = new Date(Date.now() + 2*24*60*60*1000).toISOString().slice(0,10);
+
+      // a) shipments com logística fulfillment — pedidos de envio ao armazém
+      const ra = await safeJson(await fetch(
+        `https://api.mercadolibre.com/shipments/search?seller_id=${uid}&type=inbound&date_created_from=${dateFrom}&date_created_to=${dateTo}&limit=10`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      // b) withdrawals — saques/retiradas
+      const rb = await safeJson(await fetch(
+        `https://api.mercadolibre.com/withdrawals/search?seller_id=${uid}&limit=5`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      // c) stock/fulfillment/inbound_shipments
+      const rc = await safeJson(await fetch(
+        `https://api.mercadolibre.com/stock/fulfillment/inbound_shipments?seller_id=${uid}&limit=5`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      // d) fbm/inbounds — outro padrão de URL usado em alguns países
+      const rd = await safeJson(await fetch(
+        `https://api.mercadolibre.com/fbm/inbounds?seller_id=${uid}&limit=5`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      // e) seller/inbounds
+      const re = await safeJson(await fetch(
+        `https://api.mercadolibre.com/seller/${uid}/inbounds?limit=5`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
 
       return res.json({ ok: true, uid,
-        total_items: allItemIds.length,
-        total_with_inventory_id: allInventoryIds.length,
-        inbound_reception_count: inboundResults.length,
-        inbound_receptions: inboundResults,
+        shipments_inbound:       { status: ra.status, data: ra.data },
+        withdrawals:             { status: rb.status, data: rb.data },
+        stock_inbound_shipments: { status: rc.status, data: rc.data },
+        fbm_inbounds:            { status: rd.status, data: rd.data },
+        seller_inbounds:         { status: re.status, data: re.data },
       });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
