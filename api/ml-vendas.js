@@ -20,6 +20,11 @@ module.exports = async function handler(req, res) {
 
   // Modo "testinbound": busca itens com entrada pendente no fulfillment
   if (req.query.action === "testinbound") {
+    const safeJson = async (r) => {
+      const text = await r.text();
+      try { return { status: r.status, data: JSON.parse(text) }; }
+      catch(e) { return { status: r.status, data: null, raw: text.slice(0, 300) }; }
+    };
     try {
       const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
       const tData = await tR.json();
@@ -30,41 +35,27 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       const uid = me.id;
 
-      // Buscar IDs dos itens Full da filial
-      const itemsRes = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?fulfilled=true&limit=20`, {
-        headers: { Authorization: `Bearer ${tk}` }
-      });
-      const itemsData = await itemsRes.json();
-      const itemIds = itemsData?.results || [];
+      // 1. Buscar IDs dos itens Full
+      const r1 = await safeJson(await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?fulfilled=true&limit=5`, { headers: { Authorization: `Bearer ${tk}` } }));
+      const itemIds = r1.data?.results || [];
+      const sampleItem = itemIds[0] || null;
 
-      if (!itemIds.length) return res.json({ ok: true, msg: "Nenhum item Full encontrado", itemIds });
+      // 2. fulfillment_stock do primeiro item
+      const r2 = sampleItem ? await safeJson(await fetch(`https://api.mercadolibre.com/items/${sampleItem}/fulfillment_stock`, { headers: { Authorization: `Bearer ${tk}` } })) : { status: "skip", data: null };
 
-      // Buscar inventário de cada item (em batch de até 20)
-      const batch = itemIds.slice(0, 20).join(",");
-      const invRes = await fetch(`https://api.mercadolibre.com/inventories?seller_id=${uid}&item_id=${batch}`, {
-        headers: { Authorization: `Bearer ${tk}` }
-      });
-      const invData = await invRes.json();
+      // 3. stock/fulfillment/operations/search — inbound_reception últimos 15 dias
+      const dateFrom = new Date(Date.now() - 15*24*60*60*1000).toISOString().slice(0,10).replace(/-/g,"");
+      const dateTo   = new Date().toISOString().slice(0,10).replace(/-/g,"");
+      const r3 = await safeJson(await fetch(`https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&type=inbound_reception&date_from=${dateFrom}&date_to=${dateTo}&limit=5`, { headers: { Authorization: `Bearer ${tk}` } }));
 
-      // Tentar também endpoint direto de inventory por item
-      const sampleItem = itemIds[0];
-      const invItemRes = await fetch(`https://api.mercadolibre.com/items/${sampleItem}/fulfillment_stock`, {
-        headers: { Authorization: `Bearer ${tk}` }
-      });
-      const invItemData = await invItemRes.json();
+      // 4. inventory listing
+      const r4 = await safeJson(await fetch(`https://api.mercadolibre.com/users/${uid}/inventory`, { headers: { Authorization: `Bearer ${tk}` } }));
 
-      // Endpoint de inventory_id
-      const invIdRes = await fetch(`https://api.mercadolibre.com/users/${uid}/inventory`, {
-        headers: { Authorization: `Bearer ${tk}` }
-      });
-      const invIdData = await invIdRes.json();
-
-      return res.json({
-        ok: true, uid, sampleItem,
-        items_count: itemIds.length,
-        inventories_status: invRes.status, inventories: invData,
-        fulfillment_stock_status: invItemRes.status, fulfillment_stock: invItemData,
-        user_inventory_status: invIdRes.status, user_inventory: invIdData,
+      return res.json({ ok: true, uid, sampleItem, items_total: itemIds.length,
+        items_search:        r1,
+        fulfillment_stock:   r2,
+        operations_search:   r3,
+        user_inventory:      r4,
       });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
