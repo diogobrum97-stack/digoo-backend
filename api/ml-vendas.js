@@ -8,7 +8,7 @@ module.exports = async function handler(req, res) {
 
   // Busca token da Filial automaticamente do Firebase se não vier na URL
   // (usado pelos modos estoque e custos que operam na conta da Filial)
-  if ((req.query.estoque || req.query.custos || req.query.action === "testads" || req.query.cron === "prices") && !token && process.env.FIREBASE_URL) {
+  if ((req.query.estoque || req.query.custos || req.query.action === "testads" || req.query.action === "testpacking" || req.query.cron === "prices") && !token && process.env.FIREBASE_URL) {
     try {
       const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
       const tData = await tR.json();
@@ -17,6 +17,35 @@ module.exports = async function handler(req, res) {
   }
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
+
+  // Modo "testpacking": diagnóstico de endpoints packing/fulfillment do ML
+  if (req.query.action === "testpacking") {
+    try {
+      const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
+      const tData = await tR.json();
+      const tk = tData?.access_token;
+      if (!tk) return res.json({ ok: false, msg: "Token filial não encontrado" });
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tk}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ error: "Token inválido", detail: me });
+      const uid = me.id;
+      const endpoints = [
+        { label: "packing_requests v1",      url: `https://api.mercadolibre.com/packing_requests?seller_id=${uid}&status=open&limit=5` },
+        { label: "packing_requests v2",      url: `https://api.mercadolibre.com/v2/packing_requests?seller_id=${uid}&status=open&limit=5` },
+        { label: "fulfillment/inbound",      url: `https://api.mercadolibre.com/fulfillment/inbound/orders?seller_id=${uid}&limit=5` },
+        { label: "logistics/shipments",      url: `https://api.mercadolibre.com/logistics/shipments?seller_id=${uid}&type=fulfillment&limit=5` },
+        { label: "stock/seller_product",     url: `https://api.mercadolibre.com/fulfillment/stock/seller_product_stock_details?seller_id=${uid}&limit=5` },
+      ];
+      const results = await Promise.all(endpoints.map(async ({ label, url }) => {
+        try {
+          const r = await fetch(url, { headers: { Authorization: `Bearer ${tk}` } });
+          const data = await r.json();
+          return { label, path: url.replace("https://api.mercadolibre.com",""), status: r.status, data };
+        } catch(e) { return { label, status: "fetch_error", error: e.message }; }
+      }));
+      return res.json({ ok: true, userId: uid, nickname: me.nickname, results });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
 
   // Modo "testads": testa acesso à API de ADS do ML
   if (req.query.action === "testads") {
