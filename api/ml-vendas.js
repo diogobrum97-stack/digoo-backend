@@ -18,12 +18,12 @@ module.exports = async function handler(req, res) {
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
-  // Modo "testinbound": busca entrada pendente nos dois MLBs específicos
+  // Modo "testinbound": testa entrada pendente com inventory_id OZKO53026
   if (req.query.action === "testinbound") {
     const safeJson = async (r) => {
       const text = await r.text();
       try { return { status: r.status, data: JSON.parse(text) }; }
-      catch(e) { return { status: r.status, data: null, raw: text.slice(0, 300) }; }
+      catch(e) { return { status: r.status, data: null, raw: text.slice(0, 400) }; }
     };
     try {
       const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
@@ -35,38 +35,47 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       const uid = me.id;
 
-      // 1. Buscar inventory_id dos dois itens com entrada pendente
-      const targetIds = ["MLB6414756930", "MLB7319140600"];
-      const itemsRes = await safeJson(await fetch(
-        `https://api.mercadolibre.com/items?ids=${targetIds.join(",")}&attributes=id,title,inventory_id,available_quantity`,
+      const invId = "OZKO53026";
+      const dateFrom = new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0,10);
+      const dateTo   = new Date(Date.now() + 10*24*60*60*1000).toISOString().slice(0,10);
+
+      // a) Sem filtro de tipo — ver todos os tipos disponíveis
+      const ra = await safeJson(await fetch(
+        `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
-      const targets = (itemsRes.data || []).map(i => i.body).filter(Boolean);
-      const invIds = targets.map(i => i.inventory_id).filter(Boolean);
 
-      // 2. operations/search — todos os tipos, últimos 90 dias + 5 dias futuros
-      const dateFrom = new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0,10);
-      const dateTo   = new Date(Date.now() + 5*24*60*60*1000).toISOString().slice(0,10);
-      const opsResults = [];
-      for (const invId of invIds) {
-        const r = await safeJson(await fetch(
-          `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
-          { headers: { Authorization: `Bearer ${tk}` } }
-        ));
-        opsResults.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, types: [...new Set((r.data?.results||[]).map(x=>x.type))], results: r.data?.results });
-      }
+      // b) Só inbound_reception
+      const rb = await safeJson(await fetch(
+        `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=inbound_reception&date_from=${dateFrom}&date_to=${dateTo}&limit=10`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
 
-      // 3. Filtrar só inbound_reception
-      const inboundOnly = [];
-      for (const invId of invIds) {
-        const r = await safeJson(await fetch(
-          `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=inbound_reception&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
-          { headers: { Authorization: `Bearer ${tk}` } }
-        ));
-        inboundOnly.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, results: r.data?.results });
-      }
+      // c) Sem seller_id — só inventory_id
+      const rc = await safeJson(await fetch(
+        `https://api.mercadolibre.com/stock/fulfillment/operations/search?inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=10`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
 
-      return res.json({ ok: true, uid, targets, inventory_ids: invIds, all_operations: opsResults, inbound_only: inboundOnly });
+      // d) Endpoint alternativo de inventário do item direto
+      const rd = await safeJson(await fetch(
+        `https://api.mercadolibre.com/inventories/${invId}/stock/fulfillment`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      // e) Inventário direto
+      const re = await safeJson(await fetch(
+        `https://api.mercadolibre.com/inventories/${invId}`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      return res.json({ ok: true, uid, invId,
+        all_ops:         { status: ra.status, error: ra.data?.message, types: [...new Set((ra.data?.results||[]).map(x=>x.type))], total: ra.data?.paging?.total, sample: (ra.data?.results||[]).slice(0,3) },
+        inbound_ops:     { status: rb.status, error: rb.data?.message, total: rb.data?.paging?.total, results: rb.data?.results },
+        no_seller:       { status: rc.status, error: rc.data?.message, total: rc.data?.paging?.total },
+        inv_stock:       { status: rd.status, data: rd.data },
+        inv_direct:      { status: re.status, data: re.data },
+      });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
