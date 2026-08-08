@@ -18,7 +18,7 @@ module.exports = async function handler(req, res) {
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
-  // Modo "testinbound": busca itens com entrada pendente no fulfillment
+  // Modo "testinbound": busca entrada pendente nos dois MLBs específicos
   if (req.query.action === "testinbound") {
     const safeJson = async (r) => {
       const text = await r.text();
@@ -35,27 +35,16 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       const uid = me.id;
 
-      // 1. Buscar IDs dos itens Full
-      const r1 = await safeJson(await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?fulfilled=true&limit=5`, { headers: { Authorization: `Bearer ${tk}` } }));
-      const itemIds = r1.data?.results || [];
-      const sampleItem = itemIds[0] || null;
-
-      // 2. Buscar inventory_id dos primeiros 3 itens via /items?ids=
-      const batchIds = itemIds.slice(0, 3).join(",");
-      const r2 = await safeJson(await fetch(`https://api.mercadolibre.com/items?ids=${batchIds}&attributes=id,title,inventory_id,available_quantity`, { headers: { Authorization: `Bearer ${tk}` } }));
-      const inventoryIds = (r2.data || []).map(i => i.body?.inventory_id).filter(Boolean);
-      const sampleInventoryId = inventoryIds[0] || null;
-
-      // 3. Buscar inventory_id dos dois itens com entrada pendente
+      // 1. Buscar inventory_id dos dois itens com entrada pendente
       const targetIds = ["MLB6414756930", "MLB7319140600"];
-      const r2 = await safeJson(await fetch(
+      const itemsRes = await safeJson(await fetch(
         `https://api.mercadolibre.com/items?ids=${targetIds.join(",")}&attributes=id,title,inventory_id,available_quantity`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
-      const targets = (r2.data || []).map(i => i.body).filter(Boolean);
+      const targets = (itemsRes.data || []).map(i => i.body).filter(Boolean);
       const invIds = targets.map(i => i.inventory_id).filter(Boolean);
 
-      // 4. operations/search — todos os tipos, últimos 90 dias, pra ver o que aparece
+      // 2. operations/search — todos os tipos, últimos 90 dias + 5 dias futuros
       const dateFrom = new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0,10);
       const dateTo   = new Date(Date.now() + 5*24*60*60*1000).toISOString().slice(0,10);
       const opsResults = [];
@@ -64,25 +53,20 @@ module.exports = async function handler(req, res) {
           `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
           { headers: { Authorization: `Bearer ${tk}` } }
         ));
-        opsResults.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, results: r.data?.results });
+        opsResults.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, types: [...new Set((r.data?.results||[]).map(x=>x.type))], results: r.data?.results });
       }
 
-      // 5. Testar endpoint de inbound_id direto nos shipments
-      const shipResults = [];
+      // 3. Filtrar só inbound_reception
+      const inboundOnly = [];
       for (const invId of invIds) {
         const r = await safeJson(await fetch(
           `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=inbound_reception&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
           { headers: { Authorization: `Bearer ${tk}` } }
         ));
-        shipResults.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, results: r.data?.results });
+        inboundOnly.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, results: r.data?.results });
       }
 
-      return res.json({ ok: true, uid,
-        targets,
-        inventory_ids: invIds,
-        all_operations: opsResults,
-        inbound_only:   shipResults,
-      });
+      return res.json({ ok: true, uid, targets, inventory_ids: invIds, all_operations: opsResults, inbound_only: inboundOnly });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
