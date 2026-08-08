@@ -192,7 +192,7 @@ module.exports = async function handler(req, res) {
 
       // Filtrar só os com problema (red ou yellow)
       const problemasBrutos = results
-        .filter(r => r.color === "red" || r.color === "yellow")
+        .filter(r => r.color === "red" || r.color === "yellow" || r.color === "orange")
         .sort((a,b) => a.value - b.value);
 
       // Buscar título e SKU real dos itens problemáticos
