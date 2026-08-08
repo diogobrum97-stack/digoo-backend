@@ -34,49 +34,49 @@ module.exports = async function handler(req, res) {
       const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tk}` } });
       const me = await meRes.json();
       const uid = me.id;
-
       const invId = "OZKO53026";
-      const dateFrom = new Date(Date.now() - 55*24*60*60*1000).toISOString().slice(0,10);
-      const dateTo   = new Date(Date.now() + 10*24*60*60*1000).toISOString().slice(0,10);
 
-      // a) Tipo em maiúsculo — INBOUND_RECEPTION
+      // Janela correta: máximo 59 dias, sem data futura
+      const dateFrom = new Date(Date.now() - 59*24*60*60*1000).toISOString().slice(0,10);
+      const dateTo   = new Date().toISOString().slice(0,10);
+
+      // a) operations sem tipo — janela correta
       const ra = await safeJson(await fetch(
-        `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=INBOUND_RECEPTION&date_from=${dateFrom}&date_to=${dateTo}&limit=10`,
-        { headers: { Authorization: `Bearer ${tk}` } }
-      ));
-
-      // b) Sem filtro de tipo, 55 dias — ver todos os tipos que existem
-      const rb = await safeJson(await fetch(
         `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=50`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
-      const types = [...new Set((rb.data?.results||[]).map(x => x.type))];
+      const types = [...new Set((ra.data?.results||[]).map(x => x.type))];
 
-      // c) inventories/{id}/stock/fulfillment — já funcionou, ver campos completos
-      const rc = await safeJson(await fetch(
+      // b) inventories/{id}/stock/fulfillment — campos completos
+      const rb = await safeJson(await fetch(
         `https://api.mercadolibre.com/inventories/${invId}/stock/fulfillment`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
 
-      // d) inventories/{id}/stock — variação do endpoint
+      // c) inventories/{id}/inbounds — entradas pendentes
+      const rc = await safeJson(await fetch(
+        `https://api.mercadolibre.com/inventories/${invId}/inbounds?seller_id=${uid}&limit=10`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      // d) seller inbounds pelo seller_id
       const rd = await safeJson(await fetch(
-        `https://api.mercadolibre.com/inventories/${invId}/stock`,
+        `https://api.mercadolibre.com/users/${uid}/inbounds?status=pending&limit=10`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
 
-      // e) inbounds pelo inventory_id
+      // e) inbound por seller — outro padrão
       const re = await safeJson(await fetch(
-        `https://api.mercadolibre.com/inbounds?inventory_id=${invId}&seller_id=${uid}&limit=5`,
+        `https://api.mercadolibre.com/inbound/plans?seller_id=${uid}&limit=5`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
 
-      return res.json({ ok: true, uid, invId,
-        inbound_uppercase: { status: ra.status, error: ra.data?.message, total: ra.data?.paging?.total, results: ra.data?.results },
-        all_types_found:   types,
-        all_ops_sample:    (rb.data?.results||[]).slice(0,5),
-        inv_fulfillment:   { status: rc.status, data: rc.data },
-        inv_stock:         { status: rd.status, data: rd.data },
-        inbounds_endpoint: { status: re.status, data: re.data },
+      return res.json({ ok: true, uid, invId, dateFrom, dateTo,
+        operations:        { status: ra.status, error: ra.data?.message, total: ra.data?.paging?.total, types_found: types, sample: (ra.data?.results||[]).slice(0,3) },
+        inv_fulfillment:   { status: rb.status, data: rb.data },
+        inv_inbounds:      { status: rc.status, data: rc.data },
+        user_inbounds:     { status: rd.status, data: rd.data },
+        inbound_plans:     { status: re.status, data: re.data },
       });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
