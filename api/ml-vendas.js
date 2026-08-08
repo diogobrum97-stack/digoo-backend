@@ -18,7 +18,7 @@ module.exports = async function handler(req, res) {
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
-  // Modo "testinbound": testa entrada pendente com inventory_id OZKO53026
+  // Modo "testinbound": busca entrada pendente OZKO53026
   if (req.query.action === "testinbound") {
     const safeJson = async (r) => {
       const text = await r.text();
@@ -36,45 +36,47 @@ module.exports = async function handler(req, res) {
       const uid = me.id;
 
       const invId = "OZKO53026";
-      const dateFrom = new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0,10);
+      const dateFrom = new Date(Date.now() - 55*24*60*60*1000).toISOString().slice(0,10);
       const dateTo   = new Date(Date.now() + 10*24*60*60*1000).toISOString().slice(0,10);
 
-      // a) Sem filtro de tipo — ver todos os tipos disponíveis
+      // a) Tipo em maiúsculo — INBOUND_RECEPTION
       const ra = await safeJson(await fetch(
-        `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
+        `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=INBOUND_RECEPTION&date_from=${dateFrom}&date_to=${dateTo}&limit=10`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
 
-      // b) Só inbound_reception
+      // b) Sem filtro de tipo, 55 dias — ver todos os tipos que existem
       const rb = await safeJson(await fetch(
-        `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=inbound_reception&date_from=${dateFrom}&date_to=${dateTo}&limit=10`,
+        `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=50`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
+      const types = [...new Set((rb.data?.results||[]).map(x => x.type))];
 
-      // c) Sem seller_id — só inventory_id
+      // c) inventories/{id}/stock/fulfillment — já funcionou, ver campos completos
       const rc = await safeJson(await fetch(
-        `https://api.mercadolibre.com/stock/fulfillment/operations/search?inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=10`,
-        { headers: { Authorization: `Bearer ${tk}` } }
-      ));
-
-      // d) Endpoint alternativo de inventário do item direto
-      const rd = await safeJson(await fetch(
         `https://api.mercadolibre.com/inventories/${invId}/stock/fulfillment`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
 
-      // e) Inventário direto
+      // d) inventories/{id}/stock — variação do endpoint
+      const rd = await safeJson(await fetch(
+        `https://api.mercadolibre.com/inventories/${invId}/stock`,
+        { headers: { Authorization: `Bearer ${tk}` } }
+      ));
+
+      // e) inbounds pelo inventory_id
       const re = await safeJson(await fetch(
-        `https://api.mercadolibre.com/inventories/${invId}`,
+        `https://api.mercadolibre.com/inbounds?inventory_id=${invId}&seller_id=${uid}&limit=5`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
 
       return res.json({ ok: true, uid, invId,
-        all_ops:         { status: ra.status, error: ra.data?.message, types: [...new Set((ra.data?.results||[]).map(x=>x.type))], total: ra.data?.paging?.total, sample: (ra.data?.results||[]).slice(0,3) },
-        inbound_ops:     { status: rb.status, error: rb.data?.message, total: rb.data?.paging?.total, results: rb.data?.results },
-        no_seller:       { status: rc.status, error: rc.data?.message, total: rc.data?.paging?.total },
-        inv_stock:       { status: rd.status, data: rd.data },
-        inv_direct:      { status: re.status, data: re.data },
+        inbound_uppercase: { status: ra.status, error: ra.data?.message, total: ra.data?.paging?.total, results: ra.data?.results },
+        all_types_found:   types,
+        all_ops_sample:    (rb.data?.results||[]).slice(0,5),
+        inv_fulfillment:   { status: rc.status, data: rc.data },
+        inv_stock:         { status: rd.status, data: rd.data },
+        inbounds_endpoint: { status: re.status, data: re.data },
       });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
