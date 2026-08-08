@@ -46,46 +46,42 @@ module.exports = async function handler(req, res) {
       const inventoryIds = (r2.data || []).map(i => i.body?.inventory_id).filter(Boolean);
       const sampleInventoryId = inventoryIds[0] || null;
 
-      // 3. Testar endpoints alternativos de inbound/envio pendente
-      const dateFrom = new Date(Date.now() - 60*24*60*60*1000).toISOString().slice(0,10);
-      const dateTo   = new Date(Date.now() + 2*24*60*60*1000).toISOString().slice(0,10);
-
-      // a) shipments com logística fulfillment — pedidos de envio ao armazém
-      const ra = await safeJson(await fetch(
-        `https://api.mercadolibre.com/shipments/search?seller_id=${uid}&type=inbound&date_created_from=${dateFrom}&date_created_to=${dateTo}&limit=10`,
+      // 3. Buscar inventory_id dos dois itens com entrada pendente
+      const targetIds = ["MLB6414756930", "MLB7319140600"];
+      const r2 = await safeJson(await fetch(
+        `https://api.mercadolibre.com/items?ids=${targetIds.join(",")}&attributes=id,title,inventory_id,available_quantity`,
         { headers: { Authorization: `Bearer ${tk}` } }
       ));
+      const targets = (r2.data || []).map(i => i.body).filter(Boolean);
+      const invIds = targets.map(i => i.inventory_id).filter(Boolean);
 
-      // b) withdrawals — saques/retiradas
-      const rb = await safeJson(await fetch(
-        `https://api.mercadolibre.com/withdrawals/search?seller_id=${uid}&limit=5`,
-        { headers: { Authorization: `Bearer ${tk}` } }
-      ));
+      // 4. operations/search — todos os tipos, últimos 90 dias, pra ver o que aparece
+      const dateFrom = new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0,10);
+      const dateTo   = new Date(Date.now() + 5*24*60*60*1000).toISOString().slice(0,10);
+      const opsResults = [];
+      for (const invId of invIds) {
+        const r = await safeJson(await fetch(
+          `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
+          { headers: { Authorization: `Bearer ${tk}` } }
+        ));
+        opsResults.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, results: r.data?.results });
+      }
 
-      // c) stock/fulfillment/inbound_shipments
-      const rc = await safeJson(await fetch(
-        `https://api.mercadolibre.com/stock/fulfillment/inbound_shipments?seller_id=${uid}&limit=5`,
-        { headers: { Authorization: `Bearer ${tk}` } }
-      ));
-
-      // d) fbm/inbounds — outro padrão de URL usado em alguns países
-      const rd = await safeJson(await fetch(
-        `https://api.mercadolibre.com/fbm/inbounds?seller_id=${uid}&limit=5`,
-        { headers: { Authorization: `Bearer ${tk}` } }
-      ));
-
-      // e) seller/inbounds
-      const re = await safeJson(await fetch(
-        `https://api.mercadolibre.com/seller/${uid}/inbounds?limit=5`,
-        { headers: { Authorization: `Bearer ${tk}` } }
-      ));
+      // 5. Testar endpoint de inbound_id direto nos shipments
+      const shipResults = [];
+      for (const invId of invIds) {
+        const r = await safeJson(await fetch(
+          `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${invId}&type=inbound_reception&date_from=${dateFrom}&date_to=${dateTo}&limit=20`,
+          { headers: { Authorization: `Bearer ${tk}` } }
+        ));
+        shipResults.push({ inventory_id: invId, status: r.status, total: r.data?.paging?.total, results: r.data?.results });
+      }
 
       return res.json({ ok: true, uid,
-        shipments_inbound:       { status: ra.status, data: ra.data },
-        withdrawals:             { status: rb.status, data: rb.data },
-        stock_inbound_shipments: { status: rc.status, data: rc.data },
-        fbm_inbounds:            { status: rd.status, data: rd.data },
-        seller_inbounds:         { status: re.status, data: re.data },
+        targets,
+        inventory_ids: invIds,
+        all_operations: opsResults,
+        inbound_only:   shipResults,
       });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
