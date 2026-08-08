@@ -190,9 +190,9 @@ module.exports = async function handler(req, res) {
         results.push(...batchResults.filter(Boolean));
       }
 
-      // Filtrar só os com problema — qualquer cor que não seja "green" (ok)
+      // Filtrar só os com problema — qualquer cor que não seja "green" (ok), com valor válido
       const problemasBrutos = results
-        .filter(r => r.color && r.color !== "green")
+        .filter(r => r.color && r.color !== "green" && typeof r.value === "number" && r.value >= 0)
         .sort((a,b) => a.value - b.value);
 
       // Buscar título e SKU real dos itens problemáticos
