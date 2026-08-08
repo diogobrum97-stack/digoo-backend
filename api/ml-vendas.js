@@ -46,9 +46,9 @@ module.exports = async function handler(req, res) {
       const inventoryIds = (r2.data || []).map(i => i.body?.inventory_id).filter(Boolean);
       const sampleInventoryId = inventoryIds[0] || null;
 
-      // 3. operations/search com inventory_id real
-      const dateFrom = new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0,10).replace(/-/g,"");
-      const dateTo   = new Date().toISOString().slice(0,10).replace(/-/g,"");
+      // 3. operations/search com inventory_id real — formato data: aaaa-mm-dd
+      const dateFrom = new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0,10);
+      const dateTo   = new Date().toISOString().slice(0,10);
       const r3 = sampleInventoryId
         ? await safeJson(await fetch(`https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${uid}&inventory_id=${sampleInventoryId}&date_from=${dateFrom}&date_to=${dateTo}&limit=10`, { headers: { Authorization: `Bearer ${tk}` } }))
         : { status: "skip", data: null, msg: "Nenhum inventory_id encontrado" };
