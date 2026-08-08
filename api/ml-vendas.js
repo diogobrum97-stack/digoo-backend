@@ -18,6 +18,57 @@ module.exports = async function handler(req, res) {
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
+  // Modo "testinbound": busca itens com entrada pendente no fulfillment
+  if (req.query.action === "testinbound") {
+    try {
+      const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
+      const tData = await tR.json();
+      const tk = tData?.access_token;
+      if (!tk) return res.json({ ok: false, msg: "Token filial não encontrado" });
+
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tk}` } });
+      const me = await meRes.json();
+      const uid = me.id;
+
+      // Buscar IDs dos itens Full da filial
+      const itemsRes = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?fulfilled=true&limit=20`, {
+        headers: { Authorization: `Bearer ${tk}` }
+      });
+      const itemsData = await itemsRes.json();
+      const itemIds = itemsData?.results || [];
+
+      if (!itemIds.length) return res.json({ ok: true, msg: "Nenhum item Full encontrado", itemIds });
+
+      // Buscar inventário de cada item (em batch de até 20)
+      const batch = itemIds.slice(0, 20).join(",");
+      const invRes = await fetch(`https://api.mercadolibre.com/inventories?seller_id=${uid}&item_id=${batch}`, {
+        headers: { Authorization: `Bearer ${tk}` }
+      });
+      const invData = await invRes.json();
+
+      // Tentar também endpoint direto de inventory por item
+      const sampleItem = itemIds[0];
+      const invItemRes = await fetch(`https://api.mercadolibre.com/items/${sampleItem}/fulfillment_stock`, {
+        headers: { Authorization: `Bearer ${tk}` }
+      });
+      const invItemData = await invItemRes.json();
+
+      // Endpoint de inventory_id
+      const invIdRes = await fetch(`https://api.mercadolibre.com/users/${uid}/inventory`, {
+        headers: { Authorization: `Bearer ${tk}` }
+      });
+      const invIdData = await invIdRes.json();
+
+      return res.json({
+        ok: true, uid, sampleItem,
+        items_count: itemIds.length,
+        inventories_status: invRes.status, inventories: invData,
+        fulfillment_stock_status: invItemRes.status, fulfillment_stock: invItemData,
+        user_inventory_status: invIdRes.status, user_inventory: invIdData,
+      });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // Modo "testpacking": diagnóstico de endpoints packing/fulfillment do ML
   if (req.query.action === "testpacking") {
     try {
