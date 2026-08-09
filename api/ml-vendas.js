@@ -88,7 +88,7 @@ module.exports = async function handler(req, res) {
       const created = await createRes.json();
 
       if (created.error || created.cause) {
-        return res.status(400).json({ ok: false, error: created.message || "Erro ao criar anúncio", detalhes: created.cause || [] });
+        return res.status(400).json({ ok: false, error: created.message || "Erro ao criar anúncio", detalhes: created.cause || [], raw: created });
       }
 
       if (item.descricao) {
