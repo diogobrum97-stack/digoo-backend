@@ -181,6 +181,7 @@ module.exports = async function handler(req, res) {
                 level: d.reputation.text,
                 value: d.reputation.value,
                 actions: d.actions?.map(a => a.text) || [],
+                subtitles: (d.subtitles || []).map(s => s.text).filter(Boolean),
                 sku: d.up_id,
               };
             }
@@ -214,29 +215,16 @@ module.exports = async function handler(req, res) {
         });
       }
 
-      // Buscar detalhes de problemas para cada item problemático
-      const problemasComDetalhes = await Promise.all(
-        problemasBrutos.map(async p => {
-          let detalhes = [];
-          try {
-            const dr = await fetch(
-              `https://api.mercadolibre.com/reputation/items/${p.itemId}/purchase_experience/problems?locale=pt_BR`,
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
-            const dd = await dr.json();
-            if(Array.isArray(dd)) {
-              detalhes = dd.map(prob => ({
-                tipo: prob.type?.text || prob.label || "",
-                descricao: prob.description?.text || prob.title?.text || "",
-                comoMelhorar: prob.solution?.text || prob.how_to_improve?.text || "",
-                quantidade: prob.quantity || prob.count || 0,
-                acao: prob.action?.text || "",
-              }));
-            }
-          } catch(e) {}
-          return { ...p, detalhes };
-        })
-      );
+      // Detalhes de problema já vêm do próprio /integrators (campo subtitles)
+      const problemasComDetalhes = problemasBrutos.map(p => ({
+        ...p,
+        detalhes: (p.subtitles || []).map(texto => ({
+          tipo: "Problema identificado",
+          descricao: texto,
+          comoMelhorar: "",
+          quantidade: 0,
+        })),
+      }));
 
       // Montar lista com detalhes e deduplicar por up_id (catálogo + tradicional)
       const vistos = new Set();
