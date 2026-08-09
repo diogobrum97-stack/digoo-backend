@@ -64,7 +64,6 @@ module.exports = async function handler(req, res) {
       }
 
       const body = {
-        title: item.title,
         family_name: item.title,
         category_id: item.category_id,
         price: item.price,
