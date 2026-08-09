@@ -41,8 +41,12 @@ module.exports = async function handler(req, res) {
           sku: item.seller_custom_field || (item.attributes || []).find(a => a.id === "SELLER_SKU")?.value_name || "",
           pictures: (item.pictures || []).map(p => ({ source: p.secure_url || p.url })),
           attributes: (item.attributes || [])
-            .filter(a => a.value_id || a.value_name)
-            .map(a => ({ id: a.id, value_id: a.value_id || undefined, value_name: a.value_id ? undefined : a.value_name })),
+            .map(a => ({
+              id: a.id,
+              value_id: a.value_id || (Array.isArray(a.values) && a.values[0]?.id) || undefined,
+              value_name: a.value_name || (Array.isArray(a.values) && a.values[0]?.name) || undefined,
+            }))
+            .filter(a => (a.value_id || a.value_name) && !["PACKAGE_HEIGHT","PACKAGE_LENGTH","PACKAGE_WIDTH","PACKAGE_WEIGHT","PRODUCT_FEATURES","SHIPMENT_PACKING"].includes(a.id)),
           variations: item.variations || [],
           descricao,
           has_variations: (item.variations || []).length > 0,
