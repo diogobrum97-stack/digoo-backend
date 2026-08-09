@@ -174,14 +174,28 @@ module.exports = async function handler(req, res) {
             );
             const d = await r.json();
             if(d.reputation) {
+              // Problemas reais com causa raiz e solução (metrics_details.problems)
+              const problemasDetalhados = (d.metrics_details?.problems || []).map(p => ({
+                categoria: p.level_two?.title?.text || "",
+                problema: p.level_three?.title?.text || "",
+                solucao: p.level_three?.remedy?.text || "",
+                quantidade: p.quantity || "",
+                cancelamentos: p.cancellations || 0,
+                reclamacoes: p.claims || 0,
+                principal: p.tag === "PROBLEMA PRINCIPAL",
+              }));
+              // Recomendações reais (não os botões de ação da UI)
+              const recomendacoes = (d.recommendations?.subtitles || []).map(s => s.text).filter(Boolean);
               return {
                 itemId,
                 title: d.title?.text,
                 color: d.reputation.color,
                 level: d.reputation.text,
                 value: d.reputation.value,
-                actions: d.actions?.map(a => a.text) || [],
+                actions: recomendacoes.length ? recomendacoes : (d.actions?.map(a => a.text) || []),
                 subtitles: (d.subtitles || []).map(s => s.text).filter(Boolean),
+                problemasDetalhados,
+                principalAcao: d.principal_actionable?.text || "",
                 sku: d.up_id,
               };
             }
@@ -215,14 +229,14 @@ module.exports = async function handler(req, res) {
         });
       }
 
-      // Detalhes de problema já vêm do próprio /integrators (campo subtitles)
+      // Detalhes reais vêm de metrics_details.problems (causa raiz + solução)
       const problemasComDetalhes = problemasBrutos.map(p => ({
         ...p,
-        detalhes: (p.subtitles || []).map(texto => ({
-          tipo: "Problema identificado",
-          descricao: texto,
-          comoMelhorar: "",
-          quantidade: 0,
+        detalhes: (p.problemasDetalhados || []).map(pd => ({
+          tipo: pd.categoria,
+          descricao: pd.problema + (pd.reclamacoes ? ` (${pd.reclamacoes} reclamação${pd.reclamacoes>1?"ões":""})` : "") + (pd.cancelamentos ? ` (${pd.cancelamentos} cancelamento${pd.cancelamentos>1?"s":""})` : ""),
+          comoMelhorar: pd.solucao,
+          quantidade: pd.reclamacoes + pd.cancelamentos,
         })),
       }));
 
