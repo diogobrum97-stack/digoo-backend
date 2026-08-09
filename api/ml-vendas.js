@@ -1,8 +1,114 @@
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  // ── Clonar anúncio: buscar dados completos do item de origem ──
+  if (req.query.action === "buscar-clone" && req.method === "GET") {
+    try {
+      const { item_id, token: tokenOrigem } = req.query;
+      if (!item_id || !tokenOrigem) return res.status(400).json({ ok: false, error: "item_id e token obrigatórios" });
+
+      const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id}`, {
+        headers: { Authorization: `Bearer ${tokenOrigem}` },
+      });
+      const item = await itemRes.json();
+      if (item.error) return res.status(400).json({ ok: false, error: item.message || "Anúncio não encontrado" });
+
+      let descricao = "";
+      try {
+        const descRes = await fetch(`https://api.mercadolibre.com/items/${item_id}/description`, {
+          headers: { Authorization: `Bearer ${tokenOrigem}` },
+        });
+        const descData = await descRes.json();
+        descricao = descData.plain_text || "";
+      } catch (e) {}
+
+      return res.json({
+        ok: true,
+        item: {
+          id: item.id,
+          title: item.title,
+          category_id: item.category_id,
+          price: item.price,
+          currency_id: item.currency_id,
+          available_quantity: item.available_quantity,
+          condition: item.condition,
+          listing_type_id: item.listing_type_id,
+          buying_mode: item.buying_mode,
+          seller_custom_field: item.seller_custom_field,
+          sku: item.seller_custom_field || (item.attributes || []).find(a => a.id === "SELLER_SKU")?.value_name || "",
+          pictures: (item.pictures || []).map(p => ({ source: p.secure_url || p.url })),
+          attributes: (item.attributes || [])
+            .filter(a => a.value_id || a.value_name)
+            .map(a => ({ id: a.id, value_id: a.value_id || undefined, value_name: a.value_id ? undefined : a.value_name })),
+          variations: item.variations || [],
+          descricao,
+          has_variations: (item.variations || []).length > 0,
+        },
+      });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Clonar anúncio: publicar na conta de destino ──
+  if (req.query.action === "clonar" && req.method === "POST") {
+    try {
+      const { item, tokenDestino, novoSku, novaQuantidade } = req.body || {};
+      if (!item || !tokenDestino) return res.status(400).json({ ok: false, error: "item e tokenDestino obrigatórios" });
+
+      if (item.has_variations) {
+        return res.status(400).json({ ok: false, error: "Anúncios com variações ainda não são suportados na clonagem." });
+      }
+
+      const body = {
+        title: item.title,
+        category_id: item.category_id,
+        price: item.price,
+        currency_id: item.currency_id || "BRL",
+        available_quantity: novaQuantidade != null ? novaQuantidade : item.available_quantity,
+        buying_mode: item.buying_mode || "buy_it_now",
+        condition: item.condition || "new",
+        listing_type_id: item.listing_type_id || "gold_special",
+        seller_custom_field: novoSku || item.seller_custom_field || item.sku || undefined,
+        pictures: item.pictures,
+        attributes: item.attributes,
+      };
+
+      const createRes = await fetch("https://api.mercadolibre.com/items", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenDestino}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      const created = await createRes.json();
+
+      if (created.error || created.cause) {
+        return res.status(400).json({ ok: false, error: created.message || "Erro ao criar anúncio", detalhes: created.cause || [] });
+      }
+
+      if (item.descricao) {
+        try {
+          await fetch(`https://api.mercadolibre.com/items/${created.id}/description`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${tokenDestino}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ plain_text: item.descricao }),
+          });
+        } catch (e) {}
+      }
+
+      return res.json({ ok: true, item_id: created.id, permalink: created.permalink });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
 
   let token = req.query.token;
 
