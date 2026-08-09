@@ -196,6 +196,8 @@ module.exports = async function handler(req, res) {
                 subtitles: (d.subtitles || []).map(s => s.text).filter(Boolean),
                 problemasDetalhados,
                 principalAcao: d.principal_actionable?.text || "",
+                freeze: d.freeze?.text || "",
+                status: d.status?.id || "active",
                 sku: d.up_id,
               };
             }
