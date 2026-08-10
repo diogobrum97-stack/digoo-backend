@@ -203,12 +203,12 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         return res.status(400).json({ ok: false, error: data.message || data.error || "Erro ao enviar resposta", status: r.status, raw: data });
       }
 
-      // Salvar como conhecimento fixo DESSE produto — sempre consultado em perguntas futuras sobre o mesmo item
+      // Salvar como conhecimento fixo DESSE produto — com limite de tempo, pra nunca segurar a resposta ao usuário
       if (process.env.FIREBASE_URL) {
         try {
           const { pergunta_texto, produto, item_id: itemIdSalvar } = req.body || {};
           if (itemIdSalvar) {
-            await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${itemIdSalvar}/${question_id}.json`, {
+            const salvarPromise = fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${itemIdSalvar}/${question_id}.json`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -218,6 +218,8 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
                 data: new Date().toISOString(),
               }),
             });
+            const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 1200));
+            await Promise.race([salvarPromise, timeoutPromise]);
           }
         } catch (e) {}
       }
