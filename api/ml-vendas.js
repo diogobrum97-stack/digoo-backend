@@ -87,22 +87,22 @@ module.exports = async function handler(req, res) {
       const h = parseInt(horaBR, 10);
       const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 
-      // Buscar exemplos de respostas já enviadas de verdade, para o Claude aprender o padrão da loja
-      let exemplosTreino = [];
+      // Buscar conhecimento fixo já respondido para CADA produto envolvido (por item_id, não global)
+      const conhecimentoPorItem = {};
       if (process.env.FIREBASE_URL) {
-        try {
-          const exR = await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento.json?orderBy="data"&limitToLast=8`);
-          const exData = await exR.json();
-          if (exData && typeof exData === "object") {
-            exemplosTreino = Object.values(exData)
-              .filter(e => e && e.pergunta && e.resposta)
-              .map(e => ({ pergunta: e.pergunta, resposta: e.resposta }));
-          }
-        } catch (e) {}
+        const itemIdsUnicos = [...new Set(perguntas.map(p => p.item_id))];
+        await Promise.all(itemIdsUnicos.map(async (iid) => {
+          try {
+            const exR = await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${iid}.json`);
+            const exData = await exR.json();
+            if (exData && typeof exData === "object") {
+              conhecimentoPorItem[iid] = Object.values(exData)
+                .filter(e => e && e.pergunta && e.resposta)
+                .map(e => ({ pergunta: e.pergunta, resposta: e.resposta }));
+            }
+          } catch (e) {}
+        }));
       }
-      const blocoExemplos = exemplosTreino.length
-        ? `\n\nEXEMPLOS DE RESPOSTAS REAIS JÁ ENVIADAS PELA LOJA (siga esse mesmo estilo, tom e forma de escrever):\n${exemplosTreino.map(e => `Pergunta: "${e.pergunta}"\nResposta: "${e.resposta}"`).join("\n\n")}`
-        : "";
 
       // Gerar sugestões via Claude — uma chamada só, em lote
       const listaParaClaude = perguntas.map((p, i) => ({
@@ -110,22 +110,30 @@ module.exports = async function handler(req, res) {
         produto: itemsInfo[p.item_id]?.title || "Produto",
         pergunta: p.text,
         nome_comprador: buyerNames[p.buyer_id] || null,
+        respostas_anteriores_deste_produto: conhecimentoPorItem[p.item_id] || [],
       }));
 
       const systemPrompt = `Você é um assistente de atendimento da Digoo Brasil, loja de periféricos gamer no Mercado Livre.
-Vai receber uma lista de perguntas pré-venda feitas por compradores em anúncios. Para cada pergunta, decida:
+Vai receber uma lista de perguntas pré-venda feitas por compradores em anúncios. Cada pergunta pode vir acompanhada do campo "respostas_anteriores_deste_produto" — são perguntas e respostas REAIS já enviadas pela loja sobre ESSE MESMO anúncio especificamente.
 
-1. Se é uma pergunta simples e objetiva (estoque, prazo, compatibilidade, cor, garantia, frete) — gere uma resposta.
+REGRA MAIS IMPORTANTE — CONHECIMENTO FIXO DO PRODUTO:
+- Se "respostas_anteriores_deste_produto" tiver conteúdo, trate essas informações como FATOS VERIFICADOS e definitivos sobre aquele produto específico, escritos pelo próprio vendedor. Use-as para responder com precisão técnica, mesmo que a pergunta atual seja fraseada de forma diferente das anteriores.
+- Exemplo: se uma resposta anterior diz "o modelo Forward joga o ar quente pra fora, o Reverse puxa o ar frio pra dentro", e a nova pergunta é "o Reverse solta ar quente?", você DEVE responder com base nesse fato (não, o Reverse puxa ar frio pra dentro), mesmo que a pergunta pareça nova.
+- Nunca contradiga uma informação que já está em "respostas_anteriores_deste_produto".
+- Se a pergunta atual não tiver relação com nenhuma resposta anterior daquele produto, responda normalmente com base no título/categoria do anúncio.
+
+Para cada pergunta, decida:
+1. Se é uma pergunta simples e objetiva (estoque, prazo, compatibilidade, cor, garantia, frete, ou algo já coberto em respostas_anteriores_deste_produto) — gere uma resposta.
 2. Se for uma reclamação disfarçada de pergunta, negociação de preço, xingamento, ou algo fora do escopo de uma resposta padrão — marque como "requires_attention": true e não gere resposta.
 
 REGRAS DA RESPOSTA (siga à risca):
 - Comece com a saudação "${saudacao}" seguida do nome do comprador se o campo "nome_comprador" não for null (ex: "${saudacao}, Felipe!"). Se "nome_comprador" for null, comece só com "${saudacao}!" sem nome.
 - Use frases curtas e palavras simples do dia a dia. Nada de linguagem formal, rebuscada ou técnica demais — escreva como se estivesse respondendo um amigo no WhatsApp, mas educado.
 - No máximo 2 frases curtas depois da saudação. Direto ao ponto, sem enrolação.
-- Não invente informações técnicas específicas que você não tem certeza (ex: compatibilidade exata com um modelo não informado no anúncio). Só nesse caso específico, oriente o comprador a confirmar antes da compra.
-- Se a pergunta já traz a informação necessária pra responder com segurança (ex: pergunta cita um modelo que está listado no anúncio, ou pergunta sobre algo que você já sabe pela ficha técnica), responda direto e completo — não adicione nenhum aviso de "confirme antes" ou "recomendamos verificar", isso é redundante e incomoda o comprador.
+- Não invente informações técnicas específicas que você não tem certeza e que não estão em respostas_anteriores_deste_produto (ex: compatibilidade exata com um modelo não informado no anúncio). Só nesse caso, oriente o comprador a confirmar antes da compra.
+- Se a pergunta já traz a informação necessária pra responder com segurança, ou se respostas_anteriores_deste_produto já cobre isso, responda direto e completo — não adicione nenhum aviso de "confirme antes" ou "recomendamos verificar", isso é redundante e incomoda o comprador.
 - Não use palavras difíceis, nada de "adquirir" (use "comprar"), "efetuar" (use "fazer"), "mediante" (use "com"), etc.
-- Não repita a mesma ideia duas vezes na resposta. Uma frase resolve — não emende uma segunda frase que só reforça a primeira.${blocoExemplos}
+- Não repita a mesma ideia duas vezes na resposta. Uma frase resolve — não emende uma segunda frase que só reforça a primeira.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
 [{"idx": 0, "requires_attention": false, "suggested_answer": "texto da resposta"}, {"idx": 1, "requires_attention": true, "suggested_answer": ""}]`;
@@ -194,20 +202,22 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         return res.status(400).json({ ok: false, error: data.message || data.error || "Erro ao enviar resposta", status: r.status, raw: data });
       }
 
-      // Salvar como exemplo para treinar futuras sugestões (não bloqueia a resposta se falhar)
+      // Salvar como conhecimento fixo DESSE produto — sempre consultado em perguntas futuras sobre o mesmo item
       if (process.env.FIREBASE_URL) {
         try {
-          const { pergunta_texto, produto } = req.body || {};
-          await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${question_id}.json`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              pergunta: pergunta_texto || "",
-              produto: produto || "",
-              resposta: texto,
-              data: new Date().toISOString(),
-            }),
-          });
+          const { pergunta_texto, produto, item_id: itemIdSalvar } = req.body || {};
+          if (itemIdSalvar) {
+            await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${itemIdSalvar}/${question_id}.json`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                pergunta: pergunta_texto || "",
+                produto: produto || "",
+                resposta: texto,
+                data: new Date().toISOString(),
+              }),
+            });
+          }
         } catch (e) {}
       }
 
