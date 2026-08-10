@@ -4,6 +4,129 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ── Perguntas: buscar pendentes + gerar sugestão de resposta via Claude ──
+  if (req.query.action === "buscar-perguntas" && req.method === "GET") {
+    try {
+      const { token: tokenP } = req.query;
+      if (!tokenP) return res.status(400).json({ ok: false, error: "token obrigatório" });
+
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", {
+        headers: { Authorization: `Bearer ${tokenP}` },
+      });
+      const me = await meRes.json();
+      if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
+
+      const qRes = await fetch(
+        `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=30`,
+        { headers: { Authorization: `Bearer ${tokenP}` } }
+      );
+      const qData = await qRes.json();
+      const perguntas = qData.questions || [];
+
+      if (perguntas.length === 0) {
+        return res.json({ ok: true, perguntas: [] });
+      }
+
+      // Buscar título dos anúncios envolvidos (multiget, até 20 por chamada)
+      const itemIds = [...new Set(perguntas.map(p => p.item_id))];
+      const itemsInfo = {};
+      for (let i = 0; i < itemIds.length; i += 20) {
+        const lote = itemIds.slice(i, i + 20);
+        try {
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,thumbnail`, {
+            headers: { Authorization: `Bearer ${tokenP}` },
+          });
+          const arr = await r.json();
+          arr.forEach(entry => {
+            if (entry.code === 200 && entry.body) itemsInfo[entry.body.id] = entry.body;
+          });
+        } catch (e) {}
+      }
+
+      // Gerar sugestões via Claude — uma chamada só, em lote
+      const listaParaClaude = perguntas.map((p, i) => ({
+        idx: i,
+        produto: itemsInfo[p.item_id]?.title || "Produto",
+        pergunta: p.text,
+      }));
+
+      const systemPrompt = `Você é um assistente de atendimento da Digoo Brasil, loja de periféricos gamer no Mercado Livre.
+Vai receber uma lista de perguntas pré-venda feitas por compradores em anúncios. Para cada pergunta, decida:
+
+1. Se é uma pergunta simples e objetiva (estoque, prazo, compatibilidade, cor, garantia, frete) — gere uma resposta curta, educada e direta em português, no tom de uma loja profissional. Não invente informações técnicas específicas que você não tem certeza (ex: compatibilidade exata com um modelo que não foi informado no título) — nesse caso, oriente o comprador a confirmar a especificação antes da compra.
+2. Se for uma reclamação disfarçada de pergunta, negociação de preço, xingamento, ou algo fora do escopo de uma resposta padrão — marque como "requires_attention": true e não gere resposta.
+
+Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
+[{"idx": 0, "requires_attention": false, "suggested_answer": "texto da resposta"}, {"idx": 1, "requires_attention": true, "suggested_answer": ""}]`;
+
+      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 2000,
+          system: systemPrompt,
+          messages: [{ role: "user", content: JSON.stringify(listaParaClaude) }],
+        }),
+      });
+      const claudeData = await claudeRes.json();
+      let sugestoes = [];
+      try {
+        const textBlock = (claudeData.content || []).find(b => b.type === "text");
+        const raw = textBlock?.text?.trim() || "[]";
+        const jsonStr = raw.replace(/^```json\s*|\s*```$/g, "");
+        sugestoes = JSON.parse(jsonStr);
+      } catch (e) {
+        sugestoes = [];
+      }
+
+      const resultado = perguntas.map((p, i) => {
+        const sug = sugestoes.find(s => s.idx === i) || {};
+        return {
+          question_id: p.id,
+          item_id: p.item_id,
+          produto: itemsInfo[p.item_id]?.title || "Produto",
+          thumbnail: itemsInfo[p.item_id]?.thumbnail || "",
+          pergunta: p.text,
+          data: p.date_created,
+          requires_attention: sug.requires_attention !== false,
+          suggested_answer: sug.suggested_answer || "",
+        };
+      });
+
+      return res.json({ ok: true, perguntas: resultado });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Perguntas: enviar resposta ──
+  if (req.query.action === "responder-pergunta" && req.method === "POST") {
+    try {
+      const { question_id, texto, token: tokenR } = req.body || {};
+      if (!question_id || !texto || !tokenR) return res.status(400).json({ ok: false, error: "question_id, texto e token obrigatórios" });
+
+      const r = await fetch("https://api.mercadolibre.com/answers", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenR}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ question_id: Number(question_id), text: texto }),
+      });
+      const data = await r.json();
+      if (data.error) return res.status(400).json({ ok: false, error: data.message || "Erro ao enviar resposta" });
+
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Clonar anúncio: buscar dados completos do item de origem ──
   if (req.query.action === "buscar-clone" && req.method === "GET") {
     try {
