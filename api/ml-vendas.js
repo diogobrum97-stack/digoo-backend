@@ -294,7 +294,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
       }
 
       const body = {
-        family_name: item.title,
+        family_name: (item.title || "").slice(0, 60),
         category_id: item.category_id,
         price: item.price,
         currency_id: item.currency_id || "BRL",
