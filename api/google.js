@@ -228,12 +228,14 @@ Content-Type: ${mimeType}
                 { type: "text", text: `Extraia deste documento fiscal brasileiro:
 1. valor: valor total líquido em reais (número apenas, ex: 2225.00)
 2. competencia: no formato MM/AAAA — use a data de emissão se não houver competência explícita
-3. prestador: nome do emitente/prestador do serviço
-4. numeroNF: número da NF/NFS-e
+3. prestador: nome do emitente/prestador do serviço, ou nome do órgão emissor se for guia de imposto (ex: Secretaria da Fazenda)
+4. numeroNF: número da NF/NFS-e ou número da guia
 5. cnpj: CNPJ do emitente/prestador (formato XX.XXX.XXX/XXXX-XX)
+6. tipoImposto: se for uma GUIA DE IMPOSTO (não nota de serviço comum), identifique o tipo — ex: "DIFAL", "ICMS", "IPI", "PIS/COFINS", "ISS", "IRPJ", "CSLL". Se não for guia de imposto (for nota de serviço comum), deixe vazio.
+7. uf: se for guia de imposto, a sigla do estado de destino/origem do imposto (ex: "SC", "MG", "RS", "SP"). Se não identificar ou não for guia de imposto, deixe vazio.
 
 Responda APENAS em JSON sem texto extra:
-{"valor": 2225.00, "competencia": "07/2026", "prestador": "Nome Empresa", "numeroNF": "12", "cnpj": "58.350.709/0001-05"}` }
+{"valor": 2225.00, "competencia": "07/2026", "prestador": "Nome Empresa", "numeroNF": "12", "cnpj": "58.350.709/0001-05", "tipoImposto": "DIFAL", "uf": "SC"}` }
               ]
             }]
           })
@@ -244,7 +246,7 @@ Responda APENAS em JSON sem texto extra:
         const texto = iaData.content?.[0]?.text || "{}";
         const clean = texto.replace(/```json|```/g,"").trim();
         const result = JSON.parse(clean);
-        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "", prestador: result.prestador || "", numeroNF: result.numeroNF || "", cnpj: result.cnpj || "" });
+        return res.json({ ok: true, valor: result.valor || 0, competencia: result.competencia || "", prestador: result.prestador || "", numeroNF: result.numeroNF || "", cnpj: result.cnpj || "", tipoImposto: result.tipoImposto || "", uf: result.uf || "" });
 
       } catch(e) {
         console.error("extractPdf error:", e.message);
