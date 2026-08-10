@@ -174,6 +174,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           data: p.date_created,
           requires_attention: sug.requires_attention !== false,
           suggested_answer: sug.suggested_answer || "",
+          has_knowledge: (conhecimentoPorItem[p.item_id] || []).length > 0,
         };
       });
 
