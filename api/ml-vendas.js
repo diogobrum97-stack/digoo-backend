@@ -43,18 +43,49 @@ module.exports = async function handler(req, res) {
         } catch (e) {}
       }
 
+      // Buscar primeiro nome do comprador (nickname público) para personalizar a saudação
+      const buyerIds = [...new Set(perguntas.map(p => p.buyer_id).filter(Boolean))];
+      const buyerNames = {};
+      await Promise.all(buyerIds.map(async (bid) => {
+        try {
+          const r = await fetch(`https://api.mercadolibre.com/users/${bid}`, {
+            headers: { Authorization: `Bearer ${tokenP}` },
+          });
+          const u = await r.json();
+          const nick = (u.nickname || "").trim();
+          // Só usa se parecer um nome real (letras, sem excesso de números/maiúsculas aleatórias)
+          const pareceNome = /^[A-Za-zÀ-ÿ]+$/.test(nick) && nick.length >= 3 && nick.length <= 20;
+          if (pareceNome) {
+            buyerNames[bid] = nick.charAt(0).toUpperCase() + nick.slice(1).toLowerCase();
+          }
+        } catch (e) {}
+      }));
+
+      // Saudação por horário (fuso Brasil)
+      const horaBR = new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false });
+      const h = parseInt(horaBR, 10);
+      const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
+
       // Gerar sugestões via Claude — uma chamada só, em lote
       const listaParaClaude = perguntas.map((p, i) => ({
         idx: i,
         produto: itemsInfo[p.item_id]?.title || "Produto",
         pergunta: p.text,
+        nome_comprador: buyerNames[p.buyer_id] || null,
       }));
 
       const systemPrompt = `Você é um assistente de atendimento da Digoo Brasil, loja de periféricos gamer no Mercado Livre.
 Vai receber uma lista de perguntas pré-venda feitas por compradores em anúncios. Para cada pergunta, decida:
 
-1. Se é uma pergunta simples e objetiva (estoque, prazo, compatibilidade, cor, garantia, frete) — gere uma resposta curta, educada e direta em português, no tom de uma loja profissional. Não invente informações técnicas específicas que você não tem certeza (ex: compatibilidade exata com um modelo que não foi informado no título) — nesse caso, oriente o comprador a confirmar a especificação antes da compra.
+1. Se é uma pergunta simples e objetiva (estoque, prazo, compatibilidade, cor, garantia, frete) — gere uma resposta.
 2. Se for uma reclamação disfarçada de pergunta, negociação de preço, xingamento, ou algo fora do escopo de uma resposta padrão — marque como "requires_attention": true e não gere resposta.
+
+REGRAS DA RESPOSTA (siga à risca):
+- Comece com a saudação "${saudacao}" seguida do nome do comprador se o campo "nome_comprador" não for null (ex: "${saudacao}, Felipe!"). Se "nome_comprador" for null, comece só com "${saudacao}!" sem nome.
+- Use frases curtas e palavras simples do dia a dia. Nada de linguagem formal, rebuscada ou técnica demais — escreva como se estivesse respondendo um amigo no WhatsApp, mas educado.
+- No máximo 2 frases curtas depois da saudação. Direto ao ponto, sem enrolação.
+- Não invente informações técnicas específicas que você não tem certeza (ex: compatibilidade exata com um modelo não informado) — nesse caso, oriente o comprador a confirmar a especificação antes da compra, de forma simples.
+- Não use palavras difíceis, nada de "adquirir" (use "comprar"), "efetuar" (use "fazer"), "mediante" (use "com"), etc.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
 [{"idx": 0, "requires_attention": false, "suggested_answer": "texto da resposta"}, {"idx": 1, "requires_attention": true, "suggested_answer": ""}]`;
