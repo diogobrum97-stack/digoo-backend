@@ -87,6 +87,23 @@ module.exports = async function handler(req, res) {
       const h = parseInt(horaBR, 10);
       const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 
+      // Buscar exemplos de respostas já enviadas de verdade, para o Claude aprender o padrão da loja
+      let exemplosTreino = [];
+      if (process.env.FIREBASE_URL) {
+        try {
+          const exR = await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento.json?orderBy="data"&limitToLast=8`);
+          const exData = await exR.json();
+          if (exData && typeof exData === "object") {
+            exemplosTreino = Object.values(exData)
+              .filter(e => e && e.pergunta && e.resposta)
+              .map(e => ({ pergunta: e.pergunta, resposta: e.resposta }));
+          }
+        } catch (e) {}
+      }
+      const blocoExemplos = exemplosTreino.length
+        ? `\n\nEXEMPLOS DE RESPOSTAS REAIS JÁ ENVIADAS PELA LOJA (siga esse mesmo estilo, tom e forma de escrever):\n${exemplosTreino.map(e => `Pergunta: "${e.pergunta}"\nResposta: "${e.resposta}"`).join("\n\n")}`
+        : "";
+
       // Gerar sugestões via Claude — uma chamada só, em lote
       const listaParaClaude = perguntas.map((p, i) => ({
         idx: i,
@@ -108,7 +125,7 @@ REGRAS DA RESPOSTA (siga à risca):
 - Não invente informações técnicas específicas que você não tem certeza (ex: compatibilidade exata com um modelo não informado no anúncio). Só nesse caso específico, oriente o comprador a confirmar antes da compra.
 - Se a pergunta já traz a informação necessária pra responder com segurança (ex: pergunta cita um modelo que está listado no anúncio, ou pergunta sobre algo que você já sabe pela ficha técnica), responda direto e completo — não adicione nenhum aviso de "confirme antes" ou "recomendamos verificar", isso é redundante e incomoda o comprador.
 - Não use palavras difíceis, nada de "adquirir" (use "comprar"), "efetuar" (use "fazer"), "mediante" (use "com"), etc.
-- Não repita a mesma ideia duas vezes na resposta. Uma frase resolve — não emende uma segunda frase que só reforça a primeira.
+- Não repita a mesma ideia duas vezes na resposta. Uma frase resolve — não emende uma segunda frase que só reforça a primeira.${blocoExemplos}
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
 [{"idx": 0, "requires_attention": false, "suggested_answer": "texto da resposta"}, {"idx": 1, "requires_attention": true, "suggested_answer": ""}]`;
@@ -175,6 +192,23 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
       const data = await r.json();
       if (!r.ok || data.error || data.cause) {
         return res.status(400).json({ ok: false, error: data.message || data.error || "Erro ao enviar resposta", status: r.status, raw: data });
+      }
+
+      // Salvar como exemplo para treinar futuras sugestões (não bloqueia a resposta se falhar)
+      if (process.env.FIREBASE_URL) {
+        try {
+          const { pergunta_texto, produto } = req.body || {};
+          await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${question_id}.json`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pergunta: pergunta_texto || "",
+              produto: produto || "",
+              resposta: texto,
+              data: new Date().toISOString(),
+            }),
+          });
+        } catch (e) {}
       }
 
       return res.json({ ok: true, raw: data });
