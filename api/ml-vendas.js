@@ -272,7 +272,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
               value_id: a.value_id || (Array.isArray(a.values) && a.values[0]?.id) || undefined,
               value_name: a.value_name || (Array.isArray(a.values) && a.values[0]?.name) || undefined,
             }))
-            .filter(a => (a.value_id || a.value_name) && !["PACKAGE_HEIGHT","PACKAGE_LENGTH","PACKAGE_WIDTH","PACKAGE_WEIGHT","PRODUCT_FEATURES","SHIPMENT_PACKING"].includes(a.id)),
+            .filter(a => a.id && (a.value_id || a.value_name) && !["PACKAGE_HEIGHT","PACKAGE_LENGTH","PACKAGE_WIDTH","PACKAGE_WEIGHT","PRODUCT_FEATURES","SHIPMENT_PACKING","LED_COLOR","PACKAGE_DATA_SOURCE"].includes(a.id)),
           variations: item.variations || [],
           descricao,
           has_variations: (item.variations || []).length > 0,
