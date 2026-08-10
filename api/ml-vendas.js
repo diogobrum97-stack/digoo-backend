@@ -4,6 +4,27 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ── Perguntas: contagem rápida para o resumo do dashboard (sem IA) ──
+  if (req.query.action === "contar-perguntas" && req.method === "GET") {
+    try {
+      const { token: tokenC } = req.query;
+      if (!tokenC) return res.status(400).json({ ok: false, error: "token obrigatório" });
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", {
+        headers: { Authorization: `Bearer ${tokenC}` },
+      });
+      const me = await meRes.json();
+      if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
+      const qRes = await fetch(
+        `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&limit=1`,
+        { headers: { Authorization: `Bearer ${tokenC}` } }
+      );
+      const qData = await qRes.json();
+      return res.json({ ok: true, total: qData.total ?? qData.paging?.total ?? 0 });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Perguntas: buscar pendentes + gerar sugestão de resposta via Claude ──
   if (req.query.action === "buscar-perguntas" && req.method === "GET") {
     try {
