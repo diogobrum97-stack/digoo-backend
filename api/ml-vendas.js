@@ -150,9 +150,11 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         body: JSON.stringify({ question_id: Number(question_id), text: texto }),
       });
       const data = await r.json();
-      if (data.error) return res.status(400).json({ ok: false, error: data.message || "Erro ao enviar resposta" });
+      if (!r.ok || data.error || data.cause) {
+        return res.status(400).json({ ok: false, error: data.message || data.error || "Erro ao enviar resposta", status: r.status, raw: data });
+      }
 
-      return res.json({ ok: true });
+      return res.json({ ok: true, raw: data });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
