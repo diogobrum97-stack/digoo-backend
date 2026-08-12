@@ -68,13 +68,20 @@ module.exports = async function handler(req, res) {
           debug: {
             totalPedidosEncontrados: pedidos.length,
             totalComEnvioConsultado: comEnvio.length,
-            statusEncontrados: comEnvio.map(({ order, shipment }) => ({
-              order_id: order.id,
-              shipment_status: shipment.status,
-              shipment_substatus: shipment.substatus,
-              logistic_type: shipment.logistic_type,
-              mode: shipment.mode,
-            })),
+            statusEncontrados: comEnvio
+              .filter(({ shipment }) => shipment.status === "ready_to_ship" && shipment.logistic_type !== "fulfillment")
+              .map(({ order, shipment }) => ({
+                order_id: order.id,
+                shipment_status: shipment.status,
+                shipment_substatus: shipment.substatus,
+                logistic_type: shipment.logistic_type,
+                mode: shipment.mode,
+                date_created: shipment.date_created,
+                last_updated: shipment.last_updated,
+                estimated_handling_limit: shipment.lead_time?.estimated_handling_limit?.date || null,
+                shipping_option_estimated_handling_limit: shipment.shipping_option?.estimated_handling_limit?.date || null,
+                status_history: shipment.status_history || null,
+              })),
           },
         } : {}),
       });
