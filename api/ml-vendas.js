@@ -66,6 +66,7 @@ module.exports = async function handler(req, res) {
           thumbnail: it.item?.thumbnail || "",
         })),
         logistic_type: shipment.logistic_type || "",
+        substatus: shipment.substatus || "",
         data: order.date_created,
       }));
 
