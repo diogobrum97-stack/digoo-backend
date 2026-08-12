@@ -4,6 +4,91 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ── Picking: fila de pedidos pendentes de envio (paga, pronto pra separar, sem ser Full) ──
+  if (req.query.action === "picking-fila" && req.method === "GET") {
+    try {
+      const { token: tokenPk } = req.query;
+      if (!tokenPk) return res.status(400).json({ ok: false, error: "token obrigatório" });
+
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenPk}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
+
+      // Pedidos pagos dos últimos 15 dias — janela segura pra pegar tudo que ainda não foi despachado
+      const dataDe = new Date(Date.now() - 15 * 86400000).toISOString();
+      const ordersRes = await fetch(
+        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_asc&limit=50`,
+        { headers: { Authorization: `Bearer ${tokenPk}` } }
+      );
+      const ordersData = await ordersRes.json();
+      const pedidos = ordersData.results || [];
+
+      // Pra cada pedido, busca o envio (status/substatus/tipo logístico) — em paralelo, em lotes de 5
+      const comEnvio = [];
+      for (let i = 0; i < pedidos.length; i += 5) {
+        const lote = pedidos.slice(i, i + 5);
+        const resultados = await Promise.all(lote.map(async (o) => {
+          try {
+            const shipRes = await fetch(`https://api.mercadolibre.com/orders/${o.id}/shipments`, { headers: { Authorization: `Bearer ${tokenPk}` } });
+            if (!shipRes.ok) return null;
+            const ship = await shipRes.json();
+            return { order: o, shipment: ship };
+          } catch (e) {
+            return null;
+          }
+        }));
+        comEnvio.push(...resultados.filter(Boolean));
+      }
+
+      // Filtra: só o que está pronto pra imprimir etiqueta e NÃO é Full (Full o ML resolve sozinho)
+      const filaFinal = comEnvio.filter(({ shipment }) =>
+        shipment.status === "ready_to_ship" && shipment.logistic_type !== "fulfillment"
+      );
+
+      const resultado = filaFinal.map(({ order, shipment }) => ({
+        order_id: order.id,
+        pack_id: order.pack_id || null,
+        shipment_id: shipment.id,
+        comprador: order.buyer?.nickname || order.buyer?.first_name || "",
+        itens: (order.order_items || []).map(it => ({
+          item_id: it.item?.id || "",
+          titulo: it.item?.title || "",
+          sku: it.item?.seller_sku || "",
+          quantidade: it.quantity || 1,
+          thumbnail: it.item?.thumbnail || "",
+        })),
+        logistic_type: shipment.logistic_type || "",
+        data: order.date_created,
+      }));
+
+      return res.json({ ok: true, fila: resultado });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Picking: gerar/baixar etiqueta de um ou mais envios ──
+  if (req.query.action === "picking-etiqueta" && req.method === "GET") {
+    try {
+      const { token: tokenEt, shipment_ids } = req.query;
+      if (!tokenEt || !shipment_ids) return res.status(400).json({ ok: false, error: "token e shipment_ids obrigatórios" });
+
+      const labelRes = await fetch(
+        `https://api.mercadolibre.com/shipment_labels?shipment_ids=${shipment_ids}&response_type=pdf`,
+        { headers: { Authorization: `Bearer ${tokenEt}` } }
+      );
+      if (!labelRes.ok) {
+        const txt = await labelRes.text();
+        return res.status(labelRes.status).json({ ok: false, error: `Erro ao gerar etiqueta: ${txt.slice(0, 300)}` });
+      }
+      const buf = await labelRes.arrayBuffer();
+      const base64pdf = Buffer.from(buf).toString("base64");
+      return res.json({ ok: true, pdf_base64: base64pdf });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Perguntas: contagem rápida para o resumo do dashboard (sem IA) ──
   if (req.query.action === "contar-perguntas" && req.method === "GET") {
     try {
