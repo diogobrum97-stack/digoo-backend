@@ -31,6 +31,88 @@ export default async function handler(req, res) {
     // ── Modo "notaCompleta": devolve o JSON bruto e completo de UMA nota
     // específica (por número), sem cortar nada — usado só pra investigar
     // campos que ainda não mapeamos (tipo o total de IPI da nota).
+    // ── Modo "picking": busca um produto por SKU e devolve EAN + componentes
+    // (se for kit/composição). Usado na tela de Picking & Packing pra saber
+    // o que precisa ser bipado fisicamente pra cada item do pedido.
+    if (req.query.picking && req.query.sku) {
+      const skuAlvo = String(req.query.sku).trim();
+
+      // 1) Localiza o produto pelo código (SKU) — a listagem já filtra por código
+      const buscaResp = await fetch(
+        `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(skuAlvo)}&limite=5`,
+        { headers }
+      );
+      if (!buscaResp.ok) {
+        const txt = await buscaResp.text();
+        throw new Error(`Bling /produtos ${buscaResp.status}: ${txt.slice(0, 200)}`);
+      }
+      const buscaData = await buscaResp.json();
+      const encontrado = (buscaData.data || []).find(p => String(p.codigo || "").trim() === skuAlvo) || (buscaData.data || [])[0];
+
+      if (!encontrado) {
+        return res.json({ ok: true, encontrado: false, sku: skuAlvo });
+      }
+
+      // 2) Busca o detalhe completo do produto (é lá que vem o GTIN/EAN e a estrutura de kit)
+      const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+      if (!detResp.ok) {
+        const txt = await detResp.text();
+        throw new Error(`Bling /produtos/${encontrado.id} ${detResp.status}: ${txt.slice(0, 200)}`);
+      }
+      const detData = await detResp.json();
+      const p = detData.data || {};
+
+      // Tenta os nomes de campo mais prováveis pro EAN — a doc pública não deixa
+      // 100% claro qual é o nome exato retornado, então testamos os candidatos.
+      const ean = p.gtin || p.codigoBarras || p.gtinEmbalagem || p.ean || "";
+
+      // Tenta localizar a lista de componentes (kit) nos formatos mais prováveis
+      const listaComponentes =
+        p.estrutura?.componentes ||
+        p.composicao?.itens ||
+        p.componentes ||
+        [];
+
+      const isKit = Array.isArray(listaComponentes) && listaComponentes.length > 0;
+
+      let componentes = [];
+      if (isKit) {
+        // Cada componente referencia outro produto — busca o detalhe de cada um
+        // pra pegar o SKU e o EAN reais (não só o ID interno do Bling)
+        componentes = await Promise.all(listaComponentes.map(async (c) => {
+          const compProdutoId = c.produto?.id || c.produtoId || c.id;
+          const quantidade = Number(c.quantidade) || 1;
+          if (!compProdutoId) return { sku: "", nome: c.descricao || "", ean: "", quantidade };
+          try {
+            const cResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${compProdutoId}`, { headers });
+            const cData = await cResp.json();
+            const cp = cData.data || {};
+            return {
+              sku: cp.codigo || "",
+              nome: cp.nome || "",
+              ean: cp.gtin || cp.codigoBarras || cp.gtinEmbalagem || cp.ean || "",
+              quantidade,
+            };
+          } catch (e) {
+            return { sku: "", nome: c.descricao || "", ean: "", quantidade };
+          }
+        }));
+      }
+
+      return res.json({
+        ok: true,
+        encontrado: true,
+        sku: p.codigo || skuAlvo,
+        nome: p.nome || "",
+        ean,
+        isKit,
+        componentes,
+        // Devolve o produto bruto também — útil pra debugar se algum campo
+        // não bateu com o esperado (ean vazio, kit não detectado, etc.)
+        _bruto: req.query.debug ? p : undefined,
+      });
+    }
+
     if (req.query.notaCompleta) {
       const numeroAlvo = String(req.query.notaCompleta).trim();
       let encontrada = null;
