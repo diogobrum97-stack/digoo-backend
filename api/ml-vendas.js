@@ -61,7 +61,23 @@ module.exports = async function handler(req, res) {
         data: order.date_created,
       }));
 
-      return res.json({ ok: true, fila: resultado });
+      return res.json({
+        ok: true,
+        fila: resultado,
+        ...(req.query.debug ? {
+          debug: {
+            totalPedidosEncontrados: pedidos.length,
+            totalComEnvioConsultado: comEnvio.length,
+            statusEncontrados: comEnvio.map(({ order, shipment }) => ({
+              order_id: order.id,
+              shipment_status: shipment.status,
+              shipment_substatus: shipment.substatus,
+              logistic_type: shipment.logistic_type,
+              mode: shipment.mode,
+            })),
+          },
+        } : {}),
+      });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
