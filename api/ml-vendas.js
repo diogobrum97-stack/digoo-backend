@@ -40,9 +40,17 @@ module.exports = async function handler(req, res) {
         comEnvio.push(...resultados.filter(Boolean));
       }
 
-      // Filtra: só o que está pronto pra imprimir etiqueta e NÃO é Full (Full o ML resolve sozinho)
+      // Filtra: só o que está REALMENTE pendente de separar/despachar —
+      // "ready_to_ship" sozinho não basta, porque inclui "dropped_off" (já
+      // despachado fisicamente) e "invoice_pending" (esperando nota fiscal).
+      // Só entram: ready_to_print (etiqueta gerada) e printed (já impressa,
+      // ainda não despachada) — que é exatamente o que aparece pendente no
+      // painel do próprio ML. E continua excluindo Full, que o ML resolve sozinho.
+      const SUBSTATUS_PENDENTES = ["ready_to_print", "printed"];
       const filaFinal = comEnvio.filter(({ shipment }) =>
-        shipment.status === "ready_to_ship" && shipment.logistic_type !== "fulfillment"
+        shipment.status === "ready_to_ship" &&
+        SUBSTATUS_PENDENTES.includes(shipment.substatus) &&
+        shipment.logistic_type !== "fulfillment"
       );
 
       const resultado = filaFinal.map(({ order, shipment }) => ({
@@ -69,7 +77,7 @@ module.exports = async function handler(req, res) {
             totalPedidosEncontrados: pedidos.length,
             totalComEnvioConsultado: comEnvio.length,
             statusEncontrados: comEnvio
-              .filter(({ shipment }) => shipment.status === "ready_to_ship" && shipment.logistic_type !== "fulfillment")
+              .filter(({ shipment }) => shipment.status === "ready_to_ship" && ["ready_to_print", "printed"].includes(shipment.substatus) && shipment.logistic_type !== "fulfillment")
               .map(({ order, shipment }) => ({
                 order_id: order.id,
                 shipment_status: shipment.status,
