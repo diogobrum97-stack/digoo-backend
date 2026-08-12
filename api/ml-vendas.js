@@ -17,7 +17,7 @@ module.exports = async function handler(req, res) {
       // Pedidos pagos dos últimos 15 dias — janela segura pra pegar tudo que ainda não foi despachado
       const dataDe = new Date(Date.now() - 15 * 86400000).toISOString();
       const ordersRes = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_asc&limit=50`,
+        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50`,
         { headers: { Authorization: `Bearer ${tokenPk}` } }
       );
       const ordersData = await ordersRes.json();
