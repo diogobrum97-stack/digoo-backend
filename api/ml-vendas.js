@@ -14,8 +14,10 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
 
-      // Pedidos pagos dos últimos 15 dias — janela segura pra pegar tudo que ainda não foi despachado
-      const dataDe = new Date(Date.now() - 15 * 86400000).toISOString();
+      // Pedidos pagos dos últimos 4 dias — já é margem de sobra (na prática
+      // pedido pendente de separar é sempre bem recente); reduz muito o
+      // volume de chamadas comparado aos 15 dias de antes, deixando mais rápido.
+      const dataDe = new Date(Date.now() - 4 * 86400000).toISOString();
       const ordersRes = await fetch(
         `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50`,
         { headers: { Authorization: `Bearer ${tokenPk}` } }
@@ -23,10 +25,11 @@ module.exports = async function handler(req, res) {
       const ordersData = await ordersRes.json();
       const pedidos = ordersData.results || [];
 
-      // Pra cada pedido, busca o envio (status/substatus/tipo logístico) — em paralelo, em lotes de 5
+      // Pra cada pedido, busca o envio (status/substatus/tipo logístico) — em
+      // paralelo, em lotes de 10 (dobrado — antes eram 5, deixava mais lento)
       const comEnvio = [];
-      for (let i = 0; i < pedidos.length; i += 5) {
-        const lote = pedidos.slice(i, i + 5);
+      for (let i = 0; i < pedidos.length; i += 10) {
+        const lote = pedidos.slice(i, i + 10);
         const resultados = await Promise.all(lote.map(async (o) => {
           try {
             const shipRes = await fetch(`https://api.mercadolibre.com/orders/${o.id}/shipments`, { headers: { Authorization: `Bearer ${tokenPk}` } });
