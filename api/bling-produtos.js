@@ -75,28 +75,45 @@ export default async function handler(req, res) {
 
       const isKit = Array.isArray(listaComponentes) && listaComponentes.length > 0;
 
+      // Pausa curta entre chamadas — evita estourar o limite de requisições do Bling
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      // Busca o detalhe de um produto no Bling, com 1 nova tentativa se a primeira falhar
+      // (o Bling às vezes derruba requisição por excesso de chamadas simultâneas, não
+      // porque o produto realmente não existe)
+      async function buscarDetalheComRetry(produtoId) {
+        for (let tentativa = 0; tentativa < 2; tentativa++) {
+          try {
+            const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${produtoId}`, { headers });
+            if (r.ok) return await r.json();
+          } catch (e) {}
+          if (tentativa === 0) await sleep(400); // espera um pouco antes de tentar de novo
+        }
+        return null;
+      }
+
       let componentes = [];
       if (isKit) {
-        // Cada componente referencia outro produto — busca o detalhe de cada um
-        // pra pegar o SKU e o EAN reais (não só o ID interno do Bling)
-        componentes = await Promise.all(listaComponentes.map(async (c) => {
+        // Busca cada componente UM POR VEZ (não em paralelo) — o Bling derruba
+        // chamadas simultâneas demais, o que fazia componentes aparecerem como
+        // "não encontrado" por engano, de forma aleatória a cada tentativa.
+        for (const c of listaComponentes) {
           const compProdutoId = c.produto?.id || c.produtoId || c.id;
           const quantidade = Number(c.quantidade) || 1;
-          if (!compProdutoId) return { sku: "", nome: c.descricao || "", ean: "", quantidade };
-          try {
-            const cResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${compProdutoId}`, { headers });
-            const cData = await cResp.json();
-            const cp = cData.data || {};
-            return {
-              sku: cp.codigo || "",
-              nome: cp.nome || "",
-              ean: cp.gtin || cp.codigoBarras || cp.gtinEmbalagem || cp.ean || "",
-              quantidade,
-            };
-          } catch (e) {
-            return { sku: "", nome: c.descricao || "", ean: "", quantidade };
+          if (!compProdutoId) {
+            componentes.push({ sku: "", nome: c.descricao || "", ean: "", quantidade });
+            continue;
           }
-        }));
+          const cData = await buscarDetalheComRetry(compProdutoId);
+          const cp = cData?.data || {};
+          componentes.push({
+            sku: cp.codigo || "",
+            nome: cp.nome || c.descricao || "",
+            ean: cp.gtin || cp.codigoBarras || cp.gtinEmbalagem || cp.ean || "",
+            quantidade,
+          });
+          await sleep(250); // respiro entre uma chamada e outra
+        }
       }
 
       return res.json({
