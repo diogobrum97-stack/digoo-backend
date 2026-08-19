@@ -40,6 +40,38 @@ export default async function handler(req, res) {
       return res.json({ ok: true, keys: Object.keys(det.data || {}), estrutura: det.data?.estrutura, composicao: det.data?.composicao, componentes: det.data?.componentes, raw: det.data });
     }
 
+
+    // ── Debug: ver campos de custo/estoque de um produto ──────────────────────
+    if (req.query.action === 'debug-custo' && req.query.sku) {
+      const sku = req.query.sku;
+      const busca = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=3`, { headers });
+      const buscaData = await busca.json();
+      const prod = (buscaData.data || []).find(p => String(p.codigo||'').trim() === sku.trim()) || (buscaData.data||[])[0];
+      if (!prod) return res.json({ erro: 'nao encontrado' });
+      
+      // Busca detalhe do produto
+      const det = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}`, { headers });
+      const detData = (await det.json()).data || {};
+      
+      // Busca estoque do produto
+      const est = await fetch(`https://www.bling.com.br/Api/v3/estoques?idProduto=${prod.id}`, { headers });
+      const estData = await est.json();
+      
+      // Busca saldo em estoque
+      const saldo = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}/estoques`, { headers });
+      const saldoData = await saldo.json();
+
+      return res.json({
+        ok: true,
+        precoCusto: detData.fornecedor?.precoCusto,
+        preco: detData.preco,
+        fornecedor: detData.fornecedor,
+        estoqueKeys: Object.keys(estData.data?.[0] || {}),
+        estoqueRaw: estData.data?.[0],
+        saldoKeys: Object.keys(saldoData.data?.[0] || {}),
+        saldoRaw: saldoData.data?.[0],
+      });
+    }
     // ── Desmembrar kits do Full — extrai componentes via Bling ───────────────
     if (req.query.action === 'desmembrar-kits-full' && req.method === 'POST') {
       const { itens } = req.body;
