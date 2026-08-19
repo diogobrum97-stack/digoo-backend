@@ -458,6 +458,178 @@ export default async function handler(req, res) {
     }
   }
 
+
+  // ── Desmembrar kits do Full — extrai componentes via Bling ───────────────
+  if (req.query.action === 'desmembrar-kits-full' && req.method === 'POST') {
+    try {
+      const { itens } = req.body; // [{ sku, descricao, quantidade }]
+      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+
+      const resultado = [];
+
+      for (const item of itens) {
+        const { sku, descricao, quantidade } = item;
+        await sleep(150); // evitar rate limit
+
+        // Busca produto pelo SKU no Bling
+        const buscaResp = await fetch(
+          `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`,
+          { headers }
+        );
+        if (!buscaResp.ok) {
+          resultado.push({ sku, descricao, quantidade, tipo: 'erro', motivo: `Bling ${buscaResp.status}` });
+          continue;
+        }
+        const buscaData = await buscaResp.json();
+        const encontrado = (buscaData.data || []).find(p => String(p.codigo || '').trim() === sku.trim()) || (buscaData.data || [])[0];
+
+        if (!encontrado) {
+          resultado.push({ sku, descricao, quantidade, tipo: 'nao_encontrado' });
+          continue;
+        }
+
+        // Busca detalhe completo (estrutura de kit fica aqui)
+        await sleep(150);
+        const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+        if (!detResp.ok) {
+          resultado.push({ sku, descricao, quantidade, tipo: 'erro', motivo: `Detalhe ${detResp.status}` });
+          continue;
+        }
+        const detData = await detResp.json();
+        const prod = detData.data || {};
+        const estrutura = prod.estrutura || prod.componentes || prod.kit || [];
+        const custo = Number(prod.preco || prod.precoCusto || 0);
+        const ncm = String(prod.classificacaoFiscal || '').replace(/\D/g, '');
+
+        if (estrutura && estrutura.length > 0) {
+          // É um kit — desmembra os componentes
+          for (const comp of estrutura) {
+            await sleep(100);
+            const compSku = comp.codigo || comp.produto?.codigo || '';
+            const compQtd = Number(comp.quantidade || 1) * quantidade;
+            const compDescricao = comp.descricao || comp.produto?.descricao || compSku;
+            const compCusto = Number(comp.preco || comp.produto?.preco || 0);
+            const compNcm = String(comp.classificacaoFiscal || comp.produto?.classificacaoFiscal || '').replace(/\D/g, '');
+
+            // Busca NCM e custo do componente se não veio
+            let compNcmFinal = compNcm;
+            let compCustoFinal = compCusto;
+            if (!compNcmFinal || !compCustoFinal) {
+              try {
+                await sleep(150);
+                const compBusca = await fetch(
+                  `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(compSku)}&limite=3`,
+                  { headers }
+                );
+                if (compBusca.ok) {
+                  const compBuscaData = await compBusca.json();
+                  const compEnc = (compBuscaData.data || []).find(p => String(p.codigo||'').trim() === compSku.trim()) || (compBuscaData.data||[])[0];
+                  if (compEnc) {
+                    await sleep(100);
+                    const compDet = await fetch(`https://www.bling.com.br/Api/v3/produtos/${compEnc.id}`, { headers });
+                    if (compDet.ok) {
+                      const compDetData = await compDet.json();
+                      const cp = compDetData.data || {};
+                      compNcmFinal = compNcmFinal || String(cp.classificacaoFiscal || '').replace(/\D/g, '');
+                      compCustoFinal = compCustoFinal || Number(cp.preco || cp.precoCusto || 0);
+                    }
+                  }
+                }
+              } catch(e) {}
+            }
+
+            resultado.push({
+              sku: compSku,
+              descricao: compDescricao,
+              quantidade: compQtd,
+              custo: compCustoFinal,
+              ncm: compNcmFinal,
+              tipo: 'componente',
+              kitOrigem: sku,
+              kitDescricao: descricao,
+            });
+          }
+        } else {
+          // Produto simples — vai direto
+          resultado.push({
+            sku,
+            descricao: prod.descricao || descricao,
+            quantidade,
+            custo,
+            ncm,
+            tipo: 'simples',
+          });
+        }
+      }
+
+      // Agrupa componentes iguais (mesmo SKU pode vir de kits diferentes)
+      const agrupado = {};
+      for (const r of resultado) {
+        const key = r.sku;
+        if (!key) continue;
+        if (agrupado[key]) {
+          agrupado[key].quantidade += r.quantidade;
+          if (!agrupado[key].kitsOrigem) agrupado[key].kitsOrigem = [];
+          if (r.kitOrigem) agrupado[key].kitsOrigem.push(`${r.kitOrigem} ×${r.quantidade/agrupado[key].quantidade * r.quantidade}`);
+        } else {
+          agrupado[key] = { ...r, kitsOrigem: r.kitOrigem ? [r.kitOrigem] : [] };
+        }
+      }
+
+      return res.json({ ok: true, itens: Object.values(agrupado) });
+    } catch (e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
+  // ── Emitir NF de Transferência Full ──────────────────────────────────────
+  if (req.query.action === 'emitir-nf-transferencia' && req.method === 'POST') {
+    try {
+      const { itens, naturezaId } = req.body;
+      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+
+      const payload = {
+        tipo: 1,
+        finalidade: 1, // normal
+        naturezaOperacao: { id: naturezaId || 15109130797 },
+        itens: itens.map(it => ({
+          codigo: it.sku,
+          descricao: it.descricao,
+          unidade: 'UN',
+          quantidade: it.quantidade,
+          valor: Number(it.custo || 0),
+          cfop: '6152',
+          ncm: String(it.ncm || '').replace(/\D/g, ''),
+        })),
+      };
+
+      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const respData = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro ao criar NF', detalhe: respData });
+
+      const nfeId = respData.data?.id;
+      if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
+
+      // Transmite para SEFAZ
+      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
+      const envioData = await envioResp.json();
+
+      return res.json({
+        ok: true,
+        nfeId,
+        numero: respData.data?.numero || null,
+        chaveAcesso: envioData.data?.chaveAcesso || null,
+        status: envioData.data?.situacao || null,
+      });
+    } catch (e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
