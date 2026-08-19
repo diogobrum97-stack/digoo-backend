@@ -268,6 +268,7 @@ export default async function handler(req, res) {
             const registro = {
               id: nf.id,
               numero: nf.numero || corpo.numero,
+              chaveAcesso: corpo.chaveAcesso || corpo.chaveLinkDanfe || null,
               dataEmissao: nf.dataEmissao || corpo.dataEmissao || null,
               natureza: naturezaNome || null,
               itens: itens.map(it => ({
@@ -358,6 +359,105 @@ export default async function handler(req, res) {
         precoCusto: Number(p.precoCusto) || 0,
       }));
     return res.json({ ok: true, data: resultado, total: resultado.length });
+  
+  // ── Emitir NF-e complementar de IPI ──────────────────────────────────────
+  if (req.query.action === 'emitir-complementar-ipi' && req.method === 'POST') {
+    try {
+      const body = req.body;
+      const { itens, chaveRefOriginal, numeroOriginal, naturezaId } = body;
+
+      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+
+      // Busca dados do emitente (Matriz RS) e destinatário (Filial SP) do Firebase
+      const configResp = await fetch(`${process.env.FIREBASE_URL}/config_nfe.json`);
+      const configNfe = await configResp.json() || {};
+
+      // Monta o payload da NF complementar de IPI para o Bling
+      const payload = {
+        tipo: 1, // NF-e
+        finalidade: 3, // complementar
+        naturezaOperacao: { id: naturezaId || null },
+        notasReferenciadas: chaveRefOriginal ? [{ chave: chaveRefOriginal }] : [],
+        itens: itens.map((it, idx) => ({
+          codigo: it.sku,
+          descricao: it.descricao || it.produto,
+          unidade: 'UN',
+          quantidade: it.quantidade,
+          valor: 0, // complementar de IPI: valor do produto = 0
+          cfop: '6152',
+          ncm: String(it.ncm || '').replace(/\D/g, ''),
+          ipi: {
+            situacaoTributaria: '50', // saída tributada
+            aliquota: it.aliquota,
+            valor: it.valorIpi,
+          },
+        })),
+        // Emitente e destinatário virão do cadastro do Bling (conta logada = Matriz RS)
+      };
+
+      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const respData = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro ao criar NF no Bling', detalhe: respData });
+
+      const nfeId = respData.data?.id;
+      if (!nfeId) return res.status(500).json({ erro: 'NF criada mas sem ID retornado', raw: respData });
+
+      // Transmitir para SEFAZ
+      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, {
+        method: 'POST',
+        headers,
+      });
+      const envioData = await envioResp.json();
+
+      return res.json({
+        ok: true,
+        nfeId,
+        numero: respData.data?.numero || null,
+        chaveAcesso: envioData.data?.chaveAcesso || null,
+        status: envioData.data?.situacao || null,
+        raw: envioData,
+      });
+    } catch (e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
+  // ── Preview da NF complementar (só valida, não emite) ────────────────────
+  if (req.query.action === 'preview-complementar-ipi') {
+    try {
+      const { nfId } = req.query;
+      if (!nfId) return res.status(400).json({ erro: 'nfId obrigatório' });
+
+      // Busca detalhes da NF original para preencher o preview
+      const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfId}`, { headers });
+      if (!detResp.ok) return res.status(detResp.status).json({ erro: 'NF não encontrada no Bling' });
+      const det = await detResp.json();
+      const corpo = det.data || {};
+
+      return res.json({
+        ok: true,
+        numero: corpo.numero,
+        chaveAcesso: corpo.chaveAcesso || null,
+        dataEmissao: corpo.dataEmissao,
+        naturezaOperacao: corpo.naturezaOperacao,
+        itens: (corpo.itens || []).map(it => ({
+          sku: it.codigo,
+          descricao: it.descricao,
+          ncm: String(it.classificacaoFiscal || '').replace(/\D/g, ''),
+          quantidade: Number(it.quantidade) || 0,
+          valorUnit: Number(it.valor) || 0,
+        })),
+      });
+    } catch (e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
