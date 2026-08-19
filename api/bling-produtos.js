@@ -27,6 +27,19 @@ export default async function handler(req, res) {
       Authorization: `Bearer ${token.access_token}`,
       Accept: "application/json",
     };
+
+    // ── Debug: ver estrutura raw de um produto no Bling ──────────────────────
+    if (req.query.action === 'debug-produto' && req.query.sku) {
+      const sku = req.query.sku;
+      const buscaResp = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`, { headers });
+      const buscaData = await buscaResp.json();
+      const encontrado = (buscaData.data || []).find(p => String(p.codigo || '').trim() === sku.trim()) || (buscaData.data || [])[0];
+      if (!encontrado) return res.json({ erro: 'nao encontrado', buscaData });
+      const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+      const det = await detResp.json();
+      return res.json({ ok: true, keys: Object.keys(det.data || {}), estrutura: det.data?.estrutura, composicao: det.data?.composicao, componentes: det.data?.componentes, raw: det.data });
+    }
+
     // ── Desmembrar kits do Full — extrai componentes via Bling ───────────────
     if (req.query.action === 'desmembrar-kits-full' && req.method === 'POST') {
       const { itens } = req.body;
