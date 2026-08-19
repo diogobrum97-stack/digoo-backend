@@ -57,27 +57,27 @@ export default async function handler(req, res) {
         const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
         if (!detResp.ok) { resultado.push({ sku, descricao, quantidade, tipo: 'erro' }); continue; }
         const prod = (await detResp.json()).data || {};
-        // Mesmo mapeamento do picking — testa todos os campos possíveis
-        const estrutura =
-          prod.estrutura?.componentes ||
-          prod.composicao?.itens ||
-          prod.componentes ||
-          (Array.isArray(prod.estrutura) ? prod.estrutura : []) ||
-          [];
-        const custo = Number(prod.precoCusto || prod.preco || 0);
-        const ncm = String(prod.tributacao?.ncm || prod.classificacaoFiscal || '').replace(/\D/g, '');
-        if (estrutura.length > 0) {
-          for (const comp of estrutura) {
-            const compProd = comp.produto || comp;
-            const compSku = compProd.codigo || comp.codigo || '';
+        // Componentes vêm só com id — busca detalhe de cada um
+        const componentes = prod.estrutura?.componentes || [];
+        const custo = Number(prod.fornecedor?.precoCusto || prod.preco || 0);
+        const ncm = String(prod.tributacao?.ncm || '').replace(/[^0-9]/g, '');
+        if (componentes.length > 0) {
+          for (const comp of componentes) {
+            const compId = comp.produto?.id;
             const compQtd = Number(comp.quantidade || 1) * quantidade;
-            const compDescricao = compProd.descricao || comp.descricao || compSku;
-            const compCusto = Number(compProd.precoCusto || compProd.preco || 0);
-            const compNcm = String(compProd.tributacao?.ncm || compProd.classificacaoFiscal || '').replace(/\D/g, '');
+            if (!compId) continue;
+            await sleep(200);
+            const compResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${compId}`, { headers });
+            if (!compResp.ok) continue;
+            const compData = (await compResp.json()).data || {};
+            const compSku = compData.codigo || '';
+            const compDescricao = compData.nome || compData.descricao || compSku;
+            const compCusto = Number(compData.fornecedor?.precoCusto || compData.preco || 0);
+            const compNcm = String(compData.tributacao?.ncm || '').replace(/[^0-9]/g, '');
             resultado.push({ sku: compSku, descricao: compDescricao, quantidade: compQtd, custo: compCusto, ncm: compNcm, tipo: 'componente', kitOrigem: sku });
           }
         } else {
-          resultado.push({ sku, descricao: prod.descricao || descricao, quantidade, custo, ncm, tipo: 'simples' });
+          resultado.push({ sku, descricao: prod.nome || prod.descricao || descricao, quantidade, custo, ncm, tipo: 'simples' });
         }
       }
       // Agrupa mesmo SKU de kits diferentes
