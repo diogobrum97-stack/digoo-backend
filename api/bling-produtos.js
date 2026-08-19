@@ -27,6 +27,113 @@ export default async function handler(req, res) {
       Authorization: `Bearer ${token.access_token}`,
       Accept: "application/json",
     };
+    // ── Desmembrar kits do Full — extrai componentes via Bling ───────────────
+    if (req.query.action === 'desmembrar-kits-full' && req.method === 'POST') {
+      const { itens } = req.body;
+      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+      const resultado = [];
+      for (const item of itens) {
+        const { sku, descricao, quantidade } = item;
+        await sleep(200);
+        const buscaResp = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`, { headers });
+        if (!buscaResp.ok) { resultado.push({ sku, descricao, quantidade, tipo: 'erro', motivo: `Bling ${buscaResp.status}` }); continue; }
+        const buscaData = await buscaResp.json();
+        const encontrado = (buscaData.data || []).find(p => String(p.codigo || '').trim() === sku.trim()) || (buscaData.data || [])[0];
+        if (!encontrado) { resultado.push({ sku, descricao, quantidade, tipo: 'nao_encontrado' }); continue; }
+        await sleep(200);
+        const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+        if (!detResp.ok) { resultado.push({ sku, descricao, quantidade, tipo: 'erro' }); continue; }
+        const prod = (await detResp.json()).data || {};
+        const estrutura = prod.estrutura || [];
+        const custo = Number(prod.precoCusto || prod.preco || 0);
+        const ncm = String(prod.tributacao?.ncm || '').replace(/\D/g, '');
+        if (estrutura.length > 0) {
+          for (const comp of estrutura) {
+            const compSku = comp.produto?.codigo || comp.codigo || '';
+            const compQtd = Number(comp.quantidade || 1) * quantidade;
+            const compDescricao = comp.produto?.descricao || comp.descricao || compSku;
+            const compCusto = Number(comp.produto?.precoCusto || comp.produto?.preco || 0);
+            const compNcm = String(comp.produto?.tributacao?.ncm || '').replace(/\D/g, '');
+            resultado.push({ sku: compSku, descricao: compDescricao, quantidade: compQtd, custo: compCusto, ncm: compNcm, tipo: 'componente', kitOrigem: sku });
+          }
+        } else {
+          resultado.push({ sku, descricao: prod.descricao || descricao, quantidade, custo, ncm, tipo: 'simples' });
+        }
+      }
+      // Agrupa mesmo SKU de kits diferentes
+      const map = {};
+      for (const r of resultado) {
+        if (!r.sku) continue;
+        if (map[r.sku]) { map[r.sku].quantidade += r.quantidade; }
+        else { map[r.sku] = { ...r }; }
+      }
+      return res.json({ ok: true, itens: Object.values(map) });
+    }
+
+    // ── Emitir NF de Transferência Full ──────────────────────────────────────
+    if (req.query.action === 'emitir-nf-transferencia' && req.method === 'POST') {
+      const { itens, naturezaId } = req.body;
+      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+      const payload = {
+        tipo: 1, finalidade: 1,
+        naturezaOperacao: { id: Number(naturezaId || 15109130797) },
+        itens: itens.map(it => ({
+          codigo: it.sku, descricao: it.descricao, unidade: 'UN',
+          quantidade: it.quantidade, valor: Number(it.custo || 0),
+          cfop: '6152', ncm: String(it.ncm || '').replace(/\D/g, ''),
+        })),
+      };
+      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const respData = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro Bling', detalhe: respData });
+      const nfeId = respData.data?.id;
+      if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
+      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
+      const envioData = await envioResp.json();
+      return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso: envioData.data?.chaveAcesso || null, status: envioData.data?.situacao || null });
+    }
+
+    // ── Emitir NF Complementar de IPI ────────────────────────────────────────
+    if (req.query.action === 'emitir-complementar-ipi' && req.method === 'POST') {
+      const { itens, chaveRefOriginal, numeroOriginal, naturezaId } = req.body;
+      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+      const payload = {
+        tipo: 1, finalidade: 3,
+        naturezaOperacao: { id: naturezaId || null },
+        notasReferenciadas: chaveRefOriginal ? [{ chave: chaveRefOriginal }] : [],
+        itens: itens.map(it => ({
+          codigo: it.sku, descricao: it.descricao || it.produto, unidade: 'UN',
+          quantidade: it.quantidade, valor: 0, cfop: '6152',
+          ncm: String(it.ncm || '').replace(/\D/g, ''),
+          ipi: { situacaoTributaria: '50', aliquota: it.aliquota, valor: it.valorIpi },
+        })),
+      };
+      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const respData = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro Bling', detalhe: respData });
+      const nfeId = respData.data?.id;
+      if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
+      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
+      const envioData = await envioResp.json();
+      return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso: envioData.data?.chaveAcesso || null, status: envioData.data?.situacao || null });
+    }
+
+    // ── Extrair SKUs do PDF via Claude ────────────────────────────────────────
+    if (req.query.action === 'extrair-pdf-full' && req.method === 'POST') {
+      const { pdfBase64 } = req.body;
+      if (!pdfBase64) return res.status(400).json({ erro: 'pdfBase64 obrigatório' });
+      const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } }, { type: 'text', text: 'Extrai todos os SKUs e quantidades desta lista de produtos do ML Full. Retorna APENAS JSON puro sem markdown: [{"sku":"SKU","descricao":"nome","quantidade":38}]. Não inclua nada além do JSON array.' }] }] })
+      });
+      if (!claudeResp.ok) return res.status(500).json({ erro: 'Erro Claude API' });
+      const claudeData = await claudeResp.json();
+      const itens = JSON.parse((claudeData.content?.[0]?.text || '[]').replace(/```json|```/g, '').trim());
+      return res.json({ ok: true, itens });
+    }
+
+
 
     // ── Modo "notaCompleta": devolve o JSON bruto e completo de UMA nota
     // específica (por número), sem cortar nada — usado só pra investigar
