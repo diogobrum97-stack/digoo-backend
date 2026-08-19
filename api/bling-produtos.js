@@ -670,7 +670,56 @@ export default async function handler(req, res) {
     }
   }
 
+  
+  // ── Extrair SKUs do PDF do ML Full via Claude API ─────────────────────────
+  if (req.query.action === 'extrair-pdf-full' && req.method === 'POST') {
+    try {
+      const { pdfBase64 } = req.body;
+      if (!pdfBase64) return res.status(400).json({ erro: 'pdfBase64 obrigatório' });
+
+      const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2000,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'document',
+                source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 }
+              },
+              {
+                type: 'text',
+                text: 'Extrai todos os SKUs e quantidades desta lista de produtos do ML Full (instruções de preparação de envio). Retorna APENAS um JSON puro sem markdown no formato: [{"sku":"SKU-AQUI","descricao":"nome do produto","quantidade":38}]. Usa o campo SKU do documento (ex: WC-HDC-PRETO, COSMIQ-REV-PRETO). Não inclua nada além do JSON array.'
+              }
+            ]
+          }]
+        })
+      });
+
+      if (!claudeResp.ok) {
+        const err = await claudeResp.text();
+        return res.status(claudeResp.status).json({ erro: 'Erro Claude API: ' + err.slice(0, 200) });
+      }
+
+      const claudeData = await claudeResp.json();
+      const texto = claudeData.content?.[0]?.text || '[]';
+      const clean = texto.replace(/```json|```/g, '').trim();
+      const itens = JSON.parse(clean);
+
+      return res.json({ ok: true, itens });
     } catch (e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
+  } catch (e) {
     return res.status(500).json({ error: e.message });
   }
 }
