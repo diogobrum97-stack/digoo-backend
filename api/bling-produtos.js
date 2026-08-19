@@ -44,16 +44,23 @@ export default async function handler(req, res) {
         const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
         if (!detResp.ok) { resultado.push({ sku, descricao, quantidade, tipo: 'erro' }); continue; }
         const prod = (await detResp.json()).data || {};
-        const estrutura = prod.estrutura || [];
+        // Mesmo mapeamento do picking — testa todos os campos possíveis
+        const estrutura =
+          prod.estrutura?.componentes ||
+          prod.composicao?.itens ||
+          prod.componentes ||
+          (Array.isArray(prod.estrutura) ? prod.estrutura : []) ||
+          [];
         const custo = Number(prod.precoCusto || prod.preco || 0);
-        const ncm = String(prod.tributacao?.ncm || '').replace(/\D/g, '');
+        const ncm = String(prod.tributacao?.ncm || prod.classificacaoFiscal || '').replace(/\D/g, '');
         if (estrutura.length > 0) {
           for (const comp of estrutura) {
-            const compSku = comp.produto?.codigo || comp.codigo || '';
+            const compProd = comp.produto || comp;
+            const compSku = compProd.codigo || comp.codigo || '';
             const compQtd = Number(comp.quantidade || 1) * quantidade;
-            const compDescricao = comp.produto?.descricao || comp.descricao || compSku;
-            const compCusto = Number(comp.produto?.precoCusto || comp.produto?.preco || 0);
-            const compNcm = String(comp.produto?.tributacao?.ncm || '').replace(/\D/g, '');
+            const compDescricao = compProd.descricao || comp.descricao || compSku;
+            const compCusto = Number(compProd.precoCusto || compProd.preco || 0);
+            const compNcm = String(compProd.tributacao?.ncm || compProd.classificacaoFiscal || '').replace(/\D/g, '');
             resultado.push({ sku: compSku, descricao: compDescricao, quantidade: compQtd, custo: compCusto, ncm: compNcm, tipo: 'componente', kitOrigem: sku });
           }
         } else {
