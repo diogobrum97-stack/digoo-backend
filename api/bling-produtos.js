@@ -90,6 +90,20 @@ export default async function handler(req, res) {
       return res.json({ ok: true, itens: Object.values(map) });
     }
 
+
+    // ── Debug: ver estrutura de uma NF existente no Bling ──────────────────
+    if (req.query.action === 'debug-nf' && req.query.numero) {
+      const numero = req.query.numero;
+      const resp = await fetch(`https://www.bling.com.br/Api/v3/nfe?numero=${numero}&limite=5`, { headers });
+      const data = await resp.json();
+      const nf = (data.data || [])[0];
+      if (!nf) return res.json({ erro: 'NF não encontrada', data });
+      // Busca detalhe completo
+      const det = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nf.id}`, { headers });
+      const detData = await det.json();
+      return res.json({ ok: true, keys: Object.keys(detData.data || {}), contato: detData.data?.contato, enderecoEntrega: detData.data?.enderecoEntrega, raw: detData.data });
+    }
+
     // ── Emitir NF de Transferência Full ──────────────────────────────────────
     if (req.query.action === 'emitir-nf-transferencia' && req.method === 'POST') {
       const { itens, naturezaId, cnpjFilial } = req.body;
