@@ -17,9 +17,9 @@ module.exports = async function handler(req, res) {
       // Pedidos pagos dos últimos 4 dias — já é margem de sobra (na prática
       // pedido pendente de separar é sempre bem recente); reduz muito o
       // volume de chamadas comparado aos 15 dias de antes, deixando mais rápido.
-      const dataDe = new Date(Date.now() - 4 * 86400000).toISOString();
+      const dataDe = new Date(Date.now() - 7 * 86400000).toISOString();
       const ordersRes = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50`,
+        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=100`,
         { headers: { Authorization: `Bearer ${tokenPk}` } }
       );
       const ordersData = await ordersRes.json();
@@ -49,10 +49,10 @@ module.exports = async function handler(req, res) {
       // Só entram: ready_to_print (etiqueta gerada) e printed (já impressa,
       // ainda não despachada) — que é exatamente o que aparece pendente no
       // painel do próprio ML. E continua excluindo Full, que o ML resolve sozinho.
-      const SUBSTATUS_PENDENTES = ["ready_to_print", "printed"];
+      const SUBSTATUS_PENDENTES = ["ready_to_print", "printed", "waiting_for_carrier", null, undefined];
       const filaFinal = comEnvio.filter(({ shipment }) =>
         shipment.status === "ready_to_ship" &&
-        SUBSTATUS_PENDENTES.includes(shipment.substatus) &&
+        (SUBSTATUS_PENDENTES.includes(shipment.substatus) || !shipment.substatus) &&
         shipment.logistic_type !== "fulfillment"
       );
 
