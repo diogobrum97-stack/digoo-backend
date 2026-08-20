@@ -179,9 +179,17 @@ export default async function handler(req, res) {
         headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } }, { type: 'text', text: 'Extrai todos os SKUs e quantidades desta lista de produtos do ML Full. Retorna APENAS JSON puro sem markdown: [{"sku":"SKU","descricao":"nome","quantidade":38}]. Não inclua nada além do JSON array.' }] }] })
       });
-      if (!claudeResp.ok) return res.status(500).json({ erro: 'Erro Claude API' });
+      if (!claudeResp.ok) {
+        const errText = await claudeResp.text();
+        return res.status(500).json({ erro: 'Erro Claude API: ' + errText.slice(0, 200) });
+      }
       const claudeData = await claudeResp.json();
-      const itens = JSON.parse((claudeData.content?.[0]?.text || '[]').replace(/```json|```/g, '').trim());
+      const rawText = claudeData.content?.[0]?.text || '[]';
+      const clean = rawText.replace(/```json|```/g, '').trim();
+      // Extrai o array JSON mesmo se tiver texto antes/depois
+      const match = clean.match(/\[[\s\S]*\]/);
+      if (!match) return res.status(500).json({ erro: 'Claude não retornou JSON válido', raw: rawText.slice(0, 300) });
+      const itens = JSON.parse(match[0]);
       return res.json({ ok: true, itens });
     }
 
