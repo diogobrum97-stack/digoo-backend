@@ -464,7 +464,189 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 
   // Busca token da Filial automaticamente do Firebase se não vier na URL
   // (usado pelos modos estoque e custos que operam na conta da Filial)
-  if ((req.query.estoque || req.query.custos || req.query.action === "testads" || req.query.action === "testpacking" || req.query.action === "testinbound" || req.query.cron === "prices") && !token && process.env.FIREBASE_URL) {
+
+  // ── Frete médio por componente (para base de cálculo do IPI) ─────────────
+  // Busca vendas dos últimos 60 dias, pega frete pago por anúncio (list_cost),
+  // cruza com composição dos kits no Bling, rateia por valor de cada componente
+  if (req.query.action === "frete-medio-componentes") {
+    try {
+      const diasAtras = parseInt(req.query.dias || "60");
+      const dataDe = new Date(Date.now() - diasAtras * 86400000).toISOString();
+
+      // Busca token Bling para pegar composição dos kits
+      const blingTokenSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken = await blingTokenSnap.json();
+      const blingHeaders = {
+        Authorization: `Bearer ${blingToken?.access_token}`,
+        Accept: "application/json",
+      };
+
+      // Busca pedidos pagos dos últimos X dias (máx 200)
+      const ordersResp = await fetch(
+        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!ordersResp.ok) return res.status(ordersResp.status).json({ erro: "Erro ao buscar pedidos ML" });
+      const ordersData = await ordersResp.json();
+      const orders = ordersData.results || [];
+
+      // Para cada pedido, busca o envio e pega o list_cost (frete pago pelo vendedor)
+      // Agrupa por SKU do item vendido
+      const fretePorSku = {}; // sku -> { totalFrete, totalQtd, pedidos }
+
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+      for (const order of orders) {
+        // Pega SKU e quantidade de cada item do pedido
+        const itens = order.order_items || [];
+        if (!itens.length) continue;
+
+        // Busca o shipment do pedido para pegar list_cost
+        await sleep(100);
+        let listCost = 0;
+        try {
+          const shipResp = await fetch(
+            `https://api.mercadolibre.com/orders/${order.id}/shipments`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (shipResp.ok) {
+            const shipData = await shipResp.json();
+            // list_cost pode estar em shipping_option ou shipments_options
+            const ship = Array.isArray(shipData) ? shipData[0] : shipData;
+            listCost = Number(
+              ship?.shipping_option?.list_cost ||
+              ship?.list_cost ||
+              ship?.cost ||
+              0
+            );
+          }
+        } catch(e) {}
+
+        if (listCost <= 0) continue;
+
+        // Distribui frete entre itens do pedido proporcionalmente ao preço
+        const totalValorPedido = itens.reduce((s, it) => s + (Number(it.unit_price || 0) * Number(it.quantity || 1)), 0);
+
+        for (const item of itens) {
+          // Busca SKU do anúncio no Bling (pode estar no título ou precisar buscar)
+          const itemId = item.item?.id;
+          const qty = Number(item.quantity || 1);
+          const valorItem = Number(item.unit_price || 0) * qty;
+          const freteItem = totalValorPedido > 0 ? listCost * (valorItem / totalValorPedido) : listCost / itens.length;
+
+          // Busca SKU real do anúncio ML
+          await sleep(80);
+          let sku = null;
+          try {
+            const itemResp = await fetch(
+              `https://api.mercadolibre.com/items/${itemId}?attributes=id,seller_sku`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            if (itemResp.ok) {
+              const itemData = await itemResp.json();
+              sku = itemData.seller_sku || null;
+            }
+          } catch(e) {}
+
+          if (!sku) continue;
+
+          if (!fretePorSku[sku]) fretePorSku[sku] = { totalFrete: 0, totalQtd: 0 };
+          fretePorSku[sku].totalFrete += freteItem;
+          fretePorSku[sku].totalQtd += qty;
+        }
+      }
+
+      // Agora para cada SKU, verifica se é kit no Bling e desmembra
+      // freteMedioComponente -> { componente_sku: freteUnitMedio }
+      const freteComponente = {}; // sku_componente -> { totalFreteAtribuido, totalQtd }
+      const skusKit = {}; // sku_kit -> [{ sku_comp, qtdPorKit, custoComp }]
+
+      for (const [sku, dados] of Object.entries(fretePorSku)) {
+        const freteUnitKit = dados.totalFrete / dados.totalQtd; // frete por unidade de kit
+
+        // Busca produto no Bling para ver se é kit
+        await sleep(150);
+        let componentes = null;
+        let custoTotalKit = 0;
+        try {
+          const buscaResp = await fetch(
+            `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=3`,
+            { headers: blingHeaders }
+          );
+          if (buscaResp.ok) {
+            const buscaData = await buscaResp.json();
+            const prod = (buscaData.data || []).find(p => String(p.codigo||'').trim() === sku.trim()) || (buscaData.data||[])[0];
+            if (prod) {
+              await sleep(150);
+              const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}`, { headers: blingHeaders });
+              if (detResp.ok) {
+                const detData = (await detResp.json()).data || {};
+                const estrutura = detData.estrutura?.componentes || [];
+                if (estrutura.length > 0) {
+                  // É kit — busca cada componente para saber o custo
+                  const comps = [];
+                  for (const comp of estrutura) {
+                    const compId = comp.produto?.id;
+                    const compQtd = Number(comp.quantidade || 1);
+                    if (!compId) continue;
+                    await sleep(100);
+                    const compResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${compId}`, { headers: blingHeaders });
+                    if (compResp.ok) {
+                      const compData = (await compResp.json()).data || {};
+                      const compSku = compData.codigo || '';
+                      const compCusto = Number(compData.fornecedor?.precoCusto || compData.preco || 0);
+                      comps.push({ sku: compSku, qtdPorKit: compQtd, custo: compCusto });
+                      custoTotalKit += compCusto * compQtd;
+                    }
+                  }
+                  componentes = comps;
+                }
+              }
+            }
+          }
+        } catch(e) {}
+
+        if (componentes && componentes.length > 0 && custoTotalKit > 0) {
+          // Rateia frete do kit proporcionalmente pelo custo de cada componente
+          for (const comp of componentes) {
+            const proporcao = (comp.custo * comp.qtdPorKit) / custoTotalKit;
+            const freteAtribuidoComp = freteUnitKit * proporcao; // frete por unidade de componente
+            const qtdTotalComp = dados.totalQtd * comp.qtdPorKit;
+
+            if (!freteComponente[comp.sku]) freteComponente[comp.sku] = { totalFreteAtribuido: 0, totalQtd: 0 };
+            freteComponente[comp.sku].totalFreteAtribuido += freteAtribuidoComp * qtdTotalComp;
+            freteComponente[comp.sku].totalQtd += qtdTotalComp;
+          }
+        } else {
+          // Produto simples — frete é direto por unidade
+          if (!freteComponente[sku]) freteComponente[sku] = { totalFreteAtribuido: 0, totalQtd: 0 };
+          freteComponente[sku].totalFreteAtribuido += dados.totalFrete;
+          freteComponente[sku].totalQtd += dados.totalQtd;
+        }
+      }
+
+      // Calcula média final por componente
+      const resultado = {};
+      for (const [sku, dados] of Object.entries(freteComponente)) {
+        if (dados.totalQtd > 0) {
+          resultado[sku] = Number((dados.totalFreteAtribuido / dados.totalQtd).toFixed(4));
+        }
+      }
+
+      // Salva no Firebase para uso na calculadora IPI
+      await fetch(`${process.env.FIREBASE_URL}/frete_medio_componentes.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dados: resultado, atualizadoEm: Date.now(), diasBase: diasAtras, pedidosAnalisados: orders.length })
+      });
+
+      return res.json({ ok: true, resultado, pedidosAnalisados: orders.length, diasBase: diasAtras });
+    } catch(e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
+    if ((req.query.estoque || req.query.custos || req.query.action === "testads" || req.query.action === "testpacking" || req.query.action === "testinbound" || req.query.cron === "prices") && !token && process.env.FIREBASE_URL) {
     try {
       const tR = await fetch(`${process.env.FIREBASE_URL}/ml_token_filial.json`);
       const tData = await tR.json();
