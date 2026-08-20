@@ -104,9 +104,7 @@ export default async function handler(req, res) {
         naturezaOperacao: { id: Number(naturezaId || 15109130797) },
         // Contato destinatário — Filial SP (CNPJ passado no body ou padrão)
         contato: {
-          nome: cnpjFilial ? undefined : 'Digoo Brasil Importacao e Distribuicao Ltda',
-          numeroDocumento: cnpjFilial || '40.981.026/0003-44',
-          tipoPessoa: 'J',
+          id: 17879246077,
         },
         itens: itens.map(it => ({
           codigo: it.sku,
