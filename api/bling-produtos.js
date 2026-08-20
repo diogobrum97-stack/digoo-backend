@@ -179,11 +179,15 @@ export default async function handler(req, res) {
         headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } }, { type: 'text', text: 'Extrai todos os SKUs e quantidades desta lista de produtos do ML Full. Retorna APENAS JSON puro sem markdown: [{"sku":"SKU","descricao":"nome","quantidade":38}]. Não inclua nada além do JSON array.' }] }] })
       });
+      const claudeRespText = await claudeResp.text();
       if (!claudeResp.ok) {
-        const errText = await claudeResp.text();
-        return res.status(500).json({ erro: 'Erro Claude API: ' + errText.slice(0, 200) });
+        return res.status(500).json({ erro: 'Erro Claude API status ' + claudeResp.status + ': ' + claudeRespText.slice(0, 300) });
       }
-      const claudeData = await claudeResp.json();
+      // Verifica se tem API key configurada
+      if (!process.env.ANTHROPIC_API_KEY) {
+        return res.status(500).json({ erro: 'ANTHROPIC_API_KEY não configurada no Vercel' });
+      }
+      const claudeData = JSON.parse(claudeRespText);
       const rawText = claudeData.content?.[0]?.text || '[]';
       const clean = rawText.replace(/```json|```/g, '').trim();
       // Extrai o array JSON mesmo se tiver texto antes/depois
@@ -824,7 +828,7 @@ export default async function handler(req, res) {
         })
       });
 
-      const claudeData = await claudeResp.json();
+      const claudeData = JSON.parse(claudeRespText);
       if (!claudeResp.ok) return res.status(500).json({ erro: 'Erro Claude API', detalhe: claudeData });
 
       const texto = claudeData.content?.[0]?.text || '[]';
@@ -875,7 +879,7 @@ export default async function handler(req, res) {
         return res.status(claudeResp.status).json({ erro: 'Erro Claude API: ' + err.slice(0, 200) });
       }
 
-      const claudeData = await claudeResp.json();
+      const claudeData = JSON.parse(claudeRespText);
       const texto = claudeData.content?.[0]?.text || '[]';
       const clean = texto.replace(/```json|```/g, '').trim();
       const itens = JSON.parse(clean);
