@@ -78,6 +78,8 @@ module.exports = async function handler(req, res) {
         fila: resultado,
         ...(req.query.debug ? {
           debug: {
+            sellerId: me.id,
+            dataDe,
             totalPedidosEncontrados: pedidos.length,
             totalComEnvioConsultado: comEnvio.length,
             statusEncontrados: comEnvio
