@@ -92,15 +92,30 @@ export default async function handler(req, res) {
 
     // ── Emitir NF de Transferência Full ──────────────────────────────────────
     if (req.query.action === 'emitir-nf-transferencia' && req.method === 'POST') {
-      const { itens, naturezaId } = req.body;
+      const { itens, naturezaId, cnpjFilial } = req.body;
       if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+      // Data de hoje no formato YYYY-MM-DD
+      const hoje = new Date().toISOString().split('T')[0];
+
       const payload = {
-        tipo: 1, finalidade: 1,
+        tipo: 1,
+        finalidade: 1,
+        dataOperacao: hoje,
         naturezaOperacao: { id: Number(naturezaId || 15109130797) },
+        // Contato destinatário — Filial SP (CNPJ passado no body ou padrão)
+        contato: {
+          nome: cnpjFilial ? undefined : 'Digoo Brasil Importacao e Distribuicao Ltda',
+          numeroDocumento: cnpjFilial || '40.981.026/0003-44',
+          tipoPessoa: 'J',
+        },
         itens: itens.map(it => ({
-          codigo: it.sku, descricao: it.descricao, unidade: 'UN',
-          quantidade: it.quantidade, valor: Number(it.custo || 0),
-          cfop: '6152', ncm: String(it.ncm || '').replace(/\D/g, ''),
+          codigo: it.sku,
+          descricao: it.descricao,
+          unidade: 'UN',
+          quantidade: it.quantidade,
+          valor: Number(it.custo || 0),
+          cfop: '6152',
+          ncm: String(it.ncm || '').replace(/[^0-9]/g, ''),
         })),
       };
       const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -712,7 +727,7 @@ export default async function handler(req, res) {
   // ── Emitir NF de Transferência Full ──────────────────────────────────────
   if (req.query.action === 'emitir-nf-transferencia' && req.method === 'POST') {
     try {
-      const { itens, naturezaId } = req.body;
+      const { itens, naturezaId, cnpjFilial } = req.body;
       if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
 
       const payload = {
