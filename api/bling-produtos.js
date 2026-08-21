@@ -119,6 +119,19 @@ export default async function handler(req, res) {
         // Contato destinatário — Filial SP (CNPJ passado no body ou padrão)
         contato: {
           id: 17879246077,
+          nome: "DIGOO BRASIL IMPORTACAO E DISTRIBUICAO LTDA",
+          numeroDocumento: "40981026000344",
+          tipoPessoa: "J",
+          endereco: {
+            endereco: "Avenida Paulista",
+            numero: "1471",
+            complemento: "CONJ 1110 CXPST 9014",
+            bairro: "Bela Vista",
+            cep: "01311-927",
+            municipio: "São Paulo",
+            uf: "SP",
+            pais: "Brasil"
+          }
         },
         itens: itens.map(it => ({
           codigo: it.sku,
