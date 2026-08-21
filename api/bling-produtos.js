@@ -205,7 +205,7 @@ export default async function handler(req, res) {
             descricao: it.descricao || it.produto,
             unidade: 'UN',
             quantidade: it.quantidade,
-            valor: valorIpi, // NF complementar: valor do produto = valor do IPI
+            valor: 0, // NF complementar: valor do produto = 0, só IPI é destacado
             cfop: '6152',
             ncm: String(it.ncm || '').replace(/\D/g, ''),
             ipi: {
