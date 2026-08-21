@@ -554,10 +554,30 @@ export default async function handler(req, res) {
       const configNfe = await configResp.json() || {};
 
       // Monta o payload da NF complementar de IPI para o Bling
+      const hoje = new Date().toISOString().split('T')[0];
       const payload = {
         tipo: 1, // NF-e
         finalidade: 3, // complementar
-        naturezaOperacao: { id: naturezaId || null },
+        dataOperacao: hoje,
+        naturezaOperacao: { id: Number(naturezaId || 15109513361) },
+        contato: {
+          id: 16726789250,
+          nome: "DIGOO BRASIL IMPORTACAO E DISTRIBUICAO LTDA",
+          numeroDocumento: "40981026000344",
+          tipoPessoa: "J",
+          indicadorIe: 1,
+          ie: "157133516113",
+          endereco: {
+            endereco: "Avenida Paulista",
+            numero: "1471",
+            complemento: "CONJ 1110 CXPST 9014",
+            bairro: "Bela Vista",
+            cep: "01311927",
+            municipio: "Sao Paulo",
+            uf: "SP",
+            pais: "Brasil"
+          }
+        },
         notasReferenciadas: chaveRefOriginal ? [{ chave: chaveRefOriginal }] : [],
         itens: itens.map((it, idx) => ({
           codigo: it.sku,
