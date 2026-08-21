@@ -512,24 +512,43 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         const itens = order.order_items || [];
         if (!itens.length) continue;
 
-        // Busca o shipment do pedido para pegar list_cost
+        // Pega shipment_id direto do pedido (sem chamada extra)
+        const shipmentId = order.shipping?.id;
+        if (!shipmentId) continue;
+
+        // Busca fees do shipment — campo que contém o custo real pago pelo vendedor
         await sleep(100);
         let listCost = 0;
         try {
-          const shipResp = await fetch(
-            `https://api.mercadolibre.com/orders/${order.id}/shipments`,
+          const feesResp = await fetch(
+            `https://api.mercadolibre.com/shipments/${shipmentId}/fees`,
             { headers: { Authorization: `Bearer ${token}` } }
           );
-          if (shipResp.ok) {
-            const shipData = await shipResp.json();
-            // list_cost pode estar em shipping_option ou shipments_options
-            const ship = Array.isArray(shipData) ? shipData[0] : shipData;
+          if (feesResp.ok) {
+            const feesData = await feesResp.json();
+            // seller_shipping_cost = custo líquido cobrado do vendedor
             listCost = Number(
-              ship?.shipping_option?.list_cost ||
-              ship?.list_cost ||
-              ship?.cost ||
+              feesData?.seller_shipping_cost ??
+              feesData?.cost?.seller_shipping_cost ??
+              feesData?.shipping_cost ??
               0
             );
+            // Fallback: tenta shipping_option dentro do shipment
+            if (listCost <= 0) {
+              const shipResp2 = await fetch(
+                `https://api.mercadolibre.com/shipments/${shipmentId}`,
+                { headers: { Authorization: `Bearer ${token}` } }
+              );
+              if (shipResp2.ok) {
+                const ship = await shipResp2.json();
+                listCost = Number(
+                  ship?.shipping_option?.cost ??
+                  ship?.base_cost ??
+                  ship?.cost ??
+                  0
+                );
+              }
+            }
           }
         } catch(e) {}
 
