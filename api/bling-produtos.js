@@ -173,7 +173,7 @@ export default async function handler(req, res) {
       if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
       const payload = {
         tipo: 1, finalidade: 3,
-        naturezaOperacao: { id: naturezaId || null },
+        naturezaOperacao: { id: naturezaId || 15109513361 },
         notasReferenciadas: chaveRefOriginal ? [{ chave: chaveRefOriginal }] : [],
         itens: itens.map(it => ({
           codigo: it.sku, descricao: it.descricao || it.produto, unidade: 'UN',
@@ -904,4 +904,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: e.message });
   }
 }
+
 
