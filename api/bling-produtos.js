@@ -122,6 +122,7 @@ export default async function handler(req, res) {
           nome: "DIGOO BRASIL IMPORTACAO E DISTRIBUICAO LTDA",
           numeroDocumento: "40981026000344",
           tipoPessoa: "J",
+          indicadorIe: 1,
           endereco: {
             endereco: "Avenida Paulista",
             numero: "1471",
