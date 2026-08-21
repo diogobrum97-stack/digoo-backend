@@ -123,12 +123,13 @@ export default async function handler(req, res) {
           numeroDocumento: "40981026000344",
           tipoPessoa: "J",
           indicadorIe: 1,
+          ie: "157133516113",
           endereco: {
             endereco: "Avenida Paulista",
             numero: "1471",
             complemento: "CONJ 1110 CXPST 9014",
             bairro: "Bela Vista",
-            cep: "01311-927",
+            cep: "01311927",
             municipio: "Sao Paulo",
             uf: "SP",
             pais: "Brasil"
