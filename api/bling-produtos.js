@@ -171,9 +171,29 @@ export default async function handler(req, res) {
     if (req.query.action === 'emitir-complementar-ipi' && req.method === 'POST') {
       const { itens, chaveRefOriginal, numeroOriginal, naturezaId } = req.body;
       if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+      const hoje = new Date().toISOString().split('T')[0];
       const payload = {
         tipo: 1, finalidade: 3,
-        naturezaOperacao: { id: naturezaId || 15109513361 },
+        dataOperacao: hoje,
+        naturezaOperacao: { id: Number(naturezaId || 15109513361) },
+        contato: {
+          id: 16726789250,
+          nome: "DIGOO BRASIL IMPORTACAO E DISTRIBUICAO LTDA",
+          numeroDocumento: "40981026000344",
+          tipoPessoa: "J",
+          indicadorIe: 1,
+          ie: "157133516113",
+          endereco: {
+            endereco: "Avenida Paulista",
+            numero: "1471",
+            complemento: "CONJ 1110 CXPST 9014",
+            bairro: "Bela Vista",
+            cep: "01311927",
+            municipio: "Sao Paulo",
+            uf: "SP",
+            pais: "Brasil"
+          }
+        },
         notasReferenciadas: chaveRefOriginal ? [{ chave: chaveRefOriginal }] : [],
         itens: itens.map(it => ({
           codigo: it.sku, descricao: it.descricao || it.produto, unidade: 'UN',
