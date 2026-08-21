@@ -152,7 +152,19 @@ export default async function handler(req, res) {
       if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
       const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
       const envioData = await envioResp.json();
-      return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso: envioData.data?.chaveAcesso || null, status: envioData.data?.situacao || null });
+
+      // Busca detalhe da NF para pegar chaveAcesso (pode não vir no envio)
+      let chaveAcesso = envioData.data?.chaveAcesso || null;
+      let situacao = envioData.data?.situacao || null;
+      if (!chaveAcesso) {
+        await new Promise(r => setTimeout(r, 2000)); // aguarda 2s
+        const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}`, { headers });
+        const detData = await detResp.json();
+        chaveAcesso = detData.data?.chaveAcesso || null;
+        situacao = detData.data?.situacao?.valor || situacao;
+      }
+
+      return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso, status: situacao });
     }
 
     // ── Emitir NF Complementar de IPI ────────────────────────────────────────
