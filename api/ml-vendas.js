@@ -472,8 +472,17 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
   // cruza com composição dos kits no Bling, rateia por valor de cada componente
   if (req.query.action === "frete-medio-componentes") {
     try {
+      if (!token) return res.status(400).json({ ok: false, erro: "Token ML ausente" });
+
       const diasAtras = parseInt(req.query.dias || "60");
       const dataDe = new Date(Date.now() - diasAtras * 86400000).toISOString();
+
+      // Resolve seller_id
+      const meResFrete = await fetch("https://api.mercadolibre.com/users/me", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const meFrete = await meResFrete.json();
+      if (!meFrete.id) return res.status(401).json({ ok: false, erro: "Token ML inválido" });
 
       // Busca token Bling para pegar composição dos kits
       const blingTokenSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
@@ -485,7 +494,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 
       // Busca pedidos pagos dos últimos X dias (máx 200)
       const ordersResp = await fetch(
-        `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50`,
+        `https://api.mercadolibre.com/orders/search?seller=${meFrete.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!ordersResp.ok) return res.status(ordersResp.status).json({ erro: "Erro ao buscar pedidos ML" });
@@ -1429,6 +1438,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
 module.exports.config = {
   maxDuration: 60,
 };
+
 
 
 
