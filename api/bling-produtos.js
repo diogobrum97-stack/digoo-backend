@@ -195,13 +195,29 @@ export default async function handler(req, res) {
           }
         },
         notasReferenciadas: chaveRefOriginal ? [{ chave: chaveRefOriginal }] : [],
-        itens: itens.map(it => ({
-          codigo: it.sku, descricao: it.descricao || it.produto, unidade: 'UN',
-          quantidade: it.quantidade, valor: 0, cfop: '6152',
-          ncm: String(it.ncm || '').replace(/\D/g, ''),
-          ipi: { situacaoTributaria: '50', aliquota: it.aliquota, valor: it.valorIpi },
-        })),
+        itens: itens.map(it => {
+          const valorIpi = Number(it.valorIpi || 0);
+          const aliquotaPct = Number(it.aliquota || 0);
+          // aliquota vem como fração (0.065) — Bling espera percentual (6.5)
+          const aliquotaBling = aliquotaPct < 1 ? aliquotaPct * 100 : aliquotaPct;
+          return {
+            codigo: it.sku,
+            descricao: it.descricao || it.produto,
+            unidade: 'UN',
+            quantidade: it.quantidade,
+            valor: valorIpi, // NF complementar: valor do produto = valor do IPI
+            cfop: '6152',
+            ncm: String(it.ncm || '').replace(/\D/g, ''),
+            ipi: {
+              situacaoTributaria: '50',
+              aliquota: aliquotaBling,
+              valor: valorIpi,
+            },
+          };
+        }),
       };
+      // Log do payload para debug
+      console.log('[complementar-ipi] payload:', JSON.stringify(payload, null, 2));
       const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const respData = await resp.json();
       if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro Bling', detalhe: respData });
@@ -209,7 +225,7 @@ export default async function handler(req, res) {
       if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
       const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
       const envioData = await envioResp.json();
-      return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso: envioData.data?.chaveAcesso || null, status: envioData.data?.situacao || null });
+      return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso: envioData.data?.chaveAcesso || null, status: envioData.data?.situacao || null, rawEnvio: envioData });
     }
 
     // ── Extrair SKUs do PDF via Claude ────────────────────────────────────────
