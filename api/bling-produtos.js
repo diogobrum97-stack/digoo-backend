@@ -956,6 +956,20 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── Categorias de despesa ────────────────────────────────────────────────
+  if (req.query.action === 'categorias-despesas') {
+    try {
+      const blingTokenSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken = await blingTokenSnap.json();
+      const headers = { Authorization: `Bearer ${blingToken?.access_token}`, Accept: 'application/json' };
+      const resp = await fetch('https://www.bling.com.br/Api/v3/categorias/receitas-despesas?tipo=2&pagina=1&limite=100', { headers });
+      const data = await resp.json();
+      return res.json({ ok: true, categorias: data.data || [] });
+    } catch(e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
