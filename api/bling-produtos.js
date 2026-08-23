@@ -92,7 +92,7 @@ export default async function handler(req, res) {
       if (dataFim) url += `&dataVencimento[lte]=${dataFim}`;
       const resp = await fetch(url, { headers });
       const data = await resp.json();
-      return res.json({ ok: true, contas: data.data || [], total: data.data?.length || 0, debug: { url, status: resp.status, raw: data } });
+      return res.json({ ok: true, contas: data.data || [], total: data.data?.length || 0 });
     }
 
     // ── Criar conta a pagar ───────────────────────────────────────────────
