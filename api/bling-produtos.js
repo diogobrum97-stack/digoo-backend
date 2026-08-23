@@ -31,9 +31,13 @@ export default async function handler(req, res) {
     // ── Debug: ver estrutura raw de um produto no Bling ──────────────────────
     // ── Categorias de despesa ─────────────────────────────────────────────
     if (req.query.action === 'categorias-despesas') {
-      const resp = await fetch('https://www.bling.com.br/Api/v3/categorias/receitas-despesas?tipo=2&pagina=1&limite=100', { headers });
-      const data = await resp.json();
-      return res.json({ ok: true, categorias: data.data || [] });
+      // Tenta os dois endpoints possíveis
+      const [r1, r2, r3] = await Promise.all([
+        fetch('https://www.bling.com.br/Api/v3/categorias/receitas-despesas?tipo=2&pagina=1&limite=100', { headers }).then(r=>r.json()),
+        fetch('https://www.bling.com.br/Api/v3/categorias/receitas-despesas?pagina=1&limite=100', { headers }).then(r=>r.json()),
+        fetch('https://www.bling.com.br/Api/v3/planocontas?pagina=1&limite=100', { headers }).then(r=>r.json()).catch(()=>({})),
+      ]);
+      return res.json({ ok: true, r1, r2, r3 });
     }
 
     if (req.query.action === 'debug-produto' && req.query.sku) {
