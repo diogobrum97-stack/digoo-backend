@@ -45,6 +45,36 @@ export default async function handler(req, res) {
     };
 
     // ── Debug: ver estrutura raw de um produto no Bling ──────────────────────
+    // ── Extrair dados de NF para Contas a Pagar ──────────────────────────────
+    if (req.query.action === 'extrair-nf-cp' && req.method === 'POST') {
+      const { pdfBase64 } = req.body;
+      if (!pdfBase64) return res.status(400).json({ erro: 'PDF obrigatório' });
+      const claudeResp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1000,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+              { type: 'text', text: 'Extraia os dados desta nota fiscal brasileira. Retorne APENAS JSON puro sem markdown nem explicações. Campos: fornecedor (string), cnpj (string, só números), numeroDoc (string), dataEmissao (YYYY-MM-DD), valor (number, valor total da nota), discriminacao (string, descrição do serviço ou produto), categoria_sugerida (string, escolha UMA das opções: Antecipação de Importação, Aluguel, Armazenagem, Fretes, Salário, Infraestrutura, Insumos, Prestador de Serviços, Honorários, Sistemas, Plano de Saúde, Retirada de Lucro), tipo (string: servico ou produto).' }
+            ]
+          }]
+        })
+      });
+      const claudeData = await claudeResp.json();
+      const text = claudeData.content?.[0]?.text || '';
+      try {
+        const clean = text.replace(/```json|```/g, '').trim();
+        const dados = JSON.parse(clean);
+        return res.json({ ok: true, dados });
+      } catch(e) {
+        return res.status(500).json({ erro: 'Falha ao parsear resposta da IA', raw: text });
+      }
+    }
+
     // ── Categorias de despesa ─────────────────────────────────────────────
     if (req.query.action === 'categorias-despesas') {
       return res.json({ ok: true, categorias: CATEGORIAS_BLING });
