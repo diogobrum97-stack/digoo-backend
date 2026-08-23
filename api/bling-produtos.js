@@ -6,6 +6,22 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Mapa de categorias Bling (IDs fixos — plano de contas Digoo Brasil)
+const CATEGORIAS_BLING = [
+  { id: 14729399721, label: "COMPRAS → Antecipação de Importação", grupo: "COMPRAS" },
+  { id: 14729394142, label: "DESPESAS OPERACIONAIS → Aluguel", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14729402416, label: "DESPESAS OPERACIONAIS → Armazenagem", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14632652910, label: "DESPESAS OPERACIONAIS → Fretes", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14617756256, label: "DESPESAS OPERACIONAIS → Funcionários → Salário", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14729594171, label: "DESPESAS OPERACIONAIS → Infraestrutura", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14729584147, label: "DESPESAS OPERACIONAIS → Insumos", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14729584900, label: "DESPESAS OPERACIONAIS → Prestador de Serviços", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14617763097, label: "DESPESAS OPERACIONAIS → Prestadores de Serviços → Honorários", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14729401229, label: "DESPESAS OPERACIONAIS → Sistemas", grupo: "DESPESAS OPERACIONAIS" },
+  { id: 14729391948, label: "REMUNERAÇÃO E PESSOAL → Plano de Saúde", grupo: "REMUNERAÇÃO E PESSOAL" },
+  { id: 14729397458, label: "REMUNERAÇÃO E PESSOAL → Retirada de Lucro", grupo: "REMUNERAÇÃO E PESSOAL" },
+];
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -31,13 +47,68 @@ export default async function handler(req, res) {
     // ── Debug: ver estrutura raw de um produto no Bling ──────────────────────
     // ── Categorias de despesa ─────────────────────────────────────────────
     if (req.query.action === 'categorias-despesas') {
-      // Tenta os dois endpoints possíveis
-      const [r1, r2, r3] = await Promise.all([
-        fetch('https://www.bling.com.br/Api/v3/categorias/receitas-despesas?tipo=2&pagina=1&limite=100', { headers }).then(r=>r.json()),
-        fetch('https://www.bling.com.br/Api/v3/categorias/receitas-despesas?pagina=1&limite=100', { headers }).then(r=>r.json()),
-        fetch('https://www.bling.com.br/Api/v3/planocontas?pagina=1&limite=100', { headers }).then(r=>r.json()).catch(()=>({})),
-      ]);
-      return res.json({ ok: true, r1, r2, r3 });
+      return res.json({ ok: true, categorias: CATEGORIAS_BLING });
+    }
+
+    // ── Listar contas a pagar ─────────────────────────────────────────────
+    if (req.query.action === 'listar-contas-pagar') {
+      const pagina = req.query.pagina || 1;
+      const situacao = req.query.situacao || ''; // 1=aberto, 2=pago, 3=cancelado
+      const dataInicio = req.query.dataInicio || '';
+      const dataFim = req.query.dataFim || '';
+      let url = `https://www.bling.com.br/Api/v3/contas/pagar?pagina=${pagina}&limite=100`;
+      if (situacao) url += `&situacao=${situacao}`;
+      if (dataInicio) url += `&dataVencimento[gte]=${dataInicio}`;
+      if (dataFim) url += `&dataVencimento[lte]=${dataFim}`;
+      const resp = await fetch(url, { headers });
+      const data = await resp.json();
+      return res.json({ ok: true, contas: data.data || [], total: data.data?.length || 0 });
+    }
+
+    // ── Criar conta a pagar ───────────────────────────────────────────────
+    if (req.query.action === 'criar-conta-pagar' && req.method === 'POST') {
+      const { fornecedor, cnpj, valor, vencimento, historico, categoriaId, numeroDoc, portador } = req.body;
+      if (!valor || !vencimento) return res.status(400).json({ erro: 'valor e vencimento obrigatórios' });
+      const payload = {
+        vencimento,
+        valor: Number(valor),
+        historico: historico || '',
+        numeroDocumento: numeroDoc || '',
+        categoria: categoriaId ? { id: Number(categoriaId) } : undefined,
+        portador: portador ? { id: Number(portador) } : undefined,
+        contato: cnpj ? {
+          nome: fornecedor || '',
+          numeroDocumento: cnpj.replace(/\D/g,''),
+        } : undefined,
+        situacao: 1, // aberto
+      };
+      const resp = await fetch('https://www.bling.com.br/Api/v3/contas/pagar', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ erro: data.error?.description || 'Erro Bling', detalhe: data });
+      return res.json({ ok: true, id: data.data?.id });
+    }
+
+    // ── Baixar conta a pagar (marcar como pago) ────────────────────────────
+    if (req.query.action === 'baixar-conta-pagar' && req.method === 'POST') {
+      const { id, dataPagamento, valorPago, portador } = req.body;
+      if (!id) return res.status(400).json({ erro: 'id obrigatório' });
+      const payload = {
+        data: dataPagamento || new Date().toISOString().split('T')[0],
+        valor: Number(valorPago),
+        portador: portador ? { id: Number(portador) } : undefined,
+      };
+      const resp = await fetch(`https://www.bling.com.br/Api/v3/contas/pagar/${id}/baixas`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ erro: data.error?.description || 'Erro Bling', detalhe: data });
+      return res.json({ ok: true });
     }
 
     if (req.query.action === 'debug-produto' && req.query.sku) {
