@@ -59,7 +59,7 @@ export default async function handler(req, res) {
             role: 'user',
             content: [
               { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-              { type: 'text', text: 'Extraia os dados desta nota fiscal brasileira. Retorne APENAS JSON puro sem markdown nem explicações. Campos: fornecedor (string), cnpj (string, só números), numeroDoc (string), dataEmissao (YYYY-MM-DD), valor (number, valor total da nota), discriminacao (string, descrição do serviço ou produto), categoria_sugerida (string, escolha UMA das opções: Antecipação de Importação, Aluguel, Armazenagem, Fretes, Salário, Infraestrutura, Insumos, Prestador de Serviços, Honorários, Sistemas, Plano de Saúde, Retirada de Lucro), tipo (string: servico ou produto).' }
+              { type: 'text', text: 'Extraia os dados desta nota fiscal brasileira. Retorne APENAS JSON puro sem markdown nem explicações. Campos: fornecedor (string), cnpj (string, só números), numeroDoc (string), competencia (YYYY-MM - mês/ano de competência ou emissão do serviço, este campo define a escrituração contábil no Lucro Real), dataVencimento (YYYY-MM-DD - data de vencimento do pagamento, null se não houver), valor (number, valor total da nota), discriminacao (string, descrição do serviço ou produto), categoria_sugerida (string, escolha UMA das opções: Antecipação de Importação, Aluguel, Armazenagem, Fretes, Salário, Infraestrutura, Insumos, Prestador de Serviços, Honorários, Sistemas, Plano de Saúde, Retirada de Lucro), tipo (string: servico ou produto).' }
             ]
           }]
         })
