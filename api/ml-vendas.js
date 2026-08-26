@@ -21,12 +21,23 @@ module.exports = async function handler(req, res) {
       const mlUrl = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=100`;
       const ordersRes = await fetch(mlUrl, { headers: { Authorization: `Bearer ${tokenPk}` } });
       const ordersData = await ordersRes.json();
-      // Log para debug
-      console.log('[picking] URL:', mlUrl);
-      console.log('[picking] ML response status:', ordersRes.status);
-      console.log('[picking] ML response keys:', Object.keys(ordersData));
-      console.log('[picking] paging:', JSON.stringify(ordersData.paging));
       const pedidos = ordersData.results || [];
+      // Inclui raw no debug
+      if (req.query.debug) {
+        return res.json({
+          ok: true,
+          fila: [],
+          debugRaw: {
+            url: mlUrl,
+            mlStatus: ordersRes.status,
+            paging: ordersData.paging,
+            mlError: ordersData.error || null,
+            mlMessage: ordersData.message || null,
+            totalPedidos: pedidos.length,
+            rawAmostra: ordersData
+          }
+        });
+      }
 
       // Pra cada pedido, busca o envio (status/substatus/tipo logístico) — em
       // paralelo, em lotes de 10 (dobrado — antes eram 5, deixava mais lento)
