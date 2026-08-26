@@ -18,25 +18,15 @@ module.exports = async function handler(req, res) {
       // pedido pendente de separar é sempre bem recente); reduz muito o
       // volume de chamadas comparado aos 15 dias de antes, deixando mais rápido.
       const dataDe = new Date(Date.now() - 7 * 86400000).toISOString();
-      const mlUrl = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=100`;
-      const ordersRes = await fetch(mlUrl, { headers: { Authorization: `Bearer ${tokenPk}` } });
-      const ordersData = await ordersRes.json();
-      const pedidos = ordersData.results || [];
-      // Inclui raw no debug
-      if (req.query.debug) {
-        return res.json({
-          ok: true,
-          fila: [],
-          debugRaw: {
-            url: mlUrl,
-            mlStatus: ordersRes.status,
-            paging: ordersData.paging,
-            mlError: ordersData.error || null,
-            mlMessage: ordersData.message || null,
-            totalPedidos: pedidos.length,
-            rawAmostra: ordersData
-          }
-        });
+      // ML limita a 50 por página — busca até 3 páginas (150 pedidos, mais que suficiente)
+      let pedidos = [];
+      for (let offset = 0; offset < 150; offset += 50) {
+        const mlUrl = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50&offset=${offset}`;
+        const ordersRes = await fetch(mlUrl, { headers: { Authorization: `Bearer ${tokenPk}` } });
+        const ordersData = await ordersRes.json();
+        const pagina = ordersData.results || [];
+        pedidos.push(...pagina);
+        if (pagina.length < 50) break; // última página
       }
 
       // Pra cada pedido, busca o envio (status/substatus/tipo logístico) — em
