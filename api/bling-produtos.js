@@ -75,35 +75,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── Gerar Invoice xlsx ────────────────────────────────────────────────────
-    if (req.query.action === 'gerar-invoice' && req.method === 'POST') {
-      const { fornecedor, itens, numInvoice, data } = req.body;
-      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
-
-      // Monta dados da invoice conforme fornecedor
-      const isIris = fornecedor === 'iris';
-      const csvLinhas = [
-        ['SKU','QTY','MODEL','UNIT / (USD)','TOTAL / (USD)'],
-        ...itens.map(it => [it.sku, it.qtd, '', '', '']),
-        [],
-        ['','','','Total', itens.reduce((s,i)=>s+i.qtd,0)],
-      ];
-
-      // Gera CSV simples (xlsx seria melhor mas requer lib no Vercel)
-      const csv = csvLinhas.map(r => r.join('	')).join('
-');
-
-      // Header da invoice
-      const headerIris = `PROFORMA INVOICE\n\nCustomer: Digoo Brasil Importacao e Distribuicao LTDA\nDate: ${data}\nInvoice no: ${numInvoice}\nSales: Iris Zhou\nCNPJ: 40.981.026/0001-82\n\n`;
-      const headerJimmy = `Dongguan Qifeng Electronic Technology Co., Ltd.\nPROFORMA INVOICE\n\nCustomer: Digoo Brasil Importacao e Distribuicao LTDA\nDate: ${data}\nInvoice no: ${numInvoice}\nSales: Jimmy Zeng\nCNPJ: 40.981.026/0001-82\n\n`;
-
-      const conteudo = (isIris ? headerIris : headerJimmy) + csv;
-
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="Invoice_${numInvoice}.txt"`);
-      return res.send(conteudo);
-    }
-
     // ── Categorias de despesa ─────────────────────────────────────────────
     if (req.query.action === 'categorias-despesas') {
       return res.json({ ok: true, categorias: CATEGORIAS_BLING });
