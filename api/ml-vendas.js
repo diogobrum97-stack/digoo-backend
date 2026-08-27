@@ -1452,6 +1452,110 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
       stoppedItems,
       updated_at: new Date().toISOString(),
     });
+  // ── Lista de Compras ──────────────────────────────────────────────────────
+  if (req.query.action === "lista-compras") {
+    try {
+      const dias = parseInt(req.query.dias || "90");
+      const transitoDias = parseInt(req.query.transito || "70");
+      const segurancaDias = parseInt(req.query.seguranca || "30");
+      const tokenML = req.query.token || "";
+
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenML}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ ok: false, erro: "Token ML inválido" });
+
+      const blingSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken = await blingSnap.json();
+      const blingH = { Authorization: `Bearer ${blingToken?.access_token}`, Accept: "application/json" };
+
+      // Busca vendas ML paginado
+      const dataDe = new Date(Date.now() - dias * 86400000).toISOString();
+      let pedidos = [];
+      for (let offset = 0; offset < 1000; offset += 50) {
+        const r = await fetch(
+          `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50&offset=${offset}`,
+          { headers: { Authorization: `Bearer ${tokenML}` } }
+        );
+        const d = await r.json();
+        const pg = d.results || [];
+        pedidos.push(...pg);
+        if (pg.length < 50) break;
+      }
+
+      // Agrega vendas por SKU
+      const vendasBruto = {};
+      for (const pedido of pedidos) {
+        for (const item of (pedido.order_items || [])) {
+          const sku = item.item?.seller_sku || "";
+          if (!sku) continue;
+          vendasBruto[sku] = (vendasBruto[sku] || 0) + (item.quantity || 1);
+        }
+      }
+
+      // Desmembra kits via Bling
+      const vendasUnit = {};
+      const cache = {};
+      const getComps = async (sku) => {
+        if (cache[sku] !== undefined) return cache[sku];
+        try {
+          const r1 = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=1`, { headers: blingH });
+          const d1 = await r1.json();
+          const prod = d1.data?.[0];
+          if (!prod) { cache[sku] = null; return null; }
+          const r2 = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}`, { headers: blingH });
+          const d2 = await r2.json();
+          const comps = d2.data?.estrutura?.componentes || [];
+          cache[sku] = comps.length > 0 ? comps : null;
+          return cache[sku];
+        } catch(e) { cache[sku] = null; return null; }
+      };
+
+      const skus = Object.keys(vendasBruto);
+      for (let i = 0; i < skus.length; i += 5) {
+        await Promise.all(skus.slice(i, i+5).map(async (sku) => {
+          const comps = await getComps(sku);
+          if (comps) {
+            for (const comp of comps) {
+              const cSku = comp.produto?.codigo || comp.codigo || "";
+              const cQtd = Number(comp.quantidade || 1);
+              if (!cSku) continue;
+              vendasUnit[cSku] = (vendasUnit[cSku] || 0) + (vendasBruto[sku] * cQtd);
+            }
+          } else {
+            vendasUnit[sku] = (vendasUnit[sku] || 0) + vendasBruto[sku];
+          }
+        }));
+      }
+
+      // Busca estoque Bling
+      const estoqueMap = {};
+      const skusUnit = Object.keys(vendasUnit);
+      for (let i = 0; i < skusUnit.length; i += 5) {
+        await Promise.all(skusUnit.slice(i, i+5).map(async (sku) => {
+          try {
+            const r = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=1`, { headers: blingH });
+            const d = await r.json();
+            estoqueMap[sku] = Number(d.data?.[0]?.estoque?.saldoVirtualTotal || 0);
+          } catch(e) { estoqueMap[sku] = 0; }
+        }));
+      }
+
+      // Calcula sugestão
+      const resultado = skusUnit.map(sku => {
+        const totalVendido = vendasUnit[sku];
+        const mediaDiaria = totalVendido / dias;
+        const cobertura = Math.ceil(mediaDiaria * (transitoDias + segurancaDias));
+        const estoque = estoqueMap[sku] || 0;
+        const sugestao = Math.max(0, cobertura - estoque);
+        return { sku, totalVendido: Math.round(totalVendido), mediaMensal: Math.round(mediaDiaria * 30), estoque, coberturaNecessaria: cobertura, sugestao };
+      }).filter(r => r.totalVendido > 0).sort((a, b) => b.sugestao - a.sugestao);
+
+      return res.json({ ok: true, resultado, diasBase: dias, totalPedidos: pedidos.length });
+    } catch(e) {
+      return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
+
   } catch (e) {
     console.error("ml-vendas error:", e.message);
     return res.status(500).json({ error: e.message });
