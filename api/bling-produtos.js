@@ -86,7 +86,7 @@ export default async function handler(req, res) {
       const situacao = req.query.situacao || ''; // 1=aberto, 2=pago, 3=cancelado
       const dataInicio = req.query.dataInicio || '';
       const dataFim = req.query.dataFim || '';
-      let url = `https://www.bling.com.br/Api/v3/contas/pagar?pagina=${pagina}&limite=100`;
+      let url = `https://api.bling.com.br/Api/v3/contas/pagar?pagina=${pagina}&limite=100`;
       if (situacao) url += `&situacao=${situacao}`;
       if (dataInicio) url += `&dataVencimento[gte]=${dataInicio}`;
       if (dataFim) url += `&dataVencimento[lte]=${dataFim}`;
@@ -112,7 +112,7 @@ export default async function handler(req, res) {
         } : undefined,
         situacao: 1, // aberto
       };
-      const resp = await fetch('https://www.bling.com.br/Api/v3/contas/pagar', {
+      const resp = await fetch('https://api.bling.com.br/Api/v3/contas/pagar', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -131,7 +131,7 @@ export default async function handler(req, res) {
         valor: Number(valorPago),
         portador: portador ? { id: Number(portador) } : undefined,
       };
-      const resp = await fetch(`https://www.bling.com.br/Api/v3/contas/pagar/${id}/baixas`, {
+      const resp = await fetch(`https://api.bling.com.br/Api/v3/contas/pagar/${id}/baixas`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -143,11 +143,11 @@ export default async function handler(req, res) {
 
     if (req.query.action === 'debug-produto' && req.query.sku) {
       const sku = req.query.sku;
-      const buscaResp = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`, { headers });
+      const buscaResp = await fetch(`https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`, { headers });
       const buscaData = await buscaResp.json();
       const encontrado = (buscaData.data || []).find(p => String(p.codigo || '').trim() === sku.trim()) || (buscaData.data || [])[0];
       if (!encontrado) return res.json({ erro: 'nao encontrado', buscaData });
-      const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+      const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
       const det = await detResp.json();
       return res.json({ ok: true, keys: Object.keys(det.data || {}), estrutura: det.data?.estrutura, composicao: det.data?.composicao, componentes: det.data?.componentes, raw: det.data });
     }
@@ -160,13 +160,13 @@ export default async function handler(req, res) {
       for (const item of itens) {
         const { sku, descricao, quantidade } = item;
         await sleep(200);
-        const buscaResp = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`, { headers });
+        const buscaResp = await fetch(`https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`, { headers });
         if (!buscaResp.ok) { resultado.push({ sku, descricao, quantidade, tipo: 'erro', motivo: `Bling ${buscaResp.status}` }); continue; }
         const buscaData = await buscaResp.json();
         const encontrado = (buscaData.data || []).find(p => String(p.codigo || '').trim() === sku.trim()) || (buscaData.data || [])[0];
         if (!encontrado) { resultado.push({ sku, descricao, quantidade, tipo: 'nao_encontrado' }); continue; }
         await sleep(200);
-        const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+        const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
         if (!detResp.ok) { resultado.push({ sku, descricao, quantidade, tipo: 'erro' }); continue; }
         const prod = (await detResp.json()).data || {};
         // Componentes vêm só com id — busca detalhe de cada um
@@ -179,7 +179,7 @@ export default async function handler(req, res) {
             const compQtd = Number(comp.quantidade || 1) * quantidade;
             if (!compId) continue;
             await sleep(200);
-            const compResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${compId}`, { headers });
+            const compResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
             if (!compResp.ok) continue;
             const compData = (await compResp.json()).data || {};
             const compSku = compData.codigo || '';
@@ -206,12 +206,12 @@ export default async function handler(req, res) {
     // ── Debug: ver estrutura de uma NF existente no Bling ──────────────────
     if (req.query.action === 'debug-nf' && req.query.numero) {
       const numero = req.query.numero;
-      const resp = await fetch(`https://www.bling.com.br/Api/v3/nfe?numero=${numero}&limite=5`, { headers });
+      const resp = await fetch(`https://api.bling.com.br/Api/v3/nfe?numero=${numero}&limite=5`, { headers });
       const data = await resp.json();
       const nf = (data.data || [])[0];
       if (!nf) return res.json({ erro: 'NF não encontrada', data });
       // Busca detalhe completo
-      const det = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nf.id}`, { headers });
+      const det = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nf.id}`, { headers });
       const detData = await det.json();
       return res.json({ ok: true, keys: Object.keys(detData.data || {}), contato: detData.data?.contato, enderecoEntrega: detData.data?.enderecoEntrega, raw: detData.data });
     }
@@ -257,12 +257,12 @@ export default async function handler(req, res) {
           ncm: String(it.ncm || '').replace(/[^0-9]/g, ''),
         })),
       };
-      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const resp = await fetch('https://api.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const respData = await resp.json();
       if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro Bling', detalhe: respData });
       const nfeId = respData.data?.id;
       if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
-      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
+      const envioResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
       const envioData = await envioResp.json();
 
       // Busca detalhe da NF para pegar chaveAcesso (pode não vir no envio)
@@ -270,7 +270,7 @@ export default async function handler(req, res) {
       let situacao = envioData.data?.situacao || null;
       if (!chaveAcesso) {
         await new Promise(r => setTimeout(r, 2000)); // aguarda 2s
-        const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}`, { headers });
+        const detResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nfeId}`, { headers });
         const detData = await detResp.json();
         chaveAcesso = detData.data?.chaveAcesso || null;
         situacao = detData.data?.situacao?.valor || situacao;
@@ -330,12 +330,12 @@ export default async function handler(req, res) {
       };
       // Log do payload para debug
       console.log('[complementar-ipi] payload:', JSON.stringify(payload, null, 2));
-      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const resp = await fetch('https://api.bling.com.br/Api/v3/nfe', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const respData = await resp.json();
       if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro Bling', detalhe: respData });
       const nfeId = respData.data?.id;
       if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
-      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
+      const envioResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
       const envioData = await envioResp.json();
       return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso: envioData.data?.chaveAcesso || null, status: envioData.data?.situacao || null, rawEnvio: envioData });
     }
@@ -368,7 +368,7 @@ export default async function handler(req, res) {
 
       // 1) Localiza o produto pelo código (SKU) — a listagem já filtra por código
       const buscaResp = await fetch(
-        `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(skuAlvo)}&limite=5`,
+        `https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(skuAlvo)}&limite=5`,
         { headers }
       );
       if (!buscaResp.ok) {
@@ -383,7 +383,7 @@ export default async function handler(req, res) {
       }
 
       // 2) Busca o detalhe completo do produto (é lá que vem o GTIN/EAN e a estrutura de kit)
-      const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+      const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
       if (!detResp.ok) {
         const txt = await detResp.text();
         throw new Error(`Bling /produtos/${encontrado.id} ${detResp.status}: ${txt.slice(0, 200)}`);
@@ -413,7 +413,7 @@ export default async function handler(req, res) {
       async function buscarDetalheComRetry(produtoId) {
         for (let tentativa = 0; tentativa < 2; tentativa++) {
           try {
-            const r = await fetch(`https://www.bling.com.br/Api/v3/produtos/${produtoId}`, { headers });
+            const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${produtoId}`, { headers });
             if (r.ok) return await r.json();
           } catch (e) {}
           if (tentativa === 0) await sleep(400); // espera um pouco antes de tentar de novo
@@ -466,7 +466,7 @@ export default async function handler(req, res) {
 
       // Tentativa 1: buscar direto pelo número, sem filtro de data nem tipo
       try {
-        const diretoResp = await fetch(`https://www.bling.com.br/Api/v3/nfe?numero=${numeroAlvo}&limite=10`, { headers });
+        const diretoResp = await fetch(`https://api.bling.com.br/Api/v3/nfe?numero=${numeroAlvo}&limite=10`, { headers });
         const diretoData = await diretoResp.json();
         const itemsDireto = diretoData.data || [];
         tentativas.push({ metodo: "busca direta por numero=", encontrou: itemsDireto.length });
@@ -483,7 +483,7 @@ export default async function handler(req, res) {
         let pagina = 1;
         while (pagina <= 10 && !encontrada) {
           const listResp = await fetch(
-            `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}`,
+            `https://api.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}`,
             { headers }
           );
           const listData = await listResp.json();
@@ -497,7 +497,7 @@ export default async function handler(req, res) {
       }
 
       if (!encontrada) return res.status(404).json({ error: `Nota ${numeroAlvo} não encontrada`, tentativas });
-      const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${encontrada.id}`, { headers });
+      const detResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${encontrada.id}`, { headers });
       const detData = await detResp.json();
       return res.json(detData);
     }
@@ -517,7 +517,7 @@ export default async function handler(req, res) {
       // o parâmetro sem erro mas não filtra de verdade, então nem tentamos mais).
       const naturezasPorId = {};
       try {
-        const natResp = await fetch(`https://www.bling.com.br/Api/v3/naturezas-operacoes?limite=100`, { headers });
+        const natResp = await fetch(`https://api.bling.com.br/Api/v3/naturezas-operacoes?limite=100`, { headers });
         if (natResp.ok) {
           const natData = await natResp.json();
           (natData.data || []).forEach(n => {
@@ -531,7 +531,7 @@ export default async function handler(req, res) {
       let pagina = 1;
       while (pagina <= 5) { // trava de segurança: até 500 notas
         const listResp = await fetch(
-          `https://www.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
+          `https://api.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100&dataEmissaoInicial=${dataInicial}&dataEmissaoFinal=${dataFinal}&tipo=1`,
           { headers }
         );
         if (!listResp.ok) {
@@ -578,7 +578,7 @@ export default async function handler(req, res) {
 
       const processarNota = async (nf) => {
         try {
-          const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nf.id}`, { headers });
+          const detResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nf.id}`, { headers });
           if (!detResp.ok) return;
           const det = await detResp.json();
           const corpo = det.data || {};
@@ -666,7 +666,7 @@ export default async function handler(req, res) {
     let pagina = 1;
     while (true) {
       const resp = await fetch(
-        `https://www.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=100&situacao=A`,
+        `https://api.bling.com.br/Api/v3/produtos?pagina=${pagina}&limite=100&situacao=A`,
         { headers }
       );
       if (!resp.ok) {
@@ -744,7 +744,7 @@ export default async function handler(req, res) {
         // Emitente e destinatário virão do cadastro do Bling (conta logada = Matriz RS)
       };
 
-      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', {
+      const resp = await fetch('https://api.bling.com.br/Api/v3/nfe', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -757,7 +757,7 @@ export default async function handler(req, res) {
       if (!nfeId) return res.status(500).json({ erro: 'NF criada mas sem ID retornado', raw: respData });
 
       // Transmitir para SEFAZ
-      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, {
+      const envioResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, {
         method: 'POST',
         headers,
       });
@@ -783,7 +783,7 @@ export default async function handler(req, res) {
       if (!nfId) return res.status(400).json({ erro: 'nfId obrigatório' });
 
       // Busca detalhes da NF original para preencher o preview
-      const detResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfId}`, { headers });
+      const detResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nfId}`, { headers });
       if (!detResp.ok) return res.status(detResp.status).json({ erro: 'NF não encontrada no Bling' });
       const det = await detResp.json();
       const corpo = det.data || {};
@@ -822,7 +822,7 @@ export default async function handler(req, res) {
 
         // Busca produto pelo SKU no Bling
         const buscaResp = await fetch(
-          `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`,
+          `https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`,
           { headers }
         );
         if (!buscaResp.ok) {
@@ -839,7 +839,7 @@ export default async function handler(req, res) {
 
         // Busca detalhe completo (estrutura de kit fica aqui)
         await sleep(150);
-        const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
+        const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
         if (!detResp.ok) {
           resultado.push({ sku, descricao, quantidade, tipo: 'erro', motivo: `Detalhe ${detResp.status}` });
           continue;
@@ -867,7 +867,7 @@ export default async function handler(req, res) {
               try {
                 await sleep(150);
                 const compBusca = await fetch(
-                  `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(compSku)}&limite=3`,
+                  `https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(compSku)}&limite=3`,
                   { headers }
                 );
                 if (compBusca.ok) {
@@ -875,7 +875,7 @@ export default async function handler(req, res) {
                   const compEnc = (compBuscaData.data || []).find(p => String(p.codigo||'').trim() === compSku.trim()) || (compBuscaData.data||[])[0];
                   if (compEnc) {
                     await sleep(100);
-                    const compDet = await fetch(`https://www.bling.com.br/Api/v3/produtos/${compEnc.id}`, { headers });
+                    const compDet = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compEnc.id}`, { headers });
                     if (compDet.ok) {
                       const compDetData = await compDet.json();
                       const cp = compDetData.data || {};
@@ -952,7 +952,7 @@ export default async function handler(req, res) {
         })),
       };
 
-      const resp = await fetch('https://www.bling.com.br/Api/v3/nfe', {
+      const resp = await fetch('https://api.bling.com.br/Api/v3/nfe', {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -964,7 +964,7 @@ export default async function handler(req, res) {
       if (!nfeId) return res.status(500).json({ erro: 'NF criada sem ID', raw: respData });
 
       // Transmite para SEFAZ
-      const envioResp = await fetch(`https://www.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
+      const envioResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
       const envioData = await envioResp.json();
 
       return res.json({
