@@ -67,43 +67,6 @@ export default async function handler(req, res) {
     return res.send(`<html><body style="font-family:sans-serif;color:#f87171;padding:40px;">Erro: ${error}</body></html>`);
   }
 
-  // Refresh automático do token
-  if (req.query.action === 'refresh') {
-    try {
-      const tokenSnap = await fetch(`${FIREBASE_URL}/bling_token.json`);
-      const token = await tokenSnap.json();
-      if (!token?.refresh_token) {
-        return res.status(400).json({ ok: false, erro: 'Sem refresh_token salvo' });
-      }
-      const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-      const refreshRes = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Basic ${creds}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({
-          grant_type: 'refresh_token',
-          refresh_token: token.refresh_token,
-        }),
-      });
-      if (!refreshRes.ok) {
-        const txt = await refreshRes.text();
-        return res.status(400).json({ ok: false, erro: `Bling refresh falhou: ${txt.slice(0,200)}` });
-      }
-      const newToken = await refreshRes.json();
-      newToken.saved_at = Date.now();
-      await fetch(`${FIREBASE_URL}/bling_token.json`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newToken),
-      });
-      return res.json({ ok: true, expires_in: newToken.expires_in });
-    } catch(e) {
-      return res.status(500).json({ ok: false, erro: e.message });
-    }
-  }
-
   // Passo 1: redireciona para o Bling
   const authUrl = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=digoo`;
   return res.redirect(authUrl);
