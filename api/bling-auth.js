@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     try {
       const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
 
-      const tokenRes = await fetch("https://www.bling.com.br/Api/v3/oauth/token", {
+      const tokenRes = await fetch("https://api.bling.com.br/Api/v3/oauth/token", {
         method: "POST",
         headers: {
           "Authorization": `Basic ${creds}`,
@@ -68,6 +68,6 @@ export default async function handler(req, res) {
   }
 
   // Passo 1: redireciona para o Bling
-  const authUrl = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=digoo`;
+  const authUrl = `https://api.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=digoo`;
   return res.redirect(authUrl);
 }
