@@ -41,7 +41,7 @@ export default async function handler(req, res) {
       try {
         const CLIENT_ID = process.env.BLING_CLIENT_ID;
         const CLIENT_SECRET = process.env.BLING_CLIENT_SECRET;
-        const creds = btoa(`${CLIENT_ID}:${CLIENT_SECRET}`);
+        const creds = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
         const body = `grant_type=refresh_token&refresh_token=${encodeURIComponent(token.refresh_token)}`;
         const refreshRes = await fetch('https://www.bling.com.br/Api/v3/oauth/token', {
           method: 'POST',
