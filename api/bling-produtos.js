@@ -32,19 +32,12 @@ export default async function handler(req, res) {
     const token = await r.json();
     if (!token || !token.access_token) throw new Error("Bling não conectado");
     
-    // Verificar se o token expirou e renovar automaticamente
+    // Verificar se o token expirou (expires_in é em segundos, saved_at em ms)
     const savedAt = token.saved_at || 0;
     const expiresIn = (token.expires_in || 3600) * 1000;
-    const expirou = Date.now() > savedAt + expiresIn - 60000;
+    const expirou = Date.now() > savedAt + expiresIn - 60000; // 1 min de margem
     if (expirou) {
-      // Tenta refresh via bling-auth
-      const refreshRes = await fetch(`https://digoo-backend.vercel.app/api/bling-auth?action=refresh`);
-      if (!refreshRes.ok) {
-        return res.status(401).json({ erro: "Token Bling expirado — reconecte em Config → APIs" });
-      }
-      // Relê o token atualizado
-      const tokenAtualizado = await (await fetch(`${process.env.FIREBASE_URL}/bling_token.json`)).json();
-      token.access_token = tokenAtualizado.access_token;
+      return res.status(401).json({ erro: "Token Bling expirado — reconecte em Config → APIs" });
     }
     const headers = {
       Authorization: `Bearer ${token.access_token}`,
