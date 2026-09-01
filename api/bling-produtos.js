@@ -32,45 +32,12 @@ export default async function handler(req, res) {
     const token = await r.json();
     if (!token || !token.access_token) throw new Error("Bling não conectado");
     
-    // Verifica se o token expirou e renova automaticamente via refresh_token
+    // Verificar se o token expirou (expires_in é em segundos, saved_at em ms)
     const savedAt = token.saved_at || 0;
     const expiresIn = (token.expires_in || 3600) * 1000;
     const expirou = Date.now() > savedAt + expiresIn - 60000; // 1 min de margem
-
     if (expirou) {
-      if (!token.refresh_token) {
-        return res.status(401).json({ erro: "Token Bling expirado — reconecte em Config → APIs" });
-      }
-      try {
-        const creds = Buffer.from(`${process.env.BLING_CLIENT_ID}:${process.env.BLING_CLIENT_SECRET}`).toString("base64");
-        const refreshRes = await fetch("https://www.bling.com.br/Api/v3/oauth/token", {
-          method: "POST",
-          headers: {
-            "Authorization": `Basic ${creds}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams({
-            grant_type: "refresh_token",
-            refresh_token: token.refresh_token,
-          }),
-        });
-        if (!refreshRes.ok) {
-          const txt = await refreshRes.text();
-          return res.status(401).json({ erro: "Falha ao renovar token Bling — reconecte em Config → APIs", detalhe: txt.slice(0,200) });
-        }
-        const newToken = await refreshRes.json();
-        newToken.saved_at = Date.now();
-        // Salva novo token no Firebase
-        await fetch(`${process.env.FIREBASE_URL}/bling_token.json`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(newToken),
-        });
-        token.access_token = newToken.access_token;
-        token.refresh_token = newToken.refresh_token || token.refresh_token;
-      } catch(e) {
-        return res.status(401).json({ erro: "Erro ao renovar token Bling: " + e.message });
-      }
+      return res.status(401).json({ erro: "Token Bling expirado — reconecte em Config → APIs" });
     }
     const headers = {
       Authorization: `Bearer ${token.access_token}`,
