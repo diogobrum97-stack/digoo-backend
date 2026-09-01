@@ -671,7 +671,7 @@ export default async function handler(req, res) {
       );
       if (!resp.ok) {
         const txt = await resp.text();
-        throw new Error(`Bling ${resp.status}: ${txt.slice(0, 200)}`);
+        return res.status(502).json({ erro: `Bling ${resp.status}`, detalhe: txt.slice(0, 500) });
       }
       const data = await resp.json();
       const items = data.data || [];
