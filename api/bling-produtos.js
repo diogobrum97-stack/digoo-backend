@@ -76,10 +76,13 @@ export default async function handler(req, res) {
       const pagina = parseInt(req.query.pagina||"1");
       const url = `${FD_BASE}/nfse?page=${pagina}&limit=50&tipo=recebida&competencia=${competencia}`;
       const r = await fetch(url, { headers:{ Authorization:`Bearer ${token}` } });
-      const data = await r.json();
+      const rawText = await r.text();
+      let data;
+      try { data = JSON.parse(rawText); } catch(e) { return res.status(502).json({ erro:"FD retornou não-JSON", status:r.status, url, raw:rawText.slice(0,300) }); }
+      if (!r.ok) return res.status(502).json({ erro:"FD erro", status:r.status, url, data });
       const notas = data?.data || data?.nfses || data?.items || [];
       for (const nfse of notas) await processarNfse(nfse, process.env.FIREBASE_URL);
-      return res.json({ ok:true, importadas:notas.length, rawKeys:Object.keys(data||{}) });
+      return res.json({ ok:true, importadas:notas.length, rawKeys:Object.keys(data||{}), status:r.status });
     } catch(e) { return res.status(500).json({ erro:e.message }); }
   }
 
