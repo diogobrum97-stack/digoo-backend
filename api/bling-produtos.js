@@ -47,70 +47,72 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
+
+  // ── Fiscal Defender — independente do token Bling ────────────────────────
+  // ── Fiscal Defender (não precisa token Bling) ──────────────────────────
+      if (req.query.action === "webhook-nfse" && req.method === "POST") {
+      try {
+        // Valida assinatura HMAC do Fiscal Defender
+        const { webhookSecret: FD_WEBHOOK_SECRET } = getFDConfig();
+        if (FD_WEBHOOK_SECRET) {
+          const sig = req.headers["x-fd-signature"] || req.headers["x-signature"] || "";
+          if (sig) {
+            const crypto = await import("crypto");
+            const rawBody = JSON.stringify(req.body);
+            const expected = crypto.createHmac("sha256", FD_WEBHOOK_SECRET).update(rawBody).digest("hex");
+            if (sig !== expected && sig !== `sha256=${expected}`) {
+              return res.status(401).json({ erro: "Assinatura inválida" });
+            }
+          }
+        }
+        const body = req.body;
+        const event = body?.event;
+  
+        if (event !== "nfse.created") return res.json({ ok: true, ignorado: event });
+  
+        const nfse = body?.data;
+        if (!nfse) return res.status(400).json({ erro: "Sem dados da NFS-e" });
+  
+        await processarNfse(nfse);
+        return res.json({ ok: true });
+      } catch(e) {
+        console.error("webhook-nfse erro:", e.message);
+        return res.status(500).json({ erro: e.message });
+      }
+    }
+  
+    // ── Busca NFS-e do Fiscal Defender e importa para o Firebase ─────────────
+    if (req.query.action === "importar-nfse") {
+      try {
+        const pagina = parseInt(req.query.pagina || "1");
+        const competencia = req.query.competencia || ""; // YYYY-MM
+  
+        const { token: FD_TOKEN } = getFDConfig();
+        let url = `${FD_BASE}/nfse?page=${pagina}&limit=50&tipo=recebida`;
+        if (competencia) url += `&competencia=${competencia}`;
+  
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${FD_TOKEN}` } });
+        const data = await r.json();
+        const notas = data?.data || data?.nfses || data?.items || [];
+  
+        let importadas = 0;
+        for (const nfse of notas) {
+          await processarNfse(nfse);
+          importadas++;
+        }
+  
+        return res.json({ ok: true, importadas, total: data?.total || notas.length, pagina });
+      } catch(e) {
+        return res.status(500).json({ erro: e.message });
+      }
+    }
+
   try {
     const r = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
     const token = await r.json();
     if (!token || !token.access_token) throw new Error("Bling não conectado");
-    
-    // ── Fiscal Defender (não precisa token Bling) ──────────────────────────
-if (req.query.action === "webhook-nfse" && req.method === "POST") {
-    try {
-      // Valida assinatura HMAC do Fiscal Defender
-      const { webhookSecret: FD_WEBHOOK_SECRET } = getFDConfig();
-      if (FD_WEBHOOK_SECRET) {
-        const sig = req.headers["x-fd-signature"] || req.headers["x-signature"] || "";
-        if (sig) {
-          const crypto = await import("crypto");
-          const rawBody = JSON.stringify(req.body);
-          const expected = crypto.createHmac("sha256", FD_WEBHOOK_SECRET).update(rawBody).digest("hex");
-          if (sig !== expected && sig !== `sha256=${expected}`) {
-            return res.status(401).json({ erro: "Assinatura inválida" });
-          }
-        }
-      }
-      const body = req.body;
-      const event = body?.event;
 
-      if (event !== "nfse.created") return res.json({ ok: true, ignorado: event });
-
-      const nfse = body?.data;
-      if (!nfse) return res.status(400).json({ erro: "Sem dados da NFS-e" });
-
-      await processarNfse(nfse);
-      return res.json({ ok: true });
-    } catch(e) {
-      console.error("webhook-nfse erro:", e.message);
-      return res.status(500).json({ erro: e.message });
-    }
-  }
-
-  // ── Busca NFS-e do Fiscal Defender e importa para o Firebase ─────────────
-  if (req.query.action === "importar-nfse") {
-    try {
-      const pagina = parseInt(req.query.pagina || "1");
-      const competencia = req.query.competencia || ""; // YYYY-MM
-
-      const { token: FD_TOKEN } = getFDConfig();
-      let url = `${FD_BASE}/nfse?page=${pagina}&limit=50&tipo=recebida`;
-      if (competencia) url += `&competencia=${competencia}`;
-
-      const r = await fetch(url, { headers: { Authorization: `Bearer ${FD_TOKEN}` } });
-      const data = await r.json();
-      const notas = data?.data || data?.nfses || data?.items || [];
-
-      let importadas = 0;
-      for (const nfse of notas) {
-        await processarNfse(nfse);
-        importadas++;
-      }
-
-      return res.json({ ok: true, importadas, total: data?.total || notas.length, pagina });
-    } catch(e) {
-      return res.status(500).json({ erro: e.message });
-    }
-  }
-
-  // ── Lista NFS-e do Firebase (para o OPS) ─────────────────────────────────
+      // ── Lista NFS-e do Firebase (para o OPS) ─────────────────────────────────
   if (req.query.action === "listar-nfse-firebase") {
     try {
       const mes = req.query.mes || new Date().toISOString().slice(0, 7);
