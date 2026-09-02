@@ -2,15 +2,34 @@ export const config = {
   maxDuration: 60,
 };
 
-// ── Fiscal Defender ───────────────────────────────────────────────────────────
+// ── Fiscal Defender ──────────────────────────────────────────────────────────
 const FD_BASE = "https://nfse.fiscaldefender.com.br/api/v1";
 function getFDConfig() {
-  try {
-    const cfg = JSON.parse(process.env.FISCAL_DEFENDER || "{}");
-    return { token: cfg.t || "", webhookSecret: cfg.w || "" };
-  } catch(e) {
-    return { token: "", webhookSecret: "" };
-  }
+  try { const c = JSON.parse(process.env.FISCAL_DEFENDER||"{}"); return {token:c.t||"",secret:c.w||""}; }
+  catch(e) { return {token:"",secret:""}; }
+}
+async function processarNfse(nfse, FIREBASE_URL) {
+  const chave = (nfse.chaveAcesso||nfse.chave_acesso||nfse.numero||"").replace(/[\.#$[\]\/]/g,"_");
+  const competencia = nfse.competencia||nfse.dataCompetencia?.slice(0,7)||nfse.dataEmissao?.slice(0,7)||new Date().toISOString().slice(0,7);
+  const mesPath = competencia.replace("-","/");
+  const existeR = await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chave}.json`);
+  const existe = await existeR.json();
+  if (existe && existe.fornecedor) return;
+  const fornecedor = nfse.prestador?.razaoSocial||nfse.prestador?.nome||"";
+  const cnpj = (nfse.prestador?.cnpj||"").replace(/\D/g,"");
+  const valor = Number(nfse.valorServicos||nfse.valor||0);
+  const discriminacao = nfse.discriminacao||nfse.descricaoServico||"";
+  const numero = nfse.numero||nfse.numeroNfse||"";
+  const entrada = {
+    fornecedor, cnpj, numeroDoc:numero, valor,
+    competencia, vencimento: nfse.dataEmissao?.slice(0,10)||"",
+    historico:discriminacao, categoriaId:"", categoriaLabel:"",
+    situacao:"rascunho", origem:"fiscal-defender",
+    criadoEm:Date.now(),
+  };
+  await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chave||"fd_"+Date.now()}.json`, {
+    method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(entrada)
+  });
 }
 
 function sleep(ms) {
@@ -33,185 +52,42 @@ const CATEGORIAS_BLING = [
   { id: 14729397458, label: "REMUNERAÇÃO E PESSOAL → Retirada de Lucro", grupo: "REMUNERAÇÃO E PESSOAL" },
 ];
 
-
-// Classificação automática por keywords
-function classificarCategoria(texto) {
-  const t = (texto || "").toLowerCase();
-  for (const cat of CATEGORIAS) {
-    if (cat.keywords.some(k => t.includes(k))) return cat;
-  }
-  return null;
-}
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ── Fiscal Defender — independente do token Bling ────────────────────────
-  // ── Fiscal Defender (não precisa token Bling) ──────────────────────────
-      if (req.query.action === "webhook-nfse" && req.method === "POST") {
-      try {
-        // Valida assinatura HMAC do Fiscal Defender
-        const { webhookSecret: FD_WEBHOOK_SECRET } = getFDConfig();
-        if (FD_WEBHOOK_SECRET) {
-          const sig = req.headers["x-fd-signature"] || req.headers["x-signature"] || "";
-          if (sig) {
-            const crypto = await import("crypto");
-            const rawBody = JSON.stringify(req.body);
-            const expected = crypto.createHmac("sha256", FD_WEBHOOK_SECRET).update(rawBody).digest("hex");
-            if (sig !== expected && sig !== `sha256=${expected}`) {
-              return res.status(401).json({ erro: "Assinatura inválida" });
-            }
-          }
-        }
-        const body = req.body;
-        const event = body?.event;
-  
-        if (event !== "nfse.created") return res.json({ ok: true, ignorado: event });
-  
-        const nfse = body?.data;
-        if (!nfse) return res.status(400).json({ erro: "Sem dados da NFS-e" });
-  
-        await processarNfse(nfse);
-        return res.json({ ok: true });
-      } catch(e) {
-        console.error("webhook-nfse erro:", e.message);
-        return res.status(500).json({ erro: e.message });
-      }
-    }
-  
-    // ── Busca NFS-e do Fiscal Defender e importa para o Firebase ─────────────
-    if (req.query.action === "importar-nfse") {
-      try {
-        const pagina = parseInt(req.query.pagina || "1");
-        const competencia = req.query.competencia || ""; // YYYY-MM
-  
-        const { token: FD_TOKEN } = getFDConfig();
-        let url = `${FD_BASE}/nfse?page=${pagina}&limit=50&tipo=recebida`;
-        if (competencia) url += `&competencia=${competencia}`;
-  
-        const r = await fetch(url, { headers: { Authorization: `Bearer ${FD_TOKEN}` } });
-        const data = await r.json();
-        const notas = data?.data || data?.nfses || data?.items || [];
-  
-        let importadas = 0;
-        for (const nfse of notas) {
-          await processarNfse(nfse);
-          importadas++;
-        }
-  
-        return res.json({ ok: true, importadas, total: data?.total || notas.length, pagina });
-      } catch(e) {
-        return res.status(500).json({ erro: e.message });
-      }
-    }
+  // ── Fiscal Defender — sem token Bling ────────────────────────────────────
+  if (req.query.action === "webhook-nfse" && req.method === "POST") {
+    try {
+      const body = req.body;
+      if (body?.event !== "nfse.created") return res.json({ ok:true, ignorado:body?.event });
+      if (!body?.data) return res.status(400).json({ erro:"Sem dados" });
+      await processarNfse(body.data, process.env.FIREBASE_URL);
+      return res.json({ ok:true });
+    } catch(e) { return res.status(500).json({ erro:e.message }); }
+  }
+
+  if (req.query.action === "importar-nfse") {
+    try {
+      const { token } = getFDConfig();
+      const competencia = req.query.competencia || new Date().toISOString().slice(0,7);
+      const pagina = parseInt(req.query.pagina||"1");
+      const url = `${FD_BASE}/nfse?page=${pagina}&limit=50&tipo=recebida&competencia=${competencia}`;
+      const r = await fetch(url, { headers:{ Authorization:`Bearer ${token}` } });
+      const data = await r.json();
+      const notas = data?.data || data?.nfses || data?.items || [];
+      for (const nfse of notas) await processarNfse(nfse, process.env.FIREBASE_URL);
+      return res.json({ ok:true, importadas:notas.length, rawKeys:Object.keys(data||{}) });
+    } catch(e) { return res.status(500).json({ erro:e.message }); }
+  }
 
   try {
     const r = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
     const token = await r.json();
     if (!token || !token.access_token) throw new Error("Bling não conectado");
-
-      // ── Lista NFS-e do Firebase (para o OPS) ─────────────────────────────────
-  if (req.query.action === "listar-nfse-firebase") {
-    try {
-      const mes = req.query.mes || new Date().toISOString().slice(0, 7);
-      const mesPath = mes.replace("-", "/");
-      const snap = await fetch(`${FIREBASE_URL}/nfse_tomadas/${mesPath}.json`);
-      const dados = await snap.json() || {};
-      const itens = Object.entries(dados).map(([id, v]) => ({ id, ...v }))
-        .sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
-      return res.json({ ok: true, itens });
-    } catch(e) {
-      return res.status(500).json({ erro: e.message });
-    }
-  }
-
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
-  }
-}
-
-
-
-
-// ── Processa uma NFS-e e salva no Firebase como rascunho no Contas a Pagar ──
-async function processarNfse(nfse) {
-  // Extrai dados principais
-  const chaveAcesso = nfse.chaveAcesso || nfse.chave_acesso || nfse.numero || "";
-  const competencia = nfse.competencia || nfse.dataCompetencia?.slice(0, 7) || nfse.dataEmissao?.slice(0, 7) || new Date().toISOString().slice(0, 7);
-  const mesPath = competencia.replace("-", "/");
-
-  // Verifica se já importou
-  const existeSnap = await fetch(`${FIREBASE_URL}/nfse_tomadas/${mesPath}/${chaveAcesso.replace(/\//g, "_")}.json`);
-  const existe = await existeSnap.json();
-  if (existe) return; // já importada
-
-  const fornecedor = nfse.prestador?.razaoSocial || nfse.prestador?.nome || nfse.tomador?.razaoSocial || "";
-  const cnpj = (nfse.prestador?.cnpj || "").replace(/\D/g, "");
-  const valor = Number(nfse.valorServicos || nfse.valor || 0);
-  const discriminacao = nfse.discriminacao || nfse.descricaoServico || "";
-  const numero = nfse.numero || nfse.numeroNfse || "";
-  const dataEmissao = nfse.dataEmissao?.slice(0, 10) || "";
-
-  // Classificação automática por keywords
-  const textoClassificar = `${fornecedor} ${discriminacao}`.toLowerCase();
-  const catAutomatic = classificarCategoria(textoClassificar);
-
-  // Se não classificou automaticamente, usa IA
-  let categoriaId = catAutomatic?.id || null;
-  let categoriaLabel = catAutomatic?.label || "";
-  let categoriaSugerida = catAutomatic?.label || "";
-
-  if (!categoriaId && ANTHROPIC_KEY) {
-    try {
-      const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 100,
-          messages: [{
-            role: "user",
-            content: `Classifique esta NFS-e em UMA das categorias. Responda APENAS com o nome exato da categoria.\n\nFornecedor: ${fornecedor}\nDiscriminação: ${discriminacao}\n\nCategorias: Antecipação de Importação, Aluguel, Armazenagem, Fretes, Salário, Infraestrutura, Insumos, Prestador de Serviços, Honorários, Sistemas, Plano de Saúde, Retirada de Lucro`
-          }]
-        })
-      });
-      const aiData = await aiRes.json();
-      const sugestao = aiData.content?.[0]?.text?.trim() || "";
-      const match = CATEGORIAS.find(c => c.label.toLowerCase() === sugestao.toLowerCase());
-      if (match) { categoriaId = match.id; categoriaLabel = match.label; categoriaSugerida = match.label; }
-    } catch(e) {}
-  }
-
-  // Salva no Firebase como rascunho no Contas a Pagar
-  const entrada = {
-    fornecedor, cnpj, numeroDoc: numero, valor,
-    competencia, vencimento: dataEmissao,
-    historico: discriminacao,
-    categoriaId: categoriaId || "",
-    categoriaLabel,
-    categoriaSugerida,
-    situacao: "rascunho", // rascunho = aguardando aprovação
-    origem: "fiscal-defender",
-    chaveAcesso,
-    criadoEm: Date.now(),
-  };
-
-  const key = (chaveAcesso || `${cnpj}_${numero}_${Date.now()}`).replace(/[.#$[\]/]/g, "_");
-  await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${key}.json`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(entrada),
-  });
-
-  // Também salva referência na coleção nfse_tomadas para histórico
-  await fetch(`${FIREBASE_URL}/nfse_tomadas/${mesPath}/${key}.json`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...entrada, importadoEm: Date.now() }),
-  });
-
+    
     // Verificar se o token expirou (expires_in é em segundos, saved_at em ms)
     const savedAt = token.saved_at || 0;
     const expiresIn = (token.expires_in || 3600) * 1000;
@@ -1248,6 +1124,9 @@ async function processarNfse(nfse) {
     }
   }
 
-  // ── Fiscal Defender ─────────────────────────────────────────────────────
-// ── Webhook recebe NFS-e nova do Fiscal Defender ─────────────────────────
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
 }
+
+
