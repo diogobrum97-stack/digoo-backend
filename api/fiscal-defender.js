@@ -1,8 +1,12 @@
 export const config = { maxDuration: 30 };
 
 const FD_BASE = "https://nfse.fiscaldefender.com.br/api/v1";
-const FD_TOKEN = process.env.FISCAL_DEFENDER_TOKEN;
-const FD_WEBHOOK_SECRET = process.env.FISCAL_DEFENDER_WEBHOOK_SECRET;
+// Tokens lidos do Firebase (não usa variáveis de ambiente)
+async function getFDConfig() {
+  const snap = await fetch(`${FIREBASE_URL}/fiscal_defender_config.json`);
+  const data = await snap.json() || {};
+  return { token: data.token || "", webhookSecret: data.webhook_secret || "" };
+}
 const FIREBASE_URL = process.env.FIREBASE_URL;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -41,6 +45,7 @@ export default async function handler(req, res) {
   if (req.query.action === "webhook-nfse" && req.method === "POST") {
     try {
       // Valida assinatura HMAC do Fiscal Defender
+      const { webhookSecret: FD_WEBHOOK_SECRET } = await getFDConfig();
       if (FD_WEBHOOK_SECRET) {
         const sig = req.headers["x-fd-signature"] || req.headers["x-signature"] || "";
         if (sig) {
@@ -74,6 +79,7 @@ export default async function handler(req, res) {
       const pagina = parseInt(req.query.pagina || "1");
       const competencia = req.query.competencia || ""; // YYYY-MM
 
+      const { token: FD_TOKEN } = await getFDConfig();
       let url = `${FD_BASE}/nfse?page=${pagina}&limit=50&tipo=recebida`;
       if (competencia) url += `&competencia=${competencia}`;
 
