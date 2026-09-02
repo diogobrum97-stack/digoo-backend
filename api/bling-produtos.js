@@ -74,8 +74,11 @@ export default async function handler(req, res) {
       const { token } = getFDConfig();
       const competencia = req.query.competencia || new Date().toISOString().slice(0,7);
       const pagina = parseInt(req.query.pagina||"1");
-      // Testa URL correta — retorna a URL usada para debug
-      const url = `${FD_BASE}/nfse?page=${pagina}&per_page=50`;
+      // Monta URL com parâmetros corretos do Fiscal Defender
+      const startDate = competencia ? `${competencia}-01` : "";
+      const endDate = competencia ? `${competencia}-31` : "";
+      let url = `${FD_BASE}/nfse?page=${pagina}&limit=50&situacao=NORMAL`;
+      if (startDate) url += `&startDate=${startDate}&endDate=${endDate}`;
       const r = await fetch(url, { headers:{ Authorization:`Bearer ${token}` } });
       const rawText = await r.text();
       let data;
