@@ -2,6 +2,7 @@ export const config = { maxDuration: 30 };
 
 const FD_BASE = "https://nfse.fiscaldefender.com.br/api/v1";
 const FD_TOKEN = process.env.FISCAL_DEFENDER_TOKEN;
+const FD_WEBHOOK_SECRET = process.env.FISCAL_DEFENDER_WEBHOOK_SECRET;
 const FIREBASE_URL = process.env.FIREBASE_URL;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -39,6 +40,18 @@ export default async function handler(req, res) {
   // ── Webhook recebe NFS-e nova do Fiscal Defender ─────────────────────────
   if (req.query.action === "webhook-nfse" && req.method === "POST") {
     try {
+      // Valida assinatura HMAC do Fiscal Defender
+      if (FD_WEBHOOK_SECRET) {
+        const sig = req.headers["x-fd-signature"] || req.headers["x-signature"] || "";
+        if (sig) {
+          const crypto = await import("crypto");
+          const rawBody = JSON.stringify(req.body);
+          const expected = crypto.createHmac("sha256", FD_WEBHOOK_SECRET).update(rawBody).digest("hex");
+          if (sig !== expected && sig !== `sha256=${expected}`) {
+            return res.status(401).json({ erro: "Assinatura inválida" });
+          }
+        }
+      }
       const body = req.body;
       const event = body?.event;
 
