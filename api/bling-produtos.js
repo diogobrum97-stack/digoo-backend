@@ -2,6 +2,17 @@ export const config = {
   maxDuration: 60,
 };
 
+// ── Fiscal Defender ───────────────────────────────────────────────────────────
+const FD_BASE = "https://nfse.fiscaldefender.com.br/api/v1";
+function getFDConfig() {
+  try {
+    const cfg = JSON.parse(process.env.FISCAL_DEFENDER || "{}");
+    return { token: cfg.t || "", webhookSecret: cfg.w || "" };
+  } catch(e) {
+    return { token: "", webhookSecret: "" };
+  }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
