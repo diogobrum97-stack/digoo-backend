@@ -3,7 +3,7 @@ export const config = {
 };
 
 // ── Fiscal Defender ──────────────────────────────────────────────────────────
-const FD_BASE = "https://nfse.fiscaldefender.com.br/api/v1";
+const FD_BASE = "https://fiscaldefender.com.br/api/v1";
 function getFDConfig() {
   try { const c = JSON.parse(process.env.FISCAL_DEFENDER||"{}"); return {token:c.t||"",secret:c.w||""}; }
   catch(e) { return {token:"",secret:""}; }
