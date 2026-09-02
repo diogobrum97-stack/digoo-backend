@@ -74,7 +74,8 @@ export default async function handler(req, res) {
       const { token } = getFDConfig();
       const competencia = req.query.competencia || new Date().toISOString().slice(0,7);
       const pagina = parseInt(req.query.pagina||"1");
-      const url = `${FD_BASE}/nfse?page=${pagina}&limit=50&tipo=recebida&competencia=${competencia}`;
+      // Testa URL correta — retorna a URL usada para debug
+      const url = `${FD_BASE}/nfse?page=${pagina}&per_page=50`;
       const r = await fetch(url, { headers:{ Authorization:`Bearer ${token}` } });
       const rawText = await r.text();
       let data;
