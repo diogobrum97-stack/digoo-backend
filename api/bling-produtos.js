@@ -92,16 +92,51 @@ export default async function handler(req, res) {
 
   try {
     const r = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
-    const token = await r.json();
+    let token = await r.json();
     if (!token || !token.access_token) throw new Error("Bling não conectado");
-    
+
     // Verificar se o token expirou (expires_in é em segundos, saved_at em ms)
     const savedAt = token.saved_at || 0;
-    const expiresIn = (token.expires_in || 3600) * 1000;
+    const expiresIn = (token.expires_in || 21600) * 1000;
     const expirou = Date.now() > savedAt + expiresIn - 60000; // 1 min de margem
+
     if (expirou) {
-      return res.status(401).json({ erro: "Token Bling expirado — reconecte em Config → APIs" });
+      // Tentar refresh automático com o refresh_token
+      if (!token.refresh_token) {
+        return res.status(401).json({ erro: "Token Bling expirado — reconecte em Config → APIs" });
+      }
+      try {
+        const creds = Buffer.from(`${process.env.BLING_CLIENT_ID}:${process.env.BLING_CLIENT_SECRET}`).toString("base64");
+        const refreshRes = await fetch("https://api.bling.com.br/Api/v3/oauth/token", {
+          method: "POST",
+          headers: {
+            "Authorization": `Basic ${creds}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: token.refresh_token,
+          }),
+        });
+        if (!refreshRes.ok) {
+          const txt = await refreshRes.text();
+          return res.status(401).json({ erro: "Refresh Bling falhou — reconecte em Config → APIs", detalhe: txt.slice(0, 200) });
+        }
+        const newToken = await refreshRes.json();
+        newToken.saved_at = Date.now();
+        // Preservar refresh_token se o novo não vier com um
+        if (!newToken.refresh_token && token.refresh_token) newToken.refresh_token = token.refresh_token;
+        await fetch(`${process.env.FIREBASE_URL}/bling_token.json`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(newToken),
+        });
+        token = newToken;
+      } catch (refreshErr) {
+        return res.status(401).json({ erro: "Erro no refresh do token Bling", detalhe: refreshErr.message });
+      }
     }
+
     const headers = {
       Authorization: `Bearer ${token.access_token}`,
       Accept: "application/json",
