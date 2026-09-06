@@ -768,19 +768,13 @@ export default async function handler(req, res) {
         const filial = depositos.find(d => d.descricao && (d.descricao.toLowerCase().includes('filial') || d.descricao.toLowerCase().includes('sp')));
         const idDeposito = filial?.id || null;
 
-        // Testar endpoint correto do Bling v3 para saldos de estoque
-        // Opção 1: GET /estoques (sem filtro primeiro para ver estrutura)
-        const esRaw = await fetch('https://api.bling.com.br/Api/v3/estoques?pagina=1&limite=5', { headers });
-        const esRawData = await esRaw.json();
+        // GET /produtos/{id}/estoques — endpoint correto para saldo por depósito
+        // Testar com produto conhecido: D-CUBE-PRETO-3X-2P-PRETO (id: 16660295418)
+        const prodId = req.query.produtoId || '16660295418';
+        const esResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${prodId}/estoques`, { headers });
+        const esData = await esResp.json();
 
-        // Opção 2: GET /depositos/{id}/saldos
-        let saldos = null;
-        if (idDeposito) {
-          const sResp = await fetch(`https://api.bling.com.br/Api/v3/depositos/${idDeposito}/saldos?pagina=1&limite=5`, { headers });
-          saldos = await sResp.json();
-        }
-
-        return res.json({ ok: true, depositos, idDeposito, estoquesBruto: esRawData, saldos });
+        return res.json({ ok: true, depositos, idDeposito, produtoId: prodId, estoquesProduto: esData });
       } catch (e) {
         return res.status(500).json({ erro: e.message });
       }
