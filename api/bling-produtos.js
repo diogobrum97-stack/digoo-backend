@@ -759,6 +759,36 @@ export default async function handler(req, res) {
       });
     }
 
+    // ── Estoque por depósito (para conciliação Bling x ML) ──────────────────────
+    if (req.query.action === 'estoques-filial') {
+      try {
+        const depResp = await fetch('https://api.bling.com.br/Api/v3/depositos?situacao=A&pagina=1&limite=50', { headers });
+        const depData = await depResp.json();
+        const depositos = depData.data || [];
+        const filial = depositos.find(d => d.descricao && (d.descricao.toLowerCase().includes('filial') || d.descricao.toLowerCase().includes('sp')));
+        const idDeposito = filial?.id || null;
+
+        let estoques = [];
+        let pagina = 1;
+        while (true) {
+          const params = new URLSearchParams({ pagina, limite: 100 });
+          if (idDeposito) params.set('idDeposito', idDeposito);
+          const esResp = await fetch(`https://api.bling.com.br/Api/v3/estoques?${params}`, { headers });
+          const esData = await esResp.json();
+          const items = esData.data || [];
+          if (!items.length) break;
+          estoques = estoques.concat(items);
+          if (items.length < 100) break;
+          pagina++;
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        return res.json({ ok: true, depositos, idDeposito, total: estoques.length, estoques: estoques.slice(0, 20) });
+      } catch (e) {
+        return res.status(500).json({ erro: e.message });
+      }
+    }
+
     // ── Modo padrão: lista de produtos com custo (comportamento original) ──
     const produtos = [];
     let pagina = 1;
@@ -1161,39 +1191,6 @@ export default async function handler(req, res) {
       const itens = JSON.parse(clean);
 
       return res.json({ ok: true, itens });
-    } catch (e) {
-      return res.status(500).json({ erro: e.message });
-    }
-  }
-
-  // ── Estoque por depósito (para conciliação Bling x ML) ──────────────────────
-  if (req.query.action === 'estoques-filial') {
-    try {
-      // Buscar depósitos para achar o ID da Filial SP
-      const depResp = await fetch('https://api.bling.com.br/Api/v3/depositos?situacao=A&pagina=1&limite=50', { headers });
-      const depData = await depResp.json();
-      const depositos = depData.data || [];
-      // Filial SP — CNPJ 40981026000344
-      const filial = depositos.find(d => d.descricao && (d.descricao.toLowerCase().includes('filial') || d.descricao.toLowerCase().includes('sp')));
-      const idDeposito = filial?.id || null;
-
-      // Buscar saldos de estoque
-      let estoques = [];
-      let pagina = 1;
-      while (true) {
-        const params = new URLSearchParams({ pagina, limite: 100 });
-        if (idDeposito) params.set('idDeposito', idDeposito);
-        const esResp = await fetch(`https://api.bling.com.br/Api/v3/estoques?${params}`, { headers });
-        const esData = await esResp.json();
-        const items = esData.data || [];
-        if (!items.length) break;
-        estoques = estoques.concat(items);
-        if (items.length < 100) break;
-        pagina++;
-        await new Promise(r => setTimeout(r, 300));
-      }
-
-      return res.json({ ok: true, depositos, idDeposito, total: estoques.length, estoques: estoques.slice(0, 20) });
     } catch (e) {
       return res.status(500).json({ erro: e.message });
     }
