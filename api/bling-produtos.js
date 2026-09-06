@@ -768,22 +768,19 @@ export default async function handler(req, res) {
         const filial = depositos.find(d => d.descricao && (d.descricao.toLowerCase().includes('filial') || d.descricao.toLowerCase().includes('sp')));
         const idDeposito = filial?.id || null;
 
-        let estoques = [];
-        let pagina = 1;
-        while (true) {
-          const params = new URLSearchParams({ pagina, limite: 100 });
-          if (idDeposito) params.set('idDeposito', idDeposito);
-          const esResp = await fetch(`https://api.bling.com.br/Api/v3/estoques?${params}`, { headers });
-          const esData = await esResp.json();
-          const items = esData.data || [];
-          if (!items.length) break;
-          estoques = estoques.concat(items);
-          if (items.length < 100) break;
-          pagina++;
-          await new Promise(r => setTimeout(r, 300));
+        // Testar endpoint correto do Bling v3 para saldos de estoque
+        // Opção 1: GET /estoques (sem filtro primeiro para ver estrutura)
+        const esRaw = await fetch('https://api.bling.com.br/Api/v3/estoques?pagina=1&limite=5', { headers });
+        const esRawData = await esRaw.json();
+
+        // Opção 2: GET /depositos/{id}/saldos
+        let saldos = null;
+        if (idDeposito) {
+          const sResp = await fetch(`https://api.bling.com.br/Api/v3/depositos/${idDeposito}/saldos?pagina=1&limite=5`, { headers });
+          saldos = await sResp.json();
         }
 
-        return res.json({ ok: true, depositos, idDeposito, total: estoques.length, estoques: estoques.slice(0, 20) });
+        return res.json({ ok: true, depositos, idDeposito, estoquesBruto: esRawData, saldos });
       } catch (e) {
         return res.status(500).json({ erro: e.message });
       }
