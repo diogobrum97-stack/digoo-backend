@@ -1187,6 +1187,36 @@ export default async function handler(req, res) {
     }
   }
 
+  // ── Próximo número disponível NF-e ────────────────────────────────────────
+  if (req.query.action === 'proximo-numero-nfe') {
+    try {
+      const tokenResp = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const tokenData = await tokenResp.json();
+      const accessToken = tokenData?.access_token;
+      if (!accessToken) return res.status(500).json({ erro: 'Token Bling não disponível' });
+      const headers = { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' };
+
+      // Busca as últimas 100 NFs ordenadas por número decrescente
+      let maiorNumero = 0;
+      for (let pagina = 1; pagina <= 3; pagina++) {
+        const resp = await fetch(`https://api.bling.com.br/Api/v3/nfe?pagina=${pagina}&limite=100`, { headers });
+        if (!resp.ok) break;
+        const data = await resp.json();
+        const nfs = data?.data || [];
+        if (!nfs.length) break;
+        nfs.forEach(nf => {
+          const num = parseInt(nf.numero || '0', 10);
+          if (num > maiorNumero) maiorNumero = num;
+        });
+        // Se já achou notas com número alto o suficiente, para
+        if (nfs.length < 100) break;
+      }
+      return res.json({ ok: true, proximoNumero: String(maiorNumero + 1).padStart(6, '0') });
+    } catch (e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
