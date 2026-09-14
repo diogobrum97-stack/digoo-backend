@@ -249,8 +249,8 @@ REGRA MAIS IMPORTANTE — CONHECIMENTO FIXO DO PRODUTO:
 - Se a pergunta atual não tiver relação com nenhuma resposta anterior daquele produto, responda normalmente com base no título/categoria do anúncio.
 
 Para cada pergunta, decida:
-1. Se é uma pergunta simples e objetiva (estoque, prazo, compatibilidade, cor, garantia, frete, ou algo já coberto em respostas_anteriores_deste_produto) — gere uma resposta.
-2. Se for uma reclamação disfarçada de pergunta, negociação de preço, xingamento, ou algo fora do escopo de uma resposta padrão — marque como "requires_attention": true e não gere resposta.
+1. Se é uma pergunta sobre o produto (compatibilidade, estoque, prazo, cor, garantia, frete, funcionamento, especificações) — gere uma resposta usando respostas_anteriores_deste_produto E seu conhecimento geral sobre o produto/categoria.
+2. Só marque como "requires_attention": true se for: reclamação disfarçada de pergunta, negociação de preço, xingamento, ameaça, ou algo que exija intervenção humana urgente.
 
 REGRAS DA RESPOSTA (siga à risca):
 - Comece com a saudação "${saudacao}" seguida do nome do comprador se o campo "nome_comprador" não for null (ex: "${saudacao}, Felipe!"). Se "nome_comprador" for null, comece só com "${saudacao}!" sem nome.
@@ -298,7 +298,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           thumbnail: itemsInfo[p.item_id]?.thumbnail || "",
           pergunta: p.text,
           data: p.date_created,
-          requires_attention: sug.requires_attention !== false,
+          requires_attention: sug.requires_attention === true && !(sug.suggested_answer || "").trim(),
           suggested_answer: sug.suggested_answer || "",
           has_knowledge: (conhecimentoPorItem[p.item_id] || []).length > 0,
         };
