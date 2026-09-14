@@ -174,13 +174,13 @@ module.exports = async function handler(req, res) {
         return res.json({ ok: true, perguntas: [] });
       }
 
-      // Buscar título dos anúncios envolvidos (multiget, até 20 por chamada)
+      // Buscar título, fotos, atributos e descrição dos anúncios
       const itemIds = [...new Set(perguntas.map(p => p.item_id))];
       const itemsInfo = {};
       for (let i = 0; i < itemIds.length; i += 20) {
         const lote = itemIds.slice(i, i + 20);
         try {
-          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,thumbnail`, {
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,thumbnail,pictures,attributes,category_id`, {
             headers: { Authorization: `Bearer ${tokenP}` },
           });
           const arr = await r.json();
@@ -189,6 +189,19 @@ module.exports = async function handler(req, res) {
           });
         } catch (e) {}
       }
+
+      // Buscar descrição de cada item
+      await Promise.all(itemIds.map(async (iid) => {
+        try {
+          const r = await fetch(`https://api.mercadolibre.com/items/${iid}/description`, {
+            headers: { Authorization: `Bearer ${tokenP}` },
+          });
+          const d = await r.json();
+          if (d.plain_text && itemsInfo[iid]) {
+            itemsInfo[iid].descricao = d.plain_text.slice(0, 1500);
+          }
+        } catch (e) {}
+      }));
 
       // Buscar primeiro nome do comprador (nickname público) para personalizar a saudação
       const buyerIds = [...new Set(perguntas.map(p => p.buyer_id).filter(Boolean))];
@@ -231,22 +244,42 @@ module.exports = async function handler(req, res) {
       }
 
       // Gerar sugestões via Claude — uma chamada só, em lote
-      const listaParaClaude = perguntas.map((p, i) => ({
-        idx: i,
-        produto: itemsInfo[p.item_id]?.title || "Produto",
-        pergunta: p.text,
-        nome_comprador: buyerNames[p.buyer_id] || null,
-        respostas_anteriores_deste_produto: conhecimentoPorItem[p.item_id] || [],
-      }));
+      const listaParaClaude = perguntas.map((p, i) => {
+        const item = itemsInfo[p.item_id] || {};
+        // Ficha técnica — atributos do anúncio
+        const fichaAtributos = (item.attributes || [])
+          .filter(a => a.value_name && a.name)
+          .map(a => `${a.name}: ${a.value_name}`)
+          .join(", ");
+        // URLs das fotos (até 4)
+        const fotos = (item.pictures || []).slice(0, 4).map(pic => pic.url || pic.secure_url).filter(Boolean);
+        return {
+          idx: i,
+          produto: item.title || "Produto",
+          descricao: item.descricao || "",
+          ficha_tecnica: fichaAtributos || "",
+          fotos_url: fotos,
+          pergunta: p.text,
+          nome_comprador: buyerNames[p.buyer_id] || null,
+          respostas_anteriores_deste_produto: conhecimentoPorItem[p.item_id] || [],
+        };
+      });
 
-      const systemPrompt = `Você é um assistente de atendimento da Digoo Brasil, loja de periféricos gamer no Mercado Livre.
-Vai receber uma lista de perguntas pré-venda feitas por compradores em anúncios. Cada pergunta pode vir acompanhada do campo "respostas_anteriores_deste_produto" — são perguntas e respostas REAIS já enviadas pela loja sobre ESSE MESMO anúncio especificamente.
+      const systemPrompt = `Você é um assistente de atendimento da Digoo Brasil, loja de periféricos gamer e peças de notebook no Mercado Livre.
+Vai receber uma lista de perguntas pré-venda feitas por compradores. Cada pergunta vem com contexto completo do produto:
+- "produto": título do anúncio
+- "descricao": descrição completa do anúncio
+- "ficha_tecnica": atributos técnicos cadastrados no ML
+- "fotos_url": URLs das fotos do produto (use para entender o produto visualmente)
+- "respostas_anteriores_deste_produto": perguntas e respostas REAIS já aprovadas pelo vendedor sobre esse produto
 
-REGRA MAIS IMPORTANTE — CONHECIMENTO FIXO DO PRODUTO:
-- Se "respostas_anteriores_deste_produto" tiver conteúdo, trate essas informações como FATOS VERIFICADOS e definitivos sobre aquele produto específico, escritos pelo próprio vendedor. Use-as para responder com precisão técnica, mesmo que a pergunta atual seja fraseada de forma diferente das anteriores.
-- Exemplo: se uma resposta anterior diz "o modelo Forward joga o ar quente pra fora, o Reverse puxa o ar frio pra dentro", e a nova pergunta é "o Reverse solta ar quente?", você DEVE responder com base nesse fato (não, o Reverse puxa ar frio pra dentro), mesmo que a pergunta pareça nova.
-- Nunca contradiga uma informação que já está em "respostas_anteriores_deste_produto".
-- Se a pergunta atual não tiver relação com nenhuma resposta anterior daquele produto, responda normalmente com base no título/categoria do anúncio.
+PRIORIDADE DO CONTEXTO (do mais para o menos confiável):
+1. "respostas_anteriores_deste_produto" — são fatos VERIFICADOS pelo vendedor. Nunca contradiga.
+2. "ficha_tecnica" e "descricao" — informações do próprio anúncio. Use sempre que disponível.
+3. "fotos_url" — para entender aparência, conexões, tamanho do produto.
+4. Seu conhecimento geral — fans ARGB, water coolers, carcaças de notebook, compatibilidades, etc.
+
+Gere sempre uma resposta para todas as perguntas. Use todo o contexto disponível.
 
 Para cada pergunta, gere sempre uma resposta usando respostas_anteriores_deste_produto E seu conhecimento geral. Nunca deixe requires_attention como true — sempre sugira algo.
 
@@ -276,7 +309,28 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           model: "claude-sonnet-4-6",
           max_tokens: 2000,
           system: systemPrompt,
-          messages: [{ role: "user", content: JSON.stringify(listaParaClaude) }],
+          messages: [{
+            role: "user",
+            content: [
+              // Incluir fotos únicas de todos os produtos para o Claude ver visualmente
+              ...([...new Set(listaParaClaude.flatMap(p => p.fotos_url || []))].slice(0, 6).map(url => ({
+                type: "image",
+                source: { type: "url", url }
+              }))),
+              {
+                type: "text",
+                text: JSON.stringify(listaParaClaude.map(p => ({
+                  idx: p.idx,
+                  produto: p.produto,
+                  descricao: p.descricao,
+                  ficha_tecnica: p.ficha_tecnica,
+                  pergunta: p.pergunta,
+                  nome_comprador: p.nome_comprador,
+                  respostas_anteriores_deste_produto: p.respostas_anteriores_deste_produto,
+                })))
+              }
+            ]
+          }],
         }),
       });
       const claudeData = await claudeRes.json();
