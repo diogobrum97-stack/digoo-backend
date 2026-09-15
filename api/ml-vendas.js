@@ -4,6 +4,53 @@ module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ── Criar anúncio no ML ─────────────────────────────────────────────────
+  if (req.query.action === 'criar-anuncio' && req.method === 'POST') {
+    try {
+      const { token, titulo, descricao, preco, estoque } = req.body;
+      if (!token || !titulo || !preco) return res.status(400).json({ ok: false, error: "token, titulo e preco obrigatórios" });
+
+      // Buscar user_id e category_id
+      const meRes = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(400).json({ ok: false, error: "Token inválido" });
+
+      // Predizer categoria automaticamente pelo título
+      const catRes = await fetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?limit=1&q=${encodeURIComponent(titulo)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const catData = await catRes.json();
+      const category_id = catData?.[0]?.category_id || "MLB1648";
+
+      const body = {
+        title: titulo,
+        category_id,
+        price: Number(preco),
+        currency_id: "BRL",
+        available_quantity: Number(estoque) || 1,
+        buying_mode: "buy_it_now",
+        condition: "new",
+        listing_type_id: "gold_special",
+        description: { plain_text: descricao || titulo },
+      };
+
+      const crRes = await fetch('https://api.mercadolibre.com/items', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const crData = await crRes.json();
+
+      if (crData.id) {
+        return res.json({ ok: true, item_id: crData.id, permalink: crData.permalink });
+      } else {
+        return res.status(400).json({ ok: false, error: crData.message || JSON.stringify(crData.cause || crData) });
+      }
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Teste de sugestão com pergunta manual ──────────────────────────────
   if (req.query.action === 'testar-sugestao' && req.method === 'POST') {
     try {
@@ -1727,6 +1774,53 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
       return res.json({ ok: true, resultado, diasBase: dias, totalPedidos: pedidos.length });
     } catch(e) {
       return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
+
+  // ── Criar anúncio no ML ─────────────────────────────────────────────────
+  if (req.query.action === 'criar-anuncio' && req.method === 'POST') {
+    try {
+      const { token, titulo, descricao, preco, estoque } = req.body;
+      if (!token || !titulo || !preco) return res.status(400).json({ ok: false, error: "token, titulo e preco obrigatórios" });
+
+      // Buscar user_id e category_id
+      const meRes = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(400).json({ ok: false, error: "Token inválido" });
+
+      // Predizer categoria automaticamente pelo título
+      const catRes = await fetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?limit=1&q=${encodeURIComponent(titulo)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const catData = await catRes.json();
+      const category_id = catData?.[0]?.category_id || "MLB1648";
+
+      const body = {
+        title: titulo,
+        category_id,
+        price: Number(preco),
+        currency_id: "BRL",
+        available_quantity: Number(estoque) || 1,
+        buying_mode: "buy_it_now",
+        condition: "new",
+        listing_type_id: "gold_special",
+        description: { plain_text: descricao || titulo },
+      };
+
+      const crRes = await fetch('https://api.mercadolibre.com/items', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const crData = await crRes.json();
+
+      if (crData.id) {
+        return res.json({ ok: true, item_id: crData.id, permalink: crData.permalink });
+      } else {
+        return res.status(400).json({ ok: false, error: crData.message || JSON.stringify(crData.cause || crData) });
+      }
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
     }
   }
 
