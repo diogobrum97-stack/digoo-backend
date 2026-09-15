@@ -513,6 +513,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
               pergunta_origem: p.pergunta,
               pergunta_id: p.question_id,
               item_id_origem: p.item_id,
+              produto_origem_titulo: p.produto || "",
               criado_em: Date.now(),
               status: "pendente",
             };
