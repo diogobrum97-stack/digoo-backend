@@ -244,6 +244,39 @@ module.exports = async function handler(req, res) {
       }
 
       // Gerar sugestões via Claude — uma chamada só, em lote
+      // Buscar catálogo ativo (título + permalink + SKU) para o Claude identificar anúncios
+      let catalogoAtivo = [];
+      try {
+        const catalogIds = [];
+        for (let offset = 0; offset < 200; offset += 50) {
+          const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${offset}`, {
+            headers: { Authorization: `Bearer ${tokenP}` },
+          });
+          const d = await r.json();
+          const ids = d.results || [];
+          catalogIds.push(...ids);
+          if (ids.length < 50) break;
+        }
+        // Buscar título, permalink e SKU dos itens em lotes
+        for (let i = 0; i < catalogIds.length; i += 20) {
+          const lote = catalogIds.slice(i, i + 20);
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku`, {
+            headers: { Authorization: `Bearer ${tokenP}` },
+          });
+          const arr = await r.json();
+          arr.forEach(entry => {
+            if (entry.code === 200 && entry.body) {
+              catalogoAtivo.push({
+                id: entry.body.id,
+                titulo: entry.body.title,
+                sku: entry.body.seller_sku || "",
+                link: entry.body.permalink,
+              });
+            }
+          });
+        }
+      } catch (e) { console.error("Erro ao buscar catálogo:", e.message); }
+
       const listaParaClaude = perguntas.map((p, i) => {
         const item = itemsInfo[p.item_id] || {};
         // Ficha técnica — atributos do anúncio
@@ -266,22 +299,23 @@ module.exports = async function handler(req, res) {
       });
 
       const systemPrompt = `Você é um assistente de atendimento da Digoo Brasil, loja de periféricos gamer e peças de notebook no Mercado Livre.
-Vai receber uma lista de perguntas pré-venda feitas por compradores. Cada pergunta vem com contexto completo do produto:
-- "produto": título do anúncio
-- "descricao": descrição completa do anúncio
-- "ficha_tecnica": atributos técnicos cadastrados no ML
-- "fotos_url": URLs das fotos do produto (use para entender o produto visualmente)
-- "respostas_anteriores_deste_produto": perguntas e respostas REAIS já aprovadas pelo vendedor sobre esse produto
+Vai receber um JSON com:
+- "catalogo_anuncios_ativos": lista de todos os anúncios ativos da loja (id, titulo, sku, link)
+- "perguntas": lista de perguntas de compradores, cada uma com contexto completo do produto
 
-PRIORIDADE DO CONTEXTO (do mais para o menos confiável):
-1. "respostas_anteriores_deste_produto" — são fatos VERIFICADOS pelo vendedor. Nunca contradiga.
-2. "ficha_tecnica" e "descricao" — informações do próprio anúncio. Use sempre que disponível.
-3. "fotos_url" — para entender aparência, conexões, tamanho do produto.
+PRIORIDADE DO CONTEXTO:
+1. "respostas_anteriores_deste_produto" — fatos VERIFICADOS pelo vendedor. Nunca contradiga.
+2. "ficha_tecnica" e "descricao" — informações do anúncio. Use sempre que disponível.
+3. "catalogo_anuncios_ativos" — use para identificar se temos o produto que o comprador busca.
 4. Seu conhecimento geral — fans ARGB, water coolers, carcaças de notebook, compatibilidades, etc.
 
-Gere sempre uma resposta para todas as perguntas. Use todo o contexto disponível.
+SOBRE O CATÁLOGO:
+- Quando a pergunta busca um produto específico (ex: "kit com 7 fans", "fan reverse 120mm", "carcaça Dell 3510"), consulte o catálogo e identifique o anúncio mais adequado.
+- Se encontrar o produto exato, inclua o link na resposta de forma natural (ex: "temos sim! 👉 [link]").
+- Se não tiver o exato mas tiver similar, mencione o mais próximo com o link.
+- Retorne também "produto_identificado" com os dados do anúncio encontrado (ou null se não encontrou).
 
-Para cada pergunta, gere sempre uma resposta usando respostas_anteriores_deste_produto E seu conhecimento geral. Nunca deixe requires_attention como true — sempre sugira algo.
+Gere sempre uma resposta para todas as perguntas. Use todo o contexto disponível.
 
 
 
@@ -296,7 +330,7 @@ REGRAS DA RESPOSTA (siga à risca):
 - Não repita a mesma ideia duas vezes na resposta. Uma frase resolve — não emende uma segunda frase que só reforça a primeira.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
-[{"idx": 0, "requires_attention": false, "suggested_answer": "texto da resposta"}, {"idx": 1, "requires_attention": true, "suggested_answer": ""}]`;
+[{"idx": 0, "requires_attention": false, "suggested_answer": "texto da resposta com link se aplicável", "produto_identificado": {"titulo": "nome do produto", "sku": "SKU", "link": "https://..."} }, {"idx": 1, "requires_attention": false, "suggested_answer": "texto", "produto_identificado": null}]`;
 
       const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -311,16 +345,19 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           system: systemPrompt,
           messages: [{
             role: "user",
-            content: JSON.stringify(listaParaClaude.map(p => ({
-              idx: p.idx,
-              produto: p.produto,
-              descricao: p.descricao,
-              ficha_tecnica: p.ficha_tecnica,
-              fotos_url: (p.fotos_url || []).slice(0, 3),
-              pergunta: p.pergunta,
-              nome_comprador: p.nome_comprador,
-              respostas_anteriores_deste_produto: p.respostas_anteriores_deste_produto,
-            })))
+            content: JSON.stringify({
+              catalogo_anuncios_ativos: catalogoAtivo.slice(0, 150),
+              perguntas: listaParaClaude.map(p => ({
+                idx: p.idx,
+                produto: p.produto,
+                descricao: p.descricao,
+                ficha_tecnica: p.ficha_tecnica,
+                fotos_url: (p.fotos_url || []).slice(0, 3),
+                pergunta: p.pergunta,
+                nome_comprador: p.nome_comprador,
+                respostas_anteriores_deste_produto: p.respostas_anteriores_deste_produto,
+              }))
+            })
           }],
         }),
       });
@@ -347,6 +384,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           data: p.date_created,
           requires_attention: false,
           suggested_answer: sug.suggested_answer || "",
+          produto_identificado: sug.produto_identificado || null,
           has_knowledge: (conhecimentoPorItem[p.item_id] || []).length > 0,
         };
       });
