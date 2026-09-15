@@ -311,25 +311,16 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           system: systemPrompt,
           messages: [{
             role: "user",
-            content: [
-              // Incluir fotos únicas de todos os produtos para o Claude ver visualmente
-              ...([...new Set(listaParaClaude.flatMap(p => p.fotos_url || []))].slice(0, 6).map(url => ({
-                type: "image",
-                source: { type: "url", url }
-              }))),
-              {
-                type: "text",
-                text: JSON.stringify(listaParaClaude.map(p => ({
-                  idx: p.idx,
-                  produto: p.produto,
-                  descricao: p.descricao,
-                  ficha_tecnica: p.ficha_tecnica,
-                  pergunta: p.pergunta,
-                  nome_comprador: p.nome_comprador,
-                  respostas_anteriores_deste_produto: p.respostas_anteriores_deste_produto,
-                })))
-              }
-            ]
+            content: JSON.stringify(listaParaClaude.map(p => ({
+              idx: p.idx,
+              produto: p.produto,
+              descricao: p.descricao,
+              ficha_tecnica: p.ficha_tecnica,
+              fotos_url: (p.fotos_url || []).slice(0, 3),
+              pergunta: p.pergunta,
+              nome_comprador: p.nome_comprador,
+              respostas_anteriores_deste_produto: p.respostas_anteriores_deste_produto,
+            })))
           }],
         }),
       });
@@ -341,6 +332,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         const jsonStr = raw.replace(/^```json\s*|\s*```$/g, "");
         sugestoes = JSON.parse(jsonStr);
       } catch (e) {
+        console.error("Erro ao parsear resposta do Claude:", e.message, "Raw:", claudeData?.content?.[0]?.text?.slice(0, 200));
         sugestoes = [];
       }
 
