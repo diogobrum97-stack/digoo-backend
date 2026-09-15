@@ -11,9 +11,13 @@ module.exports = async function handler(req, res) {
       if (!pergunta || !tokenP) return res.status(400).json({ erro: 'pergunta e token obrigatorios' });
 
       async function buscarCatalogoTeste(token) {
+        // Buscar ID do usuário primeiro
+        const meRes = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
+        const me = await meRes.json();
+        if (!me.id) return [];
         const ids = [];
         for (let offset = 0; offset < 200; offset += 50) {
-          const r = await fetch(`https://api.mercadolibre.com/users/me/items/search?status=active&limit=50&offset=${offset}`, { headers: { Authorization: `Bearer ${token}` } });
+          const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${offset}`, { headers: { Authorization: `Bearer ${token}` } });
           const d = await r.json();
           const batch = d.results || [];
           ids.push(...batch);
@@ -296,9 +300,12 @@ module.exports = async function handler(req, res) {
       // Buscar catálogo ativo (título + permalink + SKU) para o Claude identificar anúncios
       // Buscar catálogo das duas contas em paralelo
       async function buscarCatalogoConta(token) {
+        const meR = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
+        const meD = await meR.json();
+        if (!meD.id) return [];
         const ids = [];
         for (let offset = 0; offset < 200; offset += 50) {
-          const r = await fetch(`https://api.mercadolibre.com/users/me/items/search?status=active&limit=50&offset=${offset}`, {
+          const r = await fetch(`https://api.mercadolibre.com/users/${meD.id}/items/search?status=active&limit=50&offset=${offset}`, {
             headers: { Authorization: `Bearer ${token}` },
           });
           const d = await r.json();
@@ -1703,9 +1710,13 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
       if (!pergunta || !tokenP) return res.status(400).json({ erro: 'pergunta e token obrigatorios' });
 
       async function buscarCatalogoTeste(token) {
+        // Buscar ID do usuário primeiro
+        const meRes = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
+        const me = await meRes.json();
+        if (!me.id) return [];
         const ids = [];
         for (let offset = 0; offset < 200; offset += 50) {
-          const r = await fetch(`https://api.mercadolibre.com/users/me/items/search?status=active&limit=50&offset=${offset}`, { headers: { Authorization: `Bearer ${token}` } });
+          const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${offset}`, { headers: { Authorization: `Bearer ${token}` } });
           const d = await r.json();
           const batch = d.results || [];
           ids.push(...batch);
