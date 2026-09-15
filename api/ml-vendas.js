@@ -1647,6 +1647,55 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
     }
   }
 
+  // ── Teste de sugestão com pergunta manual ──────────────────────────────
+  if (req.query.action === 'testar-sugestao' && req.method === 'POST') {
+    try {
+      const { pergunta, token: tokenP, token_outro: tokenOutro } = { ...req.query, ...req.body };
+      if (!pergunta || !tokenP) return res.status(400).json({ erro: 'pergunta e token obrigatorios' });
+
+      async function buscarCatalogoTeste(token) {
+        const ids = [];
+        for (let offset = 0; offset < 200; offset += 50) {
+          const r = await fetch(`https://api.mercadolibre.com/users/me/items/search?status=active&limit=50&offset=${offset}`, { headers: { Authorization: `Bearer ${token}` } });
+          const d = await r.json();
+          const batch = d.results || [];
+          ids.push(...batch);
+          if (batch.length < 50) break;
+        }
+        const itens = [];
+        for (let i = 0; i < ids.length; i += 20) {
+          const lote = ids.slice(i, i + 20);
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(',')}&attributes=id,title,permalink,seller_sku`, { headers: { Authorization: `Bearer ${token}` } });
+          const arr = await r.json();
+          arr.forEach(entry => { if (entry.code === 200 && entry.body) itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || '', link: entry.body.permalink }); });
+        }
+        return itens;
+      }
+
+      const promessas = [buscarCatalogoTeste(tokenP)];
+      if (tokenOutro) promessas.push(buscarCatalogoTeste(tokenOutro));
+      const seen = new Set();
+      const catalogo = [];
+      (await Promise.all(promessas)).flat().forEach(item => { if (!seen.has(item.id)) { seen.add(item.id); catalogo.push(item); } });
+
+      const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6', max_tokens: 500,
+          system: 'Você é assistente de atendimento da Digoo Brasil. Recebe uma pergunta e o catálogo ativo. Identifique o produto mais adequado e responda com link se encontrar. Retorne APENAS JSON: {"suggested_answer": "resposta", "produto_identificado": {"titulo": "...", "sku": "...", "link": "..."} ou null}',
+          messages: [{ role: 'user', content: JSON.stringify({ pergunta, catalogo_anuncios_ativos: catalogo }) }]
+        })
+      });
+      const cd = await claudeRes.json();
+      const raw = ((cd.content || []).find(b => b.type === 'text')?.text || '{}').trim().replace(/^```json\s*|\s*```$/g, '');
+      const result = JSON.parse(raw);
+      return res.json({ ok: true, pergunta, total_anuncios: catalogo.length, suggested_answer: result.suggested_answer || '', produto_identificado: result.produto_identificado || null });
+    } catch (e) {
+      return res.status(500).json({ erro: e.message });
+    }
+  }
+
   } catch (e) {
     console.error("ml-vendas error:", e.message);
     return res.status(500).json({ error: e.message });
