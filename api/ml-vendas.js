@@ -154,7 +154,7 @@ module.exports = async function handler(req, res) {
   // ── Perguntas: buscar pendentes + gerar sugestão de resposta via Claude ──
   if (req.query.action === "buscar-perguntas" && req.method === "GET") {
     try {
-      const { token: tokenP } = req.query;
+      const { token: tokenP, token_outro: tokenOutro } = req.query;
       if (!tokenP) return res.status(400).json({ ok: false, error: "token obrigatório" });
 
       const meRes = await fetch("https://api.mercadolibre.com/users/me", {
@@ -245,36 +245,42 @@ module.exports = async function handler(req, res) {
 
       // Gerar sugestões via Claude — uma chamada só, em lote
       // Buscar catálogo ativo (título + permalink + SKU) para o Claude identificar anúncios
-      let catalogoAtivo = [];
-      try {
-        const catalogIds = [];
+      // Buscar catálogo das duas contas em paralelo
+      async function buscarCatalogoConta(token) {
+        const ids = [];
         for (let offset = 0; offset < 200; offset += 50) {
-          const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${offset}`, {
-            headers: { Authorization: `Bearer ${tokenP}` },
+          const r = await fetch(`https://api.mercadolibre.com/users/me/items/search?status=active&limit=50&offset=${offset}`, {
+            headers: { Authorization: `Bearer ${token}` },
           });
           const d = await r.json();
-          const ids = d.results || [];
-          catalogIds.push(...ids);
-          if (ids.length < 50) break;
+          const batch = d.results || [];
+          ids.push(...batch);
+          if (batch.length < 50) break;
         }
-        // Buscar título, permalink e SKU dos itens em lotes
-        for (let i = 0; i < catalogIds.length; i += 20) {
-          const lote = catalogIds.slice(i, i + 20);
+        const itens = [];
+        for (let i = 0; i < ids.length; i += 20) {
+          const lote = ids.slice(i, i + 20);
           const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku`, {
-            headers: { Authorization: `Bearer ${tokenP}` },
+            headers: { Authorization: `Bearer ${token}` },
           });
           const arr = await r.json();
           arr.forEach(entry => {
             if (entry.code === 200 && entry.body) {
-              catalogoAtivo.push({
-                id: entry.body.id,
-                titulo: entry.body.title,
-                sku: entry.body.seller_sku || "",
-                link: entry.body.permalink,
-              });
+              itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink });
             }
           });
         }
+        return itens;
+      }
+
+      let catalogoAtivo = [];
+      try {
+        const promessas = [buscarCatalogoConta(tokenP)];
+        if (tokenOutro) promessas.push(buscarCatalogoConta(tokenOutro));
+        const resultados = await Promise.all(promessas);
+        // Deduplica por id
+        const seen = new Set();
+        resultados.flat().forEach(item => { if (!seen.has(item.id)) { seen.add(item.id); catalogoAtivo.push(item); } });
       } catch (e) { console.error("Erro ao buscar catálogo:", e.message); }
 
       const listaParaClaude = perguntas.map((p, i) => {
