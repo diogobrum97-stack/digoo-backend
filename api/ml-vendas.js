@@ -499,29 +499,63 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         };
       });
 
-      // Salvar rascunhos no Firebase
+      // Salvar rascunhos no Firebase — agrupados por question_id
       const rascunhos = resultado.filter(p => p.criar_rascunho);
       if (rascunhos.length > 0) {
         try {
           const fbUrl = process.env.FIREBASE_URL;
-          for (const p of rascunhos) {
-            const rascunho = {
+
+          // Buscar rascunhos existentes para não duplicar por question_id
+          const existRes = await fetch(`${fbUrl}/anuncios_rascunho.json`);
+          const existData = await existRes.json() || {};
+          const existingByPergunta = {};
+          Object.entries(existData).forEach(([id, r]) => {
+            if (r && r.pergunta_id) existingByPergunta[r.pergunta_id] = id;
+          });
+
+          // Agrupar sugestões por question_id
+          const porPergunta = {};
+          rascunhos.forEach(p => {
+            const qid = p.question_id || p.item_id;
+            if (!porPergunta[qid]) {
+              porPergunta[qid] = {
+                pergunta_origem: p.pergunta,
+                pergunta_id: p.question_id,
+                item_id_origem: p.item_id,
+                produto_origem_titulo: p.produto || "",
+                criado_em: Date.now(),
+                status: "pendente",
+                sugestoes: [],
+              };
+            }
+            porPergunta[qid].sugestoes.push({
               titulo_sugerido: p.criar_rascunho.titulo_sugerido || "",
               descricao_sugerida: p.criar_rascunho.descricao_sugerida || "",
               preco_sugerido: p.criar_rascunho.preco_sugerido || null,
               motivo: p.criar_rascunho.motivo || "",
-              pergunta_origem: p.pergunta,
-              pergunta_id: p.question_id,
-              item_id_origem: p.item_id,
-              produto_origem_titulo: p.produto || "",
-              criado_em: Date.now(),
-              status: "pendente",
-            };
-            await fetch(`${fbUrl}/anuncios_rascunho.json`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(rascunho),
             });
+          });
+
+          // Salvar ou atualizar no Firebase
+          for (const [qid, rascunho] of Object.entries(porPergunta)) {
+            if (existingByPergunta[qid]) {
+              // Já existe — adiciona sugestões novas
+              const existId = existingByPergunta[qid];
+              const existSugestoes = existData[existId]?.sugestoes || [];
+              const novasSugestoes = [...existSugestoes, ...rascunho.sugestoes];
+              await fetch(`${fbUrl}/anuncios_rascunho/${existId}/sugestoes.json`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(novasSugestoes),
+              });
+            } else {
+              // Novo rascunho
+              await fetch(`${fbUrl}/anuncios_rascunho.json`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(rascunho),
+              });
+            }
           }
         } catch (e) { console.error("Erro ao salvar rascunho:", e.message); }
       }
