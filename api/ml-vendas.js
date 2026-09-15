@@ -372,10 +372,10 @@ PRIORIDADE DO CONTEXTO:
 4. Seu conhecimento geral — fans ARGB, water coolers, carcaças de notebook, compatibilidades, etc.
 
 SOBRE O CATÁLOGO:
-- Quando a pergunta busca um produto específico (ex: "kit com 7 fans", "fan reverse 120mm", "carcaça Dell 3510"), consulte o catálogo e identifique o anúncio mais adequado.
-- Se encontrar o produto exato, inclua o link na resposta de forma natural (ex: "temos sim! 👉 [link]").
-- Se não tiver o exato mas tiver similar, mencione o mais próximo com o link.
-- Retorne também "produto_identificado" com os dados do anúncio encontrado (ou null se não encontrou).
+- Quando a pergunta busca um produto específico, consulte o catálogo e identifique o anúncio mais adequado.
+- Se encontrar o produto exato ou similar, inclua o link na resposta e retorne "produto_identificado".
+- Se NÃO encontrar nada adequado no catálogo, retorne "suggested_answer": "" (vazio) e "criar_rascunho" com os dados para criar um novo anúncio: {"titulo_sugerido": "título otimizado para ML", "descricao_sugerida": "descrição completa", "preco_sugerido": numero ou null, "motivo": "por que criar esse anúncio"}.
+- Se a pergunta não for sobre um produto específico para compra (ex: dúvida técnica, compatibilidade), responda normalmente sem criar rascunho.
 
 Gere sempre uma resposta para todas as perguntas. Use todo o contexto disponível.
 
@@ -392,7 +392,7 @@ REGRAS DA RESPOSTA (siga à risca):
 - Não repita a mesma ideia duas vezes na resposta. Uma frase resolve — não emende uma segunda frase que só reforça a primeira.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
-[{"idx": 0, "requires_attention": false, "suggested_answer": "texto da resposta com link se aplicável", "produto_identificado": {"titulo": "nome do produto", "sku": "SKU", "link": "https://..."} }, {"idx": 1, "requires_attention": false, "suggested_answer": "texto", "produto_identificado": null}]`;
+[{"idx": 0, "requires_attention": false, "suggested_answer": "texto com link", "produto_identificado": {"titulo": "...", "sku": "...", "link": "..."}, "criar_rascunho": null}, {"idx": 1, "requires_attention": false, "suggested_answer": "", "produto_identificado": null, "criar_rascunho": {"titulo_sugerido": "...", "descricao_sugerida": "...", "preco_sugerido": null, "motivo": "..."}}]`;
 
       const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -447,9 +447,36 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           requires_attention: false,
           suggested_answer: sug.suggested_answer || "",
           produto_identificado: sug.produto_identificado || null,
+          criar_rascunho: sug.criar_rascunho || null,
           has_knowledge: (conhecimentoPorItem[p.item_id] || []).length > 0,
         };
       });
+
+      // Salvar rascunhos no Firebase
+      const rascunhos = resultado.filter(p => p.criar_rascunho);
+      if (rascunhos.length > 0) {
+        try {
+          const fbUrl = process.env.FIREBASE_URL;
+          for (const p of rascunhos) {
+            const rascunho = {
+              titulo_sugerido: p.criar_rascunho.titulo_sugerido || "",
+              descricao_sugerida: p.criar_rascunho.descricao_sugerida || "",
+              preco_sugerido: p.criar_rascunho.preco_sugerido || null,
+              motivo: p.criar_rascunho.motivo || "",
+              pergunta_origem: p.pergunta,
+              pergunta_id: p.question_id,
+              item_id_origem: p.item_id,
+              criado_em: Date.now(),
+              status: "pendente",
+            };
+            await fetch(`${fbUrl}/anuncios_rascunho.json`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(rascunho),
+            });
+          }
+        } catch (e) { console.error("Erro ao salvar rascunho:", e.message); }
+      }
 
       return res.json({ ok: true, perguntas: resultado });
     } catch (e) {
