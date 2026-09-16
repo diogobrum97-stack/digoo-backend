@@ -421,7 +421,9 @@ PRIORIDADE DO CONTEXTO:
 SOBRE O CATÁLOGO:
 - Quando a pergunta busca um produto específico, consulte o catálogo e identifique o anúncio mais adequado.
 - Se encontrar o produto exato ou similar, inclua o link na resposta e retorne "produto_identificado".
-- Se NÃO encontrar nada adequado no catálogo, retorne "suggested_answer": "" (vazio) e "criar_rascunho" com os dados para criar um novo anúncio: {"titulo_sugerido": "título otimizado para ML", "descricao_sugerida": "descrição completa", "preco_sugerido": numero ou null, "motivo": "por que criar esse anúncio"}.
+- Se NÃO encontrar nada adequado no catálogo, retorne "suggested_answer": "" (vazio) e "criar_rascunho" como array de sugestões (mínimo 1, máximo 3). Cada sugestão deve ser distinta e fazer sentido real para o cliente.
+- ANTES de criar sugestões, analise profundamente: (1) qual produto o cliente já viu/tem (o anúncio onde perguntou), (2) o que exatamente ele está pedindo além disso, (3) o que faz sentido complementar ou substituir. Evite sugerir variações quase idênticas.
+- Exemplos de boas sugestões: se o cliente perguntou num anúncio de "Kit 6 Reverse + Controladora" e quer "mais 4 Forward", sugestões úteis seriam: kit 4 Forward sem controladora, kit 10 misto (6R+4F), fan Forward avulsa. Não sugerir outro "Kit 6 Forward + Controladora" pois ele já tem a controladora.
 - Se a pergunta não for sobre um produto específico para compra (ex: dúvida técnica, compatibilidade), responda normalmente sem criar rascunho.
 
 Gere sempre uma resposta para todas as perguntas. Use todo o contexto disponível.
@@ -439,7 +441,7 @@ REGRAS DA RESPOSTA (siga à risca):
 - Não repita a mesma ideia duas vezes na resposta. Uma frase resolve — não emende uma segunda frase que só reforça a primeira.
 
 Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
-[{"idx": 0, "requires_attention": false, "suggested_answer": "texto com link", "produto_identificado": {"titulo": "...", "sku": "...", "link": "..."}, "criar_rascunho": null}, {"idx": 1, "requires_attention": false, "suggested_answer": "", "produto_identificado": null, "criar_rascunho": {"titulo_sugerido": "...", "descricao_sugerida": "...", "preco_sugerido": null, "motivo": "..."}}]`;
+[{"idx": 0, "requires_attention": false, "suggested_answer": "texto com link", "produto_identificado": {"titulo": "...", "sku": "...", "link": "..."}, "criar_rascunho": null}, {"idx": 1, "requires_attention": false, "suggested_answer": "", "produto_identificado": null, "criar_rascunho": [{"titulo_sugerido": "...", "descricao_sugerida": "...", "preco_sugerido": null, "motivo": "por que essa sugestão faz sentido para o cliente"}, {"titulo_sugerido": "...", "descricao_sugerida": "...", "preco_sugerido": null, "motivo": "..."}]}]`;
 
       const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -494,7 +496,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
           requires_attention: false,
           suggested_answer: sug.suggested_answer || "",
           produto_identificado: sug.produto_identificado || null,
-          criar_rascunho: sug.criar_rascunho || null,
+          criar_rascunho: Array.isArray(sug.criar_rascunho) ? sug.criar_rascunho : (sug.criar_rascunho ? [sug.criar_rascunho] : null),
           has_knowledge: (conhecimentoPorItem[p.item_id] || []).length > 0,
         };
       });
@@ -528,11 +530,17 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
                 sugestoes: [],
               };
             }
-            porPergunta[qid].sugestoes.push({
-              titulo_sugerido: p.criar_rascunho.titulo_sugerido || "",
-              descricao_sugerida: p.criar_rascunho.descricao_sugerida || "",
-              preco_sugerido: p.criar_rascunho.preco_sugerido || null,
-              motivo: p.criar_rascunho.motivo || "",
+            // criar_rascunho já é array — adiciona cada sugestão
+            const sugs = Array.isArray(p.criar_rascunho) ? p.criar_rascunho : [p.criar_rascunho];
+            sugs.forEach(s => {
+              if (s && s.titulo_sugerido && !porPergunta[qid].sugestoes.find(x => x.titulo_sugerido === s.titulo_sugerido)) {
+                porPergunta[qid].sugestoes.push({
+                  titulo_sugerido: s.titulo_sugerido || "",
+                  descricao_sugerida: s.descricao_sugerida || "",
+                  preco_sugerido: s.preco_sugerido || null,
+                  motivo: s.motivo || "",
+                });
+              }
             });
           });
 
