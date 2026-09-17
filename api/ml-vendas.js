@@ -455,7 +455,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 2000,
+          max_tokens: 4000,
           system: systemPrompt,
           messages: [{
             role: "user",
