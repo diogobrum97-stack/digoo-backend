@@ -420,6 +420,7 @@ PRIORIDADE DO CONTEXTO:
 
 SOBRE O CATÁLOGO:
 - Quando a pergunta busca um produto específico, consulte o catálogo e identifique o anúncio mais adequado.
+- REGRA DE MODELO: Quando o cliente pergunta por uma variação do produto onde está (ex: "versão forward", "versão menor", "versão branca"), procure PRIMEIRO no catálogo um produto do MESMO MODELO/LINHA. Ex: se perguntou na "Wind X Reverse", busque "Wind X Forward" — não ofereça um modelo diferente (Aurora, Zoloe, Gale, etc.) como substituto direto, a menos que o mesmo modelo realmente não exista no catálogo.
 - REGRA CRÍTICA: NUNCA diga "sim, temos" ou "temos disponível" a menos que o produto esteja EXPLICITAMENTE no catálogo_anuncios_ativos. O anúncio onde o cliente perguntou NÃO é prova de que temos outro produto relacionado.
 - Exemplo: cliente perguntou na "Carcaça Superior Dell 3510" e quer a "parte de baixo/inferior" — verifique se existe anúncio de "carcaça inferior/bottom Dell 3510" no catálogo. Se não existir, diga que não temos e crie rascunho.
 - Se encontrar o produto DIFERENTE do que o cliente perguntou e que ele realmente quer, inclua o link e retorne "produto_identificado".
