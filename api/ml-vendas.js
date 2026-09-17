@@ -477,13 +477,15 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
       });
       const claudeData = await claudeRes.json();
       let sugestoes = [];
+      let debugRaw = "";
       try {
         const textBlock = (claudeData.content || []).find(b => b.type === "text");
         const raw = textBlock?.text?.trim() || "[]";
-        const jsonStr = raw.replace(/^```json\s*|\s*```$/g, "");
+        debugRaw = raw.slice(0, 500);
+        const jsonStr = raw.replace(/^```json\s*|\s*```$/g, "").replace(/^```\s*|\s*```$/g, "");
         sugestoes = JSON.parse(jsonStr);
       } catch (e) {
-        console.error("Erro ao parsear resposta do Claude:", e.message, "Raw:", claudeData?.content?.[0]?.text?.slice(0, 200));
+        console.error("Erro ao parsear resposta do Claude:", e.message, "Raw:", debugRaw);
         sugestoes = [];
       }
 
@@ -571,7 +573,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         } catch (e) { console.error("Erro ao salvar rascunho:", e.message); }
       }
 
-      return res.json({ ok: true, perguntas: resultado });
+      return res.json({ ok: true, perguntas: resultado, _debug: debugRaw });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
