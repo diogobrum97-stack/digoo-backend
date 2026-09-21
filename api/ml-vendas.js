@@ -350,29 +350,26 @@ module.exports = async function handler(req, res) {
         const meR = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
         const meD = await meR.json();
         if (!meD.id) return [];
-        const ids = [];
-        for (let offset = 0; offset < 200; offset += 50) {
-          const r = await fetch(`https://api.mercadolibre.com/users/${meD.id}/items/search?status=active&limit=50&offset=${offset}`, {
+        // Só primeira página (50 itens) para reduzir latência
+        const r0 = await fetch(`https://api.mercadolibre.com/users/${meD.id}/items/search?status=active&limit=50&offset=0`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const d0 = await r0.json();
+        const ids = d0.results || [];
+        // Buscar detalhes em paralelo
+        const lotes = [];
+        for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+        const resultados = await Promise.all(lotes.map(lote =>
+          fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku`, {
             headers: { Authorization: `Bearer ${token}` },
-          });
-          const d = await r.json();
-          const batch = d.results || [];
-          ids.push(...batch);
-          if (batch.length < 50) break;
-        }
+          }).then(r => r.json()).catch(() => [])
+        ));
         const itens = [];
-        for (let i = 0; i < ids.length; i += 20) {
-          const lote = ids.slice(i, i + 20);
-          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          const arr = await r.json();
-          arr.forEach(entry => {
-            if (entry.code === 200 && entry.body) {
-              itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink });
-            }
-          });
-        }
+        resultados.flat().forEach(entry => {
+          if (entry.code === 200 && entry.body) {
+            itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink });
+          }
+        });
         return itens;
       }
 
