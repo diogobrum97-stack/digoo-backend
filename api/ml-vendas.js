@@ -360,14 +360,14 @@ module.exports = async function handler(req, res) {
         const lotes = [];
         for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
         const resultados = await Promise.all(lotes.map(lote =>
-          fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku`, {
+          fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku,available_quantity`, {
             headers: { Authorization: `Bearer ${token}` },
           }).then(r => r.json()).catch(() => [])
         ));
         const itens = [];
         resultados.flat().forEach(entry => {
           if (entry.code === 200 && entry.body) {
-            itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink });
+            itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0 });
           }
         });
         return itens;
@@ -417,6 +417,7 @@ PRIORIDADE DO CONTEXTO:
 
 SOBRE O CATÁLOGO:
 - Quando a pergunta busca um produto específico, consulte o catálogo e identifique o anúncio mais adequado.
+- REGRA DE ESTOQUE: o campo "estoque" em cada item do catálogo_anuncios_ativos indica a quantidade disponível. Se o produto existe no catálogo mas tem estoque 0, informe que não temos estoque no momento e sugira o produto mais próximo que tenha estoque > 0. Se tem estoque, confirme normalmente.
 - REGRA DE MODELO: Quando o cliente pergunta por uma variação do produto onde está (ex: "versão forward", "versão menor", "versão branca"), procure PRIMEIRO no catálogo um produto do MESMO MODELO/LINHA. Ex: se perguntou na "Wind X Reverse", busque "Wind X Forward" — não ofereça um modelo diferente (Aurora, Zoloe, Gale, etc.) como substituto direto, a menos que o mesmo modelo realmente não exista no catálogo.
 - REGRA CRÍTICA: NUNCA diga "sim, temos" ou "temos disponível" a menos que o produto esteja EXPLICITAMENTE no catálogo_anuncios_ativos. O anúncio onde o cliente perguntou NÃO é prova de que temos outro produto relacionado.
 - Exemplo: cliente perguntou na "Carcaça Superior Dell 3510" e quer a "parte de baixo/inferior" — verifique se existe anúncio de "carcaça inferior/bottom Dell 3510" no catálogo. Se não existir, diga que não temos e crie rascunho.
