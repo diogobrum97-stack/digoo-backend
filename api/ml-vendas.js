@@ -350,12 +350,29 @@ module.exports = async function handler(req, res) {
         const meR = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
         const meD = await meR.json();
         if (!meD.id) return [];
-        // Só primeira página (50 itens) para reduzir latência
-        const r0 = await fetch(`https://api.mercadolibre.com/users/${meD.id}/items/search?status=active&limit=50&offset=0`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const d0 = await r0.json();
-        const ids = d0.results || [];
+        const uid = meD.id;
+        const fbUrl = process.env.FIREBASE_URL;
+
+        // Verificar cache no Firebase (válido por 4 horas)
+        try {
+          const cacheRes = await fetch(`${fbUrl}/catalogo_ml/${uid}.json`);
+          const cache = await cacheRes.json();
+          if (cache && cache.atualizado_em && (Date.now() - cache.atualizado_em) < 4 * 60 * 60 * 1000) {
+            return cache.itens || [];
+          }
+        } catch(e) {}
+
+        // Buscar catálogo completo do ML
+        const ids = [];
+        for (let offset = 0; offset < 300; offset += 50) {
+          const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=${offset}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const d = await r.json();
+          const batch = d.results || [];
+          ids.push(...batch);
+          if (batch.length < 50) break;
+        }
         // Buscar detalhes em paralelo
         const lotes = [];
         for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
@@ -370,6 +387,16 @@ module.exports = async function handler(req, res) {
             itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0 });
           }
         });
+
+        // Salvar cache no Firebase
+        try {
+          await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length }),
+          });
+        } catch(e) {}
+
         return itens;
       }
 
