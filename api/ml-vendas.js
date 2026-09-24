@@ -1,3 +1,33 @@
+
+async function atualizarCatalogoBackground(token, uid, fbUrl) {
+  const ids = [];
+  for (let offset = 0; offset < 300; offset += 50) {
+    const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=${offset}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const d = await r.json();
+    const batch = d.results || [];
+    ids.push(...batch);
+    if (batch.length < 50) break;
+  }
+  const lotes = [];
+  for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+  const resultados = await Promise.all(lotes.map(lote =>
+    fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku,available_quantity`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(r => r.json()).catch(() => [])
+  ));
+  const itens = [];
+  resultados.flat().forEach(entry => {
+    if (entry.code === 200 && entry.body)
+      itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0 });
+  });
+  await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length }),
+  });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -290,18 +320,8 @@ module.exports = async function handler(req, res) {
         } catch (e) {}
       }
 
-      // Buscar descrição de cada item
-      await Promise.all(itemIds.map(async (iid) => {
-        try {
-          const r = await fetch(`https://api.mercadolibre.com/items/${iid}/description`, {
-            headers: { Authorization: `Bearer ${tokenP}` },
-          });
-          const d = await r.json();
-          if (d.plain_text && itemsInfo[iid]) {
-            itemsInfo[iid].descricao = d.plain_text.slice(0, 1500);
-          }
-        } catch (e) {}
-      }));
+      // Descrições removidas do fluxo principal para reduzir latência
+      // O Claude usa ficha técnica, título e catálogo que já são suficientes
 
       // Buscar primeiro nome do comprador (nickname público) para personalizar a saudação
       const buyerIds = [...new Set(perguntas.map(p => p.buyer_id).filter(Boolean))];
@@ -353,51 +373,47 @@ module.exports = async function handler(req, res) {
         const uid = meD.id;
         const fbUrl = process.env.FIREBASE_URL;
 
-        // Verificar cache no Firebase (válido por 4 horas)
+        // Sempre usar cache do Firebase — se não tiver, retorna vazio e atualiza em background
         try {
           const cacheRes = await fetch(`${fbUrl}/catalogo_ml/${uid}.json`);
           const cache = await cacheRes.json();
-          if (cache && cache.atualizado_em && (Date.now() - cache.atualizado_em) < 4 * 60 * 60 * 1000) {
-            return cache.itens || [];
+          const cacheValido = cache && cache.atualizado_em && (Date.now() - cache.atualizado_em) < 4 * 60 * 60 * 1000;
+          if (cache && cache.itens) {
+            // Atualizar cache em background se expirado (sem bloquear)
+            if (!cacheValido) {
+              atualizarCatalogoBackground(token, uid, fbUrl).catch(() => {});
+            }
+            return cache.itens;
           }
         } catch(e) {}
 
-        // Buscar catálogo completo do ML
-        const ids = [];
-        for (let offset = 0; offset < 300; offset += 50) {
-          const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=${offset}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
-          const d = await r.json();
-          const batch = d.results || [];
-          ids.push(...batch);
-          if (batch.length < 50) break;
-        }
-        // Buscar detalhes em paralelo
-        const lotes = [];
-        for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
-        const resultados = await Promise.all(lotes.map(lote =>
+        // Cache vazio — buscar de forma rápida (só 50 itens) e salvar
+        const r0 = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=0`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const d0 = await r0.json();
+        const ids0 = d0.results || [];
+        const lotes0 = [];
+        for (let i = 0; i < ids0.length; i += 20) lotes0.push(ids0.slice(i, i + 20));
+        const res0 = await Promise.all(lotes0.map(lote =>
           fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku,available_quantity`, {
             headers: { Authorization: `Bearer ${token}` },
           }).then(r => r.json()).catch(() => [])
         ));
-        const itens = [];
-        resultados.flat().forEach(entry => {
-          if (entry.code === 200 && entry.body) {
-            itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0 });
-          }
+        const itens0 = [];
+        res0.flat().forEach(entry => {
+          if (entry.code === 200 && entry.body)
+            itens0.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0 });
         });
-
-        // Salvar cache no Firebase
         try {
           await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length }),
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ itens: itens0, atualizado_em: Date.now(), total: itens0.length }),
           });
         } catch(e) {}
-
-        return itens;
+        // Atualizar completo em background
+        atualizarCatalogoBackground(token, uid, fbUrl).catch(() => {});
+        return itens0;
       }
 
       let catalogoAtivo = [];
