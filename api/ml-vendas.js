@@ -1,26 +1,31 @@
 
 async function atualizarCatalogoBackground(token, uid, fbUrl) {
   const ids = [];
-  for (let offset = 0; offset < 300; offset += 50) {
-    const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=${offset}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const d = await r.json();
-    const batch = d.results || [];
-    ids.push(...batch);
-    if (batch.length < 50) break;
+  // Buscar ativos e pausados
+  for (const status of ["active", "paused"]) {
+    for (let offset = 0; offset < 300; offset += 50) {
+      const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=${status}&limit=50&offset=${offset}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const d = await r.json();
+      const batch = d.results || [];
+      ids.push(...batch);
+      if (batch.length < 50) break;
+    }
   }
+  // Deduplicar IDs
+  const idsUnicos = [...new Set(ids)];
   const lotes = [];
-  for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+  for (let i = 0; i < idsUnicos.length; i += 20) lotes.push(idsUnicos.slice(i, i + 20));
   const resultados = await Promise.all(lotes.map(lote =>
-    fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku,available_quantity`, {
+    fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku,available_quantity,status`, {
       headers: { Authorization: `Bearer ${token}` },
     }).then(r => r.json()).catch(() => [])
   ));
   const itens = [];
   resultados.flat().forEach(entry => {
     if (entry.code === 200 && entry.body)
-      itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0 });
+      itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0, status: entry.body.status || "active" });
   });
   await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, {
     method: "PUT", headers: { "Content-Type": "application/json" },
@@ -451,6 +456,16 @@ module.exports = async function handler(req, res) {
           });
         }
       } catch(e) { console.error("Erro ao buscar catálogo Firebase:", e.message); }
+
+      // Atualizar cache em background (não bloqueia)
+      try {
+        const fbUrl = process.env.FIREBASE_URL;
+        if (fbUrl) {
+          [{ token: tokenP, uid: me.id }].forEach(({ token, uid }) => {
+            atualizarCatalogoBackground(token, uid, fbUrl).catch(() => {});
+          });
+        }
+      } catch(e) {}
 
       tPerf.catalogo_relevante = Date.now() - t0;
       console.log(`[perf] catálogo relevante: ${tPerf.catalogo_relevante}ms`);
