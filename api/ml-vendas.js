@@ -619,7 +619,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         } catch (e) { console.error("Erro ao salvar rascunho:", e.message); }
       }
 
-      return res.json({ ok: true, perguntas: resultado, _debug: debugRaw });
+      return res.json({ ok: true, perguntas: resultado, _debug: debugRaw, _perf: { total: Date.now()-t0 } });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
