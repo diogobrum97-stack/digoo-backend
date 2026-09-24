@@ -294,8 +294,9 @@ module.exports = async function handler(req, res) {
       if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
 
       const t0 = Date.now();
+      const offset = parseInt(req.query.offset || "0");
       const qRes = await fetch(
-        `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=30`,
+        `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=10&offset=${offset}`,
         { headers: { Authorization: `Bearer ${tokenP}` } }
       );
       const qData = await qRes.json();
