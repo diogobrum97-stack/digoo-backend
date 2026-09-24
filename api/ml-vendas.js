@@ -508,6 +508,14 @@ LÓGICA DE RESPOSTA:
    → Se achou com estoque = 0: "Boa [hora]! Temos esse kit no catálogo, mas está indisponível no momento por falta de estoque — você pode acompanhar aqui: [link]"
    → Se NÃO achou nada parecido em itens_relacionados: retorne suggested_answer vazio ("") e preencha criar_rascunho com sugestões de novos anúncios.
 
+EXEMPLO REAL — siga este raciocínio:
+Produto: "Kit 10 Fan Digoo Wind X Reverse Argb 120mm + Controladora Preto"
+Pergunta: "não tem nenhum kit com 6 reverse e 4 normais?"
+itens_relacionados inclui: {"titulo": "Kit 10 Fans Digoo Wind X 6 Reverse + 4 Forward Argb 120mm Preto", "estoque": 0, "link": "https://..."}
+→ Cliente quer kit misto → item encontrado em itens_relacionados com estoque 0
+→ Resposta correta: "Boa tarde! Temos esse kit no catálogo, mas está indisponível no momento por falta de estoque — você pode acompanhar aqui: https://..."
+→ ERRADO: "não temos um kit misto" ou "no momento não temos kits Forward"
+
 REGRAS:
 - Comece com "Boa [hora]!" + nome se nome_comprador não for null (ex: "Boa noite, Felipe!"). Se null, só "Boa [hora]!".
 - ${saudacao} = hora atual já calculada — use diretamente.
