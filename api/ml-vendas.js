@@ -543,6 +543,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
                 pergunta: p.pergunta,
                 nome_comprador: p.nome_comprador,
                 respostas_anteriores_deste_produto: p.respostas_anteriores_deste_produto,
+                itens_relacionados: p.itens_relacionados,
               }))
             )
           }],
