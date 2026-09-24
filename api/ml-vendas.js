@@ -505,7 +505,7 @@ LÓGICA DE RESPOSTA:
 2. Cliente quer um produto diferente do anúncio:
    → Procure em itens_relacionados o produto mais parecido com o que ele quer.
    → Se achou com estoque > 0: "Boa [hora]! Temos sim: [link]"
-   → Se achou com estoque = 0: "Boa [hora]! Temos esse produto sim, mas está sem estoque no momento. Nosso estoque é atualizado com frequência — acompanhe aqui: [link]"
+   → Se achou com estoque = 0: "Boa [hora]! Temos esse kit no catálogo, mas está indisponível no momento por falta de estoque — você pode acompanhar aqui: [link]"
    → Se NÃO achou nada parecido em itens_relacionados: retorne suggested_answer vazio ("") e preencha criar_rascunho com sugestões de novos anúncios.
 
 REGRAS:
