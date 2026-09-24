@@ -323,34 +323,30 @@ module.exports = async function handler(req, res) {
       // Descrições removidas do fluxo principal para reduzir latência
       // O Claude usa ficha técnica, título e catálogo que já são suficientes
 
-      // Buscar primeiro nome do comprador (nickname público) para personalizar a saudação
-      const buyerIds = [...new Set(perguntas.map(p => p.buyer_id).filter(Boolean))];
-      const buyerNames = {};
-      await Promise.all(buyerIds.map(async (bid) => {
-        try {
-          const r = await fetch(`https://api.mercadolibre.com/users/${bid}`, {
-            headers: { Authorization: `Bearer ${tokenP}` },
-          });
-          const u = await r.json();
-          const nick = (u.nickname || "").trim();
-          // Só usa se parecer um nome real (letras, sem excesso de números/maiúsculas aleatórias)
-          const pareceNome = /^[A-Za-zÀ-ÿ]+$/.test(nick) && nick.length >= 3 && nick.length <= 20;
-          if (pareceNome) {
-            buyerNames[bid] = nick.charAt(0).toUpperCase() + nick.slice(1).toLowerCase();
-          }
-        } catch (e) {}
-      }));
-
       // Saudação por horário (fuso Brasil)
       const horaBR = new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false });
       const h = parseInt(horaBR, 10);
       const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 
-      // Buscar conhecimento fixo já respondido para CADA produto envolvido (por item_id, não global)
+      // Buscar buyerNames + conhecimentoPorItem em paralelo
+      const buyerIds = [...new Set(perguntas.map(p => p.buyer_id).filter(Boolean))];
+      const itemIdsUnicos = [...new Set(perguntas.map(p => p.item_id))];
+      const buyerNames = {};
       const conhecimentoPorItem = {};
-      if (process.env.FIREBASE_URL) {
-        const itemIdsUnicos = [...new Set(perguntas.map(p => p.item_id))];
-        await Promise.all(itemIdsUnicos.map(async (iid) => {
+
+      await Promise.all([
+        // Nomes dos compradores
+        ...buyerIds.map(async (bid) => {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/users/${bid}`, { headers: { Authorization: `Bearer ${tokenP}` } });
+            const u = await r.json();
+            const nick = (u.nickname || "").trim();
+            const pareceNome = /^[A-Za-zÀ-ÿ]+$/.test(nick) && nick.length >= 3 && nick.length <= 20;
+            if (pareceNome) buyerNames[bid] = nick.charAt(0).toUpperCase() + nick.slice(1).toLowerCase();
+          } catch (e) {}
+        }),
+        // Histórico de respostas por produto
+        ...(process.env.FIREBASE_URL ? itemIdsUnicos.map(async (iid) => {
           try {
             const exR = await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${iid}.json`);
             const exData = await exR.json();
@@ -360,8 +356,8 @@ module.exports = async function handler(req, res) {
                 .map(e => ({ pergunta: e.pergunta, resposta: e.resposta }));
             }
           } catch (e) {}
-        }));
-      }
+        }) : []),
+      ]);
 
       // Gerar sugestões via Claude — uma chamada só, em lote
       // Buscar catálogo ativo (título + permalink + SKU) para o Claude identificar anúncios
@@ -499,7 +495,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 4000,
+          max_tokens: 2000,
           system: systemPrompt,
           messages: [{
             role: "user",
