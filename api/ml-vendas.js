@@ -294,13 +294,15 @@ module.exports = async function handler(req, res) {
       if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
 
       const t0 = Date.now();
+      const tPerf = {};
       const offset = parseInt(req.query.offset || "0");
       const qRes = await fetch(
         `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=10&offset=${offset}`,
         { headers: { Authorization: `Bearer ${tokenP}` } }
       );
       const qData = await qRes.json();
-      console.log(`[perf] perguntas ML: ${Date.now()-t0}ms`);
+      tPerf.perguntas_ml = Date.now() - t0;
+      console.log(`[perf] perguntas ML: ${tPerf.perguntas_ml}ms`);
       const perguntas = (qData.questions || []).slice(0, 10);
 
       if (perguntas.length === 0) {
@@ -323,7 +325,8 @@ module.exports = async function handler(req, res) {
         } catch (e) {}
       }
 
-      console.log(`[perf] itens ML: ${Date.now()-t0}ms`);
+      tPerf.itens_ml = Date.now() - t0;
+      console.log(`[perf] itens ML: ${tPerf.itens_ml}ms`);
       // Descrições removidas do fluxo principal para reduzir latência
       // O Claude usa ficha técnica, título e catálogo que já são suficientes
 
@@ -369,7 +372,8 @@ module.exports = async function handler(req, res) {
         }) : []),
       ]);
 
-      console.log(`[perf] buyerNames+conhecimento: ${Date.now()-t0}ms`);
+      tPerf.buyer_conhecimento = Date.now() - t0;
+      console.log(`[perf] buyerNames+conhecimento: ${tPerf.buyer_conhecimento}ms`);
       // Gerar sugestões via Claude — uma chamada só, em lote
       // Buscar catálogo ativo (título + permalink + SKU) para o Claude identificar anúncios
       // Buscar catálogo das duas contas em paralelo
@@ -433,7 +437,8 @@ module.exports = async function handler(req, res) {
         resultados.flat().forEach(item => { if (!seen.has(item.id)) { seen.add(item.id); catalogoAtivo.push(item); } });
       } catch (e) { console.error("Erro ao buscar catálogo:", e.message); }
 
-      console.log(`[perf] catálogo: ${Date.now()-t0}ms`);
+      tPerf.catalogo = Date.now() - t0;
+      console.log(`[perf] catálogo: ${tPerf.catalogo}ms`);
       const listaParaClaude = perguntas.map((p, i) => {
         const item = itemsInfo[p.item_id] || {};
         // Ficha técnica — atributos do anúncio
@@ -528,7 +533,8 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         }),
       });
       const claudeData = await claudeRes.json();
-      console.log(`[perf] claude: ${Date.now()-t0}ms`);
+      tPerf.claude = Date.now() - t0;
+      console.log(`[perf] claude: ${tPerf.claude}ms`);
       let sugestoes = [];
       let debugRaw = "";
       try {
@@ -634,7 +640,8 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         } catch (e) { console.error("Erro ao salvar rascunho:", e.message); }
       }
 
-      return res.json({ ok: true, perguntas: resultado, _debug: debugRaw, _perf: { total: Date.now()-t0 } });
+      tPerf.total = Date.now() - t0;
+      return res.json({ ok: true, perguntas: resultado, _debug: debugRaw, _perf: tPerf });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
