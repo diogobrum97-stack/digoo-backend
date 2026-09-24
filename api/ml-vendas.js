@@ -374,50 +374,124 @@ module.exports = async function handler(req, res) {
 
       tPerf.buyer_conhecimento = Date.now() - t0;
       console.log(`[perf] buyerNames+conhecimento: ${tPerf.buyer_conhecimento}ms`);
+
+      // Buscar catálogo do Firebase (cache) e encontrar itens relevantes por anúncio
+      // Função: extrai palavras-chave do título ignorando stopwords
+      function extrairKeywords(titulo) {
+        const stop = new Set(["fan","kit","com","para","de","do","do","da","das","dos","e","a","o","c/","mm","argb","rgb","led","preto","branco","preta","branca","unidade","un","digoo","120","140"]);
+        return titulo.toLowerCase()
+          .replace(/[^a-z0-9àáâãéêíóôõúç ]/g, " ")
+          .split(/\s+/)
+          .filter(w => w.length > 2 && !stop.has(w));
+      }
+
+      // Buscar catálogo do Firebase em background (não bloqueia se demorar)
+      const itensRelevantesporItem = {};
+      try {
+        const fbUrl = process.env.FIREBASE_URL;
+        // Buscar das duas contas em paralelo
+        const uids = [me.id];
+        if (tokenOutro) {
+          try {
+            const meOutroRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenOutro}` } });
+            const meOutro = await meOutroRes.json();
+            if (meOutro.id && meOutro.id !== me.id) uids.push(meOutro.id);
+          } catch(e) {}
+        }
+        const cacheResults = await Promise.all(uids.map(async uid => {
+          try {
+            const ac = new AbortController();
+            const tid = setTimeout(() => ac.abort(), 3000);
+            const r = await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, { signal: ac.signal });
+            clearTimeout(tid);
+            const cache = await r.json();
+            return (cache && cache.itens) ? cache.itens : [];
+          } catch(e) { return []; }
+        }));
+        const todosItens = cacheResults.flat();
+
+        if (todosItens.length > 0) {
+          // Para cada pergunta, buscar os itens mais relevantes pelo título do anúncio
+          perguntas.forEach((p, i) => {
+            const tituloAnuncio = itemsInfo[p.item_id]?.title || "";
+            const keywords = extrairKeywords(tituloAnuncio);
+            if (keywords.length === 0) return;
+
+            // Pontuar cada item do catálogo por quantas keywords batem
+            const pontuados = todosItens
+              .filter(item => item.id !== p.item_id) // exclui o próprio anúncio
+              .map(item => {
+                const tituloItem = (item.titulo || "").toLowerCase();
+                const pontos = keywords.filter(kw => tituloItem.includes(kw)).length;
+                return { ...item, pontos };
+              })
+              .filter(item => item.pontos >= 2) // mínimo 2 keywords em comum
+              .sort((a, b) => b.pontos - a.pontos)
+              .slice(0, 8); // máximo 8 itens relevantes
+
+            if (pontuados.length > 0) {
+              itensRelevantesporItem[i] = pontuados.map(item => ({
+                titulo: item.titulo,
+                sku: item.sku,
+                link: item.link,
+                estoque: item.estoque ?? 0,
+              }));
+            }
+          });
+        }
+      } catch(e) { console.error("Erro ao buscar catálogo Firebase:", e.message); }
+
+      tPerf.catalogo_relevante = Date.now() - t0;
+      console.log(`[perf] catálogo relevante: ${tPerf.catalogo_relevante}ms`);
+
       const listaParaClaude = perguntas.map((p, i) => {
         const item = itemsInfo[p.item_id] || {};
-        // Ficha técnica — atributos do anúncio
         const fichaAtributos = (item.attributes || [])
           .filter(a => a.value_name && a.name)
           .map(a => `${a.name}: ${a.value_name}`)
           .join(", ");
-        // URLs das fotos (até 4)
-        const fotos = (item.pictures || []).slice(0, 4).map(pic => pic.url || pic.secure_url).filter(Boolean);
         return {
           idx: i,
           produto: item.title || "Produto",
-          descricao: item.descricao || "",
           ficha_tecnica: fichaAtributos || "",
-          fotos_url: fotos,
           pergunta: p.text,
           nome_comprador: buyerNames[p.buyer_id] || null,
           respostas_anteriores_deste_produto: conhecimentoPorItem[p.item_id] || [],
+          itens_relacionados: itensRelevantesporItem[i] || [],
         };
       });
 
       const systemPrompt = `Você é um assistente de atendimento da Digoo Brasil, loja de periféricos gamer e peças de notebook no Mercado Livre.
-Vai receber um JSON com uma lista de perguntas de compradores, cada uma com o contexto do produto onde a pergunta foi feita.
+Vai receber uma lista de perguntas de compradores, cada uma com o contexto do produto onde a pergunta foi feita.
 
-PRIORIDADE DO CONTEXTO:
-1. "respostas_anteriores_deste_produto" — fatos VERIFICADOS pelo vendedor. Nunca contradiga.
-2. "ficha_tecnica" — informações da ficha técnica do anúncio. Use sempre que disponível.
-3. Seu conhecimento geral — fans ARGB, water coolers, carcaças de notebook, compatibilidades, etc.
+CAMPOS DE CADA PERGUNTA:
+- "produto": título do anúncio onde o cliente perguntou
+- "ficha_tecnica": atributos técnicos do anúncio
+- "pergunta": o que o cliente perguntou
+- "nome_comprador": nome do comprador (ou null)
+- "respostas_anteriores_deste_produto": respostas já dadas pelo vendedor para esse produto — FATOS VERIFICADOS, nunca contradiga
+- "itens_relacionados": produtos da loja da mesma linha/modelo, com estoque atual
 
-REGRAS DE RESPOSTA:
-- Se a pergunta é sobre o próprio produto do anúncio (dúvida técnica, compatibilidade, NF, prazo): responda direto com base no contexto disponível.
-- Se o cliente quer um produto que NÃO é o do anúncio (ex: "tem a versão forward?", "tem a parte inferior?"): retorne "suggested_answer": "" e crie rascunhos de anúncio que fariam sentido para ele (mínimo 1, máximo 3, cada um distinto).
-- NUNCA invente que "temos" ou "não temos" um produto que não é o do anúncio — você não tem acesso ao estoque de outros itens.
+COMO USAR itens_relacionados:
+- Se o cliente pergunta por uma variação que não é o anúncio atual (ex: "tem a versão forward?", "tem só 6 fans?"), consulte itens_relacionados.
+- Se encontrar o produto com estoque > 0: confirme que temos e inclua o link na resposta.
+- Se encontrar mas estoque = 0: diga que está sem estoque no momento, sem prometer reposição.
+- Se não encontrar em itens_relacionados: retorne "suggested_answer": "" e crie rascunhos de anúncio (mínimo 1, máximo 3).
+- Se a pergunta é sobre o próprio anúncio (dúvida técnica, compatibilidade, NF): responda direto, ignore itens_relacionados.
+
+REGRAS:
+- NUNCA invente que "temos" um produto que não está em itens_relacionados.
 - NUNCA prometa reposição, prazo de chegada ou disponibilidade futura.
-- NUNCA diga "vou passar pro nosso time" ou "não tenho essa informação" para perguntas simples.
-- Se perguntarem sobre nota fiscal: Filial SP emite NF por São Paulo, Matriz RS emite por Porto Alegre/RS.
+- NUNCA diga "vou passar pro nosso time" para perguntas simples.
+- Filial SP emite NF por São Paulo, Matriz RS por Porto Alegre/RS.
 
-ESTILO DA RESPOSTA:
-- Comece com "${saudacao}" + nome do comprador se "nome_comprador" não for null (ex: "${saudacao}, Felipe!"). Se null, só "${saudacao}!".
-- Frases curtas, linguagem simples, como WhatsApp mas educado. No máximo 2 frases depois da saudação.
-- Sem palavras formais: use "comprar" (não "adquirir"), "fazer" (não "efetuar"), etc.
+ESTILO:
+- Comece com "${saudacao}" + nome se "nome_comprador" não for null. Se null, só "${saudacao}!".
+- Frases curtas, linguagem simples como WhatsApp mas educado. No máximo 2 frases depois da saudação.
+- Sem palavras formais: "comprar" (não "adquirir"), "fazer" (não "efetuar"), etc.
 - Não repita a mesma ideia duas vezes.
 
-Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no formato:
+Responda APENAS com JSON válido, sem texto antes ou depois:
 [{"idx": 0, "requires_attention": false, "suggested_answer": "resposta completa", "criar_rascunho": null}, {"idx": 1, "requires_attention": false, "suggested_answer": "", "criar_rascunho": [{"titulo_sugerido": "...", "descricao_sugerida": "...", "preco_sugerido": null, "motivo": "..."}]}]`;
 
       const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
