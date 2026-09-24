@@ -342,7 +342,10 @@ module.exports = async function handler(req, res) {
         // Nomes dos compradores
         ...buyerIds.map(async (bid) => {
           try {
-            const r = await fetch(`https://api.mercadolibre.com/users/${bid}`, { headers: { Authorization: `Bearer ${tokenP}` } });
+            const ac = new AbortController();
+            const tid = setTimeout(() => ac.abort(), 3000);
+            const r = await fetch(`https://api.mercadolibre.com/users/${bid}`, { headers: { Authorization: `Bearer ${tokenP}` }, signal: ac.signal });
+            clearTimeout(tid);
             const u = await r.json();
             const nick = (u.nickname || "").trim();
             const pareceNome = /^[A-Za-zÀ-ÿ]+$/.test(nick) && nick.length >= 3 && nick.length <= 20;
@@ -352,7 +355,10 @@ module.exports = async function handler(req, res) {
         // Histórico de respostas por produto
         ...(process.env.FIREBASE_URL ? itemIdsUnicos.map(async (iid) => {
           try {
-            const exR = await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${iid}.json`);
+            const ac = new AbortController();
+            const tid = setTimeout(() => ac.abort(), 3000);
+            const exR = await fetch(`${process.env.FIREBASE_URL}/perguntas_treinamento/${iid}.json`, { signal: ac.signal });
+            clearTimeout(tid);
             const exData = await exR.json();
             if (exData && typeof exData === "object") {
               conhecimentoPorItem[iid] = Object.values(exData)
@@ -501,7 +507,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 3000,
+          max_tokens: 4096,
           system: systemPrompt,
           messages: [{
             role: "user",
@@ -530,7 +536,15 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         const raw = textBlock?.text?.trim() || "[]";
         debugRaw = raw.slice(0, 500);
         const jsonStr = raw.replace(/^```json\s*|\s*```$/g, "").replace(/^```\s*|\s*```$/g, "");
-        sugestoes = JSON.parse(jsonStr);
+        try {
+          sugestoes = JSON.parse(jsonStr);
+        } catch (parseErr) {
+          // JSON cortado (max_tokens atingido) — extrair objetos completos via regex
+          console.warn("JSON cortado, tentando extração parcial:", parseErr.message);
+          const matches = jsonStr.match(/\{[^{}]*"idx"\s*:\s*\d+[^{}]*\}/g) || [];
+          sugestoes = matches.map(m => { try { return JSON.parse(m); } catch(e) { return null; } }).filter(Boolean);
+          console.log(`Extração parcial: ${sugestoes.length} sugestões recuperadas`);
+        }
       } catch (e) {
         console.error("Erro ao parsear resposta do Claude:", e.message, "Raw:", debugRaw);
         sugestoes = [];
