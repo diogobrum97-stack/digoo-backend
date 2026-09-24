@@ -376,20 +376,21 @@ module.exports = async function handler(req, res) {
       console.log(`[perf] buyerNames+conhecimento: ${tPerf.buyer_conhecimento}ms`);
 
       // Buscar catálogo do Firebase (cache) e encontrar itens relevantes por anúncio
-      // Função: extrai palavras-chave do título ignorando stopwords
-      function extrairKeywords(titulo) {
-        const stop = new Set(["fan","kit","com","para","de","do","do","da","das","dos","e","a","o","c/","mm","argb","rgb","led","preto","branco","preta","branca","unidade","un","digoo","120","140"]);
-        return titulo.toLowerCase()
+      // Termos de modelo — sempre preservados mesmo sendo curtos
+      const MODELOS = new Set(["wind","zoloe","gale","aurora","reverse","forward","normal","misto","dupla"]);
+      const STOP = new Set(["fan","fans","kit","com","para","de","do","da","das","dos","e","a","o","c/","mm","argb","rgb","led","preto","branco","preta","branca","unidade","un","digoo","120","140","infinito","controladora","controle","ventoinha","cooler","argb","pwm","pinos","face"]);
+
+      function extrairKeywords(texto) {
+        return texto.toLowerCase()
           .replace(/[^a-z0-9àáâãéêíóôõúç ]/g, " ")
           .split(/\s+/)
-          .filter(w => w.length > 2 && !stop.has(w));
+          .filter(w => MODELOS.has(w) || (w.length > 2 && !STOP.has(w)));
       }
 
-      // Buscar catálogo do Firebase em background (não bloqueia se demorar)
+      // Buscar catálogo do Firebase e encontrar itens relevantes por pergunta
       const itensRelevantesporItem = {};
       try {
         const fbUrl = process.env.FIREBASE_URL;
-        // Buscar das duas contas em paralelo
         const uids = [me.id];
         if (tokenOutro) {
           try {
@@ -411,23 +412,33 @@ module.exports = async function handler(req, res) {
         const todosItens = cacheResults.flat();
 
         if (todosItens.length > 0) {
-          // Para cada pergunta, buscar os itens mais relevantes pelo título do anúncio
           perguntas.forEach((p, i) => {
             const tituloAnuncio = itemsInfo[p.item_id]?.title || "";
-            const keywords = extrairKeywords(tituloAnuncio);
-            if (keywords.length === 0) return;
+            const textoPergunta = p.text || "";
 
-            // Pontuar cada item do catálogo por quantas keywords batem
+            // Keywords do título do anúncio + da pergunta do cliente
+            const kwAnuncio = extrairKeywords(tituloAnuncio);
+            const kwPergunta = extrairKeywords(textoPergunta);
+            // Modelo detectado no anúncio tem peso extra — garante que só itens do mesmo modelo pontuam alto
+            const modeloAnuncio = kwAnuncio.filter(w => MODELOS.has(w));
+            const todasKw = [...new Set([...kwAnuncio, ...kwPergunta])];
+
+            if (todasKw.length === 0) return;
+
             const pontuados = todosItens
-              .filter(item => item.id !== p.item_id) // exclui o próprio anúncio
+              .filter(item => item.id !== p.item_id)
               .map(item => {
                 const tituloItem = (item.titulo || "").toLowerCase();
-                const pontos = keywords.filter(kw => tituloItem.includes(kw)).length;
+                // Pontos base: keywords em comum
+                let pontos = todasKw.filter(kw => tituloItem.includes(kw)).length;
+                // Bônus: se item tem o mesmo modelo do anúncio (wind, zoloe, etc.)
+                const modeloMatch = modeloAnuncio.filter(m => tituloItem.includes(m)).length;
+                pontos += modeloMatch * 2;
                 return { ...item, pontos };
               })
-              .filter(item => item.pontos >= 2) // mínimo 2 keywords em comum
+              .filter(item => item.pontos >= 2)
               .sort((a, b) => b.pontos - a.pontos)
-              .slice(0, 8); // máximo 8 itens relevantes
+              .slice(0, 6);
 
             if (pontuados.length > 0) {
               itensRelevantesporItem[i] = pontuados.map(item => ({
