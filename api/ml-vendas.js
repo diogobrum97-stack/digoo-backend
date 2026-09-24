@@ -300,7 +300,7 @@ module.exports = async function handler(req, res) {
       );
       const qData = await qRes.json();
       console.log(`[perf] perguntas ML: ${Date.now()-t0}ms`);
-      const perguntas = qData.questions || [];
+      const perguntas = (qData.questions || []).slice(0, 10);
 
       if (perguntas.length === 0) {
         return res.json({ ok: true, perguntas: [] });
@@ -500,7 +500,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
-          max_tokens: 2000,
+          max_tokens: 3000,
           system: systemPrompt,
           messages: [{
             role: "user",
