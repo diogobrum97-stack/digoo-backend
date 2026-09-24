@@ -501,8 +501,8 @@ CAMPOS DE CADA PERGUNTA:
 COMO USAR itens_relacionados:
 - Se o cliente pergunta por uma variação que não é o anúncio atual (ex: "tem a versão forward?", "tem kit misto?"), consulte itens_relacionados.
 - Se encontrar o produto com estoque > 0: confirme que temos e inclua o link na resposta.
-- REGRA CRÍTICA — estoque = 0: se o produto aparece em itens_relacionados com estoque 0, diga "temos esse produto mas está sem estoque no momento" e inclua o link. NUNCA diga "não temos" para um produto que está em itens_relacionados, mesmo com estoque 0.
-- Se não encontrar nada parecido em itens_relacionados: retorne "suggested_answer": "" e crie rascunhos de anúncio (mínimo 1, máximo 3). Só crie rascunho se o produto realmente não existir.
+- REGRA CRÍTICA — estoque = 0: se o produto aparece em itens_relacionados com estoque 0, significa que TEMOS esse produto mas está temporariamente sem estoque. Responda algo como "Boa tarde! Temos esse kit sim, mas está sem estoque no momento: <link>". NUNCA diga "não temos" ou "no momento não temos" — o produto existe, só está sem estoque.
+- Se não encontrar nada parecido em itens_relacionados: retorne "suggested_answer": "" e crie rascunhos de anúncio (mínimo 1, máximo 3). Só crie rascunho se o produto realmente não existir em nenhum item de itens_relacionados.
 - Se a pergunta é sobre o próprio anúncio (dúvida técnica, compatibilidade, NF): responda direto, ignore itens_relacionados.
 
 REGRAS:
