@@ -662,7 +662,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       }
 
       tPerf.total = Date.now() - t0;
-      return res.json({ ok: true, perguntas: resultado, _debug: debugRaw, _perf: tPerf, _itens_rel: Object.fromEntries(perguntas.map((p,i) => [i, itensRelevantesporItem[i] || []])) });
+      return res.json({ ok: true, perguntas: resultado, _debug: debugRaw, _perf: tPerf, _itens_rel: Object.fromEntries(perguntas.map((p,i) => [i, itensRelevantesporItem[i] || []])), _input_claude: listaParaClaude.map(p => ({ idx: p.idx, itens_relacionados: p.itens_relacionados })) });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
