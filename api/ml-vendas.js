@@ -293,11 +293,13 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
 
+      const t0 = Date.now();
       const qRes = await fetch(
         `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=30`,
         { headers: { Authorization: `Bearer ${tokenP}` } }
       );
       const qData = await qRes.json();
+      console.log(`[perf] perguntas ML: ${Date.now()-t0}ms`);
       const perguntas = qData.questions || [];
 
       if (perguntas.length === 0) {
@@ -320,6 +322,7 @@ module.exports = async function handler(req, res) {
         } catch (e) {}
       }
 
+      console.log(`[perf] itens ML: ${Date.now()-t0}ms`);
       // Descrições removidas do fluxo principal para reduzir latência
       // O Claude usa ficha técnica, título e catálogo que já são suficientes
 
@@ -359,6 +362,7 @@ module.exports = async function handler(req, res) {
         }) : []),
       ]);
 
+      console.log(`[perf] buyerNames+conhecimento: ${Date.now()-t0}ms`);
       // Gerar sugestões via Claude — uma chamada só, em lote
       // Buscar catálogo ativo (título + permalink + SKU) para o Claude identificar anúncios
       // Buscar catálogo das duas contas em paralelo
@@ -422,6 +426,7 @@ module.exports = async function handler(req, res) {
         resultados.flat().forEach(item => { if (!seen.has(item.id)) { seen.add(item.id); catalogoAtivo.push(item); } });
       } catch (e) { console.error("Erro ao buscar catálogo:", e.message); }
 
+      console.log(`[perf] catálogo: ${Date.now()-t0}ms`);
       const listaParaClaude = perguntas.map((p, i) => {
         const item = itemsInfo[p.item_id] || {};
         // Ficha técnica — atributos do anúncio
@@ -516,6 +521,7 @@ Responda APENAS com um JSON válido, sem nenhum texto antes ou depois, no format
         }),
       });
       const claudeData = await claudeRes.json();
+      console.log(`[perf] claude: ${Date.now()-t0}ms`);
       let sugestoes = [];
       let debugRaw = "";
       try {
