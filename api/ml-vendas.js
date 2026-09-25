@@ -753,6 +753,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
               .filter(p => p.status === "started")
               .map(p => ({
                 item_id: itemId,
+                promotion_id: p.id || null,
                 preco_original: p.original_price || 0,
                 preco_desconto: p.price || 0,
                 start_date: p.start_date || null,
@@ -844,6 +845,27 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     }
   }
 
+
+  // ── Promoções: buscar métricas por promotion_id ──
+  if (req.query.action === "buscar-metricas-promocao" && req.method === "GET") {
+    try {
+      const { promotion_id, token: tokenM } = req.query;
+      if (!promotion_id || !tokenM) return res.status(400).json({ ok: false, error: "promotion_id e token obrigatórios" });
+
+      const r = await fetch(
+        `https://api.mercadolibre.com/seller-promotions/promotions/${promotion_id}/metrics?app_version=v2`,
+        { headers: { Authorization: `Bearer ${tokenM}` } }
+      );
+      const rawText = await r.text();
+      console.log(`[metricas] ${promotion_id} HTTP ${r.status}:`, rawText.slice(0, 300));
+      if (!r.ok) return res.status(r.status).json({ ok: false, error: rawText.slice(0, 200) });
+      let d;
+      try { d = JSON.parse(rawText); } catch(e) { return res.json({ ok: false, error: "parse error", raw: rawText.slice(0, 200) }); }
+      return res.json({ ok: true, metrics: d });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
 
   // ── Promoções: buscar vendas dos últimos 30 dias por item e salvar no Firebase ──
   if (req.query.action === "buscar-vendas-promocao" && req.method === "POST") {
