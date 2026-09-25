@@ -714,6 +714,137 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     }
   }
 
+  // ── Promoções: listar itens com desconto ativo ──
+  if (req.query.action === "buscar-promocoes" && req.method === "GET") {
+    try {
+      const tokenP = req.query.token;
+      if (!tokenP) return res.status(400).json({ ok: false, error: "token obrigatório" });
+
+      // Buscar itens ativos do vendedor (até 200)
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenP}` } });
+      const me = await meRes.json();
+      const uid = me.id;
+
+      const ids = [];
+      for (let offset = 0; offset < 200; offset += 50) {
+        const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=${offset}`, { headers: { Authorization: `Bearer ${tokenP}` } });
+        const d = await r.json();
+        const batch = d.results || [];
+        ids.push(...batch);
+        if (batch.length < 50) break;
+      }
+
+      // Buscar detalhes dos itens em lotes de 20 para pegar original_price
+      const lotes = [];
+      for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+      const resultados = await Promise.all(lotes.map(lote =>
+        fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink`, {
+          headers: { Authorization: `Bearer ${tokenP}` }
+        }).then(r => r.json()).catch(() => [])
+      ));
+
+      // Filtrar apenas itens com original_price (ou seja, têm desconto ativo)
+      const comDesconto = [];
+      resultados.flat().forEach(entry => {
+        const item = entry.body || entry;
+        if (item && item.original_price && item.price < item.original_price) {
+          const desconto = Math.round((1 - item.price / item.original_price) * 100);
+          comDesconto.push({
+            item_id: item.id,
+            titulo: item.title,
+            sku: item.seller_sku || "",
+            thumbnail: item.thumbnail || "",
+            preco_original: item.original_price,
+            preco_desconto: item.price,
+            desconto_pct: desconto,
+            permalink: item.permalink || "",
+          });
+        }
+      });
+
+      // Buscar datas de promoção via seller-promotions para cada item com desconto
+      const promocoesDetalhadas = await Promise.all(comDesconto.map(async item => {
+        try {
+          const pr = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item.item_id}?app_version=v2`, {
+            headers: { Authorization: `Bearer ${tokenP}` }
+          });
+          const pd = await pr.json();
+          const promo = Array.isArray(pd) ? pd.find(p => p.promotion_type === "PRICE_DISCOUNT") : null;
+          return {
+            ...item,
+            start_date: promo?.start_date || null,
+            finish_date: promo?.finish_date || null,
+            dias_restantes: promo?.finish_date ? Math.ceil((new Date(promo.finish_date) - new Date()) / (1000 * 60 * 60 * 24)) : null,
+          };
+        } catch (e) {
+          return { ...item, start_date: null, finish_date: null, dias_restantes: null };
+        }
+      }));
+
+      // Ordenar: vencendo primeiro
+      promocoesDetalhadas.sort((a, b) => {
+        if (a.dias_restantes === null) return 1;
+        if (b.dias_restantes === null) return -1;
+        return a.dias_restantes - b.dias_restantes;
+      });
+
+      return res.json({ ok: true, promocoes: promocoesDetalhadas, seller_id: uid });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Promoções: renovar/alterar desconto ──
+  if (req.query.action === "renovar-promocao" && req.method === "POST") {
+    try {
+      const { item_id, deal_price, finish_date, token: tokenR } = req.body || {};
+      if (!item_id || !deal_price || !finish_date || !tokenR) return res.status(400).json({ ok: false, error: "item_id, deal_price, finish_date e token obrigatórios" });
+
+      // Buscar preço atual para calcular start_date
+      const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id}?attributes=price,original_price`, { headers: { Authorization: `Bearer ${tokenR}` } });
+      const itemData = await itemRes.json();
+
+      const start_date = new Date().toISOString().slice(0, 19);
+      const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ deal_price: Number(deal_price), start_date, finish_date, promotion_type: "PRICE_DISCOUNT" })
+      });
+      const d = await r.json();
+      if (r.ok) {
+        return res.json({ ok: true, price: d.price, original_price: d.original_price });
+      } else {
+        return res.status(400).json({ ok: false, error: d.message || "Erro ao renovar promoção" });
+      }
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Promoções: análise Claude ──
+  if (req.query.action === "analisar-promocao" && req.method === "POST") {
+    try {
+      const { titulo, sku, historico } = req.body || {};
+      if (!historico || !historico.length) return res.status(400).json({ ok: false, analise: "Sem histórico suficiente para análise." });
+
+      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 300,
+          system: "Você é um analista de e-commerce. Analise o histórico de promoções de um produto no Mercado Livre e dê uma recomendação curta e direta (máximo 2 frases) sobre o desconto ideal para a próxima renovação, baseado na média de vendas por dia em cada período. Responda em português, sem formatação markdown.",
+          messages: [{ role: "user", content: `Produto: ${titulo} (SKU: ${sku})\nHistórico de períodos:\n${historico.map(h => `- ${h.periodo}: desconto ${h.desconto_pct}%, preço R$${h.preco_desconto}, ${h.vendas} vendas, média ${h.media_dia} un/dia`).join("\n")}` }]
+        })
+      });
+      const cd = await claudeRes.json();
+      const analise = cd.content?.[0]?.text?.trim() || "Sem dados suficientes para análise.";
+      return res.json({ ok: true, analise });
+    } catch (e) {
+      return res.status(500).json({ ok: false, analise: "Erro ao gerar análise." });
+    }
+  }
+
   // ── Clonar anúncio: buscar dados completos do item de origem ──
   if (req.query.action === "buscar-clone" && req.method === "GET") {
     try {
