@@ -725,81 +725,60 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const uid = me.id;
       if (!uid) return res.status(400).json({ ok: false, error: "Token inválido ou expirado" });
 
-      // 1. Listar todas as promoções ativas do vendedor (todos os tipos)
-      const tiposPromo = ["PRICE_DISCOUNT", "DEAL", "SELLER_CAMPAIGN", "LIGHTNING", "SMART", "MARKETPLACE_CAMPAIGN"];
-      const statusPromo = ["started", "pending"];
-      const todasPromocoes = [];
-      const debugLog = [];
-
-      // Testar endpoint alternativo: buscar promoções de um item específico para ver o formato
-      // Primeiro pega alguns IDs de itens ativos
-      const testIds = [];
-      try {
-        const tr = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=5`, { headers: { Authorization: `Bearer ${tokenP}` } });
-        const td = await tr.json();
-        testIds.push(...(td.results || []).slice(0, 3));
-      } catch(e) {}
-
-      for (const testId of testIds) {
-        try {
-          const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${testId}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
-          const rawText = await r.text();
-          debugLog.push(`item ${testId} HTTP ${r.status}: ${rawText.slice(0, 200)}`);
-        } catch(e) { debugLog.push(`item ${testId}: exception ${e.message}`); }
+      // Buscar todos os IDs de itens ativos e pausados
+      const ids = [];
+      for (const status of ["active", "paused"]) {
+        for (let off = 0; off < 400; off += 50) {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=${status}&limit=50&offset=${off}`, { headers: { Authorization: `Bearer ${tokenP}` } });
+            const d = await r.json();
+            const batch = Array.isArray(d.results) ? d.results : [];
+            ids.push(...batch);
+            if (batch.length < 50) break;
+          } catch(e) { break; }
+        }
       }
 
-      // Testar também o endpoint de promotions com um log do raw
-      try {
-        const r = await fetch(`https://api.mercadolibre.com/seller-promotions/promotions?promotion_type=PRICE_DISCOUNT&status=started&app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
-        const rawText = await r.text();
-        debugLog.push(`promotions endpoint HTTP ${r.status}: ${rawText.slice(0, 300)}`);
-      } catch(e) { debugLog.push(`promotions: ${e.message}`); }
-
-      // 2. Para cada promoção, buscar os itens participantes
+      // Buscar promoções ativas por item em chunks de 10 paralelos
       const itensPorPromo = [];
-      for (const promo of todasPromocoes) {
-        try {
-          let offset = 0;
-          while (true) {
-            const r = await fetch(
-              `https://api.mercadolibre.com/seller-promotions/promotions/${promo.id}/items?promotion_type=${promo.tipo}&limit=50&offset=${offset}&app_version=v2`,
-              { headers: { Authorization: `Bearer ${tokenP}` } }
-            );
-            if (!r.ok) break;
+      for (let i = 0; i < ids.length; i += 10) {
+        const chunk = ids.slice(i, i + 10);
+        const results = await Promise.all(chunk.map(async itemId => {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
+            if (!r.ok) return [];
             const d = await r.json();
-            const items = Array.isArray(d.results) ? d.results : (Array.isArray(d) ? d : []);
-            items.filter(i => i.status === "started" || i.status === "candidate" || i.status === "pending").forEach(item => {
-              itensPorPromo.push({
-                item_id: item.id,
-                preco_original: item.original_price || 0,
-                preco_desconto: item.price || 0,
-                start_date: item.start_date || promo.start_date || null,
-                finish_date: item.end_date || item.finish_date || promo.finish_date || null,
-                tipo_promo: promo.tipo,
-                nome_promo: promo.name || promo.tipo,
-                status_item: item.status,
-              });
-            });
-            if (items.length < 50) break;
-            offset += 50;
-          }
-        } catch(e) {}
+            const promos = Array.isArray(d) ? d : [];
+            return promos
+              .filter(p => p.status === "started")
+              .map(p => ({
+                item_id: itemId,
+                preco_original: p.original_price || 0,
+                preco_desconto: p.price || 0,
+                start_date: p.start_date || null,
+                finish_date: p.finish_date || null,
+                tipo_promo: p.type || p.promotion_type || "",
+                nome_promo: p.name || p.type || "",
+              }));
+          } catch(e) { return []; }
+        }));
+        itensPorPromo.push(...results.flat());
       }
 
       if (itensPorPromo.length === 0) {
-        return res.json({ ok: true, promocoes: [], seller_id: uid, total: 0, _debug: `Promoções encontradas: ${todasPromocoes.length}`, _debugLog: debugLog });
+        return res.json({ ok: true, promocoes: [], seller_id: uid, total: 0 });
       }
 
-      // 3. Deduplicar por item_id (pegar a com menor finish_date se duplicado)
+      // Deduplicar — se item tem múltiplas promoções, pega a com menor finish_date
       const itemMap = {};
       itensPorPromo.forEach(p => {
-        if (!itemMap[p.item_id] || (p.finish_date && p.finish_date < itemMap[p.item_id].finish_date)) {
+        if (!itemMap[p.item_id] || (p.finish_date && (!itemMap[p.item_id].finish_date || p.finish_date < itemMap[p.item_id].finish_date))) {
           itemMap[p.item_id] = p;
         }
       });
       const itemIds = Object.keys(itemMap);
 
-      // 4. Buscar detalhes dos itens em lotes
+      // Buscar detalhes dos itens em lotes de 20
       const itemsData = {};
       const lotes = [];
       for (let i = 0; i < itemIds.length; i += 20) lotes.push(itemIds.slice(i, i + 20));
@@ -814,7 +793,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         } catch(e) {}
       }));
 
-      // 5. Montar resultado final
+      // Montar resultado final
       const resultado = itemIds.map(itemId => {
         const p = itemMap[itemId];
         const item = itemsData[itemId] || {};
@@ -845,6 +824,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       return res.status(500).json({ ok: false, error: e.message });
     }
   }
+
 
   // ── Promoções: renovar/alterar desconto ──
   if (req.query.action === "renovar-promocao" && req.method === "POST") {
