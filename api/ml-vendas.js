@@ -784,7 +784,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       for (let i = 0; i < itemIds.length; i += 20) lotes.push(itemIds.slice(i, i + 20));
       await Promise.all(lotes.map(async lote => {
         try {
-          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink`, { headers: { Authorization: `Bearer ${tokenP}` } });
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink,catalog_listing`, { headers: { Authorization: `Bearer ${tokenP}` } });
           const d = await r.json();
           (Array.isArray(d) ? d : []).forEach(entry => {
             const item = entry?.body || entry;
@@ -794,7 +794,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       }));
 
       // Montar resultado final
-      const resultado = itemIds.map(itemId => {
+      const resultadoBruto = itemIds.map(itemId => {
         const p = itemMap[itemId];
         const item = itemsData[itemId] || {};
         const precoOriginal = p.preco_original || item.original_price || item.price || 0;
@@ -815,8 +815,27 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
           dias_restantes: diasRestantes,
           tipo_promo: p.tipo_promo,
           nome_promo: p.nome_promo,
+          is_catalogo: item.catalog_listing === true,
         };
       });
+
+      // Deduplicar por SKU — manter catálogo se existir, senão qualquer um
+      const porSku = {};
+      resultadoBruto.forEach(item => {
+        const key = item.sku || item.item_id;
+        if (!porSku[key]) {
+          porSku[key] = item;
+        } else {
+          // Preferir catálogo (item_id com catalog_listing=true) ou o com maior desconto
+          if (item.is_catalogo && !porSku[key].is_catalogo) {
+            porSku[key] = item;
+          } else if (item.desconto_pct > porSku[key].desconto_pct && !porSku[key].is_catalogo) {
+            porSku[key] = item;
+          }
+        }
+      });
+
+      const resultado = Object.values(porSku);
 
       resultado.sort((a, b) => (a.dias_restantes ?? 9999) - (b.dias_restantes ?? 9999));
       return res.json({ ok: true, promocoes: resultado, seller_id: uid, total: resultado.length });
