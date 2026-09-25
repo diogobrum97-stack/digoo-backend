@@ -846,6 +846,16 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   }
 
 
+  // ── Debug: ver raw do seller-promotions/items ──
+  if (req.query.action === "debug-promo-item" && req.method === "GET") {
+    try {
+      const { item_id, token: tokenD } = req.query;
+      const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenD}` } });
+      const raw = await r.text();
+      return res.json({ ok: true, status: r.status, raw: JSON.parse(raw) });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Promoções: buscar métricas por promotion_id ──
   if (req.query.action === "buscar-metricas-promocao" && req.method === "GET") {
     try {
