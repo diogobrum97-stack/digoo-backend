@@ -723,88 +723,62 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenP}` } });
       const me = await meRes.json();
       const uid = me.id;
+      if (!uid) return res.status(400).json({ ok: false, error: "Token inválido ou expirado" });
 
-      // Buscar promoções ativas via seller-promotions com paginação
-      const promocoesRaw = [];
-      let offset = 0;
-      while (true) {
-        const r = await fetch(
-          `https://api.mercadolibre.com/seller-promotions/promotions?seller_id=${uid}&promotion_type=PRICE_DISCOUNT&status=started&limit=50&offset=${offset}&app_version=v2`,
-          { headers: { Authorization: `Bearer ${tokenP}` } }
-        );
-        const d = await r.json();
-        const batch = d.results || d.data || d || [];
-        if (!Array.isArray(batch) || batch.length === 0) break;
-        promocoesRaw.push(...batch);
-        if (batch.length < 50) break;
-        offset += 50;
-      }
-
-      // Se não encontrou via promotions, tentar buscar itens com desconto via items search
-      if (promocoesRaw.length === 0) {
-        const ids = [];
-        for (let off = 0; off < 300; off += 50) {
+      // Estratégia 1: buscar via items/search + original_price (mais confiável)
+      const ids = [];
+      for (let off = 0; off < 400; off += 50) {
+        try {
           const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=50&offset=${off}`, { headers: { Authorization: `Bearer ${tokenP}` } });
           const d = await r.json();
-          const batch = d.results || [];
+          const batch = Array.isArray(d.results) ? d.results : [];
           ids.push(...batch);
           if (batch.length < 50) break;
-        }
+        } catch(e) { break; }
+      }
 
-        // Buscar detalhes em lotes
-        const lotes = [];
-        for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
-        const resultados = await Promise.all(lotes.map(lote =>
-          fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink`, {
-            headers: { Authorization: `Bearer ${tokenP}` }
-          }).then(r => r.json()).catch(() => [])
-        ));
+      // Buscar detalhes em lotes de 20
+      const lotes = [];
+      for (let i = 0; i < ids.length; i += 20) lotes.push(ids.slice(i, i + 20));
+      const comDesconto = [];
 
-        const comDesconto = [];
-        resultados.flat().forEach(entry => {
-          const item = entry.body || entry;
-          if (item?.id && item.original_price && item.price < item.original_price) {
-            const desconto = Math.round((1 - item.price / item.original_price) * 100);
-            comDesconto.push({ item_id: item.id, titulo: item.title, sku: item.seller_sku || "", thumbnail: item.thumbnail || "", preco_original: item.original_price, preco_desconto: item.price, desconto_pct: desconto, permalink: item.permalink || "" });
-          }
-        });
+      await Promise.all(lotes.map(async lote => {
+        try {
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink`, { headers: { Authorization: `Bearer ${tokenP}` } });
+          const d = await r.json();
+          const entries = Array.isArray(d) ? d : [];
+          entries.forEach(entry => {
+            const item = entry?.body || entry;
+            if (item?.id && item.original_price && item.price < item.original_price) {
+              const desconto = Math.round((1 - item.price / item.original_price) * 100);
+              comDesconto.push({ item_id: item.id, titulo: item.title || item.id, sku: item.seller_sku || "", thumbnail: item.thumbnail || "", preco_original: item.original_price, preco_desconto: item.price, desconto_pct: desconto, permalink: item.permalink || "" });
+            }
+          });
+        } catch(e) {}
+      }));
 
-        // Buscar datas via seller-promotions por item
-        const detalhadas = await Promise.all(comDesconto.map(async item => {
+      // Buscar datas via seller-promotions por item (em paralelo com limite)
+      const chunks = [];
+      for (let i = 0; i < comDesconto.length; i += 10) chunks.push(comDesconto.slice(i, i + 10));
+      const detalhadas = [];
+      for (const chunk of chunks) {
+        const results = await Promise.all(chunk.map(async item => {
           try {
             const pr = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item.item_id}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
             const pd = await pr.json();
-            const promo = Array.isArray(pd) ? pd.find(p => p.status === "started" || p.status === "active") : (pd?.status === "started" ? pd : null);
-            return { ...item, start_date: promo?.start_date || null, finish_date: promo?.finish_date || null, dias_restantes: promo?.finish_date ? Math.ceil((new Date(promo.finish_date) - new Date()) / (1000*60*60*24)) : null };
-          } catch(e) { return { ...item, start_date: null, finish_date: null, dias_restantes: null }; }
+            const promos = Array.isArray(pd) ? pd : (pd && typeof pd === "object" ? [pd] : []);
+            const promo = promos.find(p => p.status === "started" || p.promotion_type === "PRICE_DISCOUNT") || promos[0] || null;
+            const diasRestantes = promo?.finish_date ? Math.ceil((new Date(promo.finish_date) - new Date()) / (1000*60*60*24)) : null;
+            return { ...item, start_date: promo?.start_date || null, finish_date: promo?.finish_date || null, dias_restantes: diasRestantes };
+          } catch(e) {
+            return { ...item, start_date: null, finish_date: null, dias_restantes: null };
+          }
         }));
-
-        detalhadas.sort((a, b) => (a.dias_restantes ?? 999) - (b.dias_restantes ?? 999));
-        return res.json({ ok: true, promocoes: detalhadas, seller_id: uid, _fonte: "items_scan" });
+        detalhadas.push(...results);
       }
 
-      // Enriquecer promoções com dados do item
-      const itemIds = [...new Set(promocoesRaw.map(p => p.item_id).filter(Boolean))];
-      const lotes = [];
-      for (let i = 0; i < itemIds.length; i += 20) lotes.push(itemIds.slice(i, i + 20));
-      const itemsData = {};
-      await Promise.all(lotes.map(async lote => {
-        const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink`, { headers: { Authorization: `Bearer ${tokenP}` } });
-        const d = await r.json();
-        d.flat().forEach(entry => { const item = entry.body || entry; if (item?.id) itemsData[item.id] = item; });
-      }));
-
-      const resultado = promocoesRaw.map(p => {
-        const item = itemsData[p.item_id] || {};
-        const precoOriginal = p.original_price || item.original_price || item.price || 0;
-        const precoDesconto = p.deal_price || p.price || item.price || 0;
-        const desconto = precoOriginal > 0 ? Math.round((1 - precoDesconto / precoOriginal) * 100) : 0;
-        const diasRestantes = p.finish_date ? Math.ceil((new Date(p.finish_date) - new Date()) / (1000*60*60*24)) : null;
-        return { item_id: p.item_id, titulo: item.title || p.item_id, sku: item.seller_sku || "", thumbnail: item.thumbnail || "", preco_original: precoOriginal, preco_desconto: precoDesconto, desconto_pct: desconto, permalink: item.permalink || "", start_date: p.start_date || null, finish_date: p.finish_date || null, dias_restantes: diasRestantes };
-      });
-
-      resultado.sort((a, b) => (a.dias_restantes ?? 999) - (b.dias_restantes ?? 999));
-      return res.json({ ok: true, promocoes: resultado, seller_id: uid, _fonte: "seller_promotions" });
+      detalhadas.sort((a, b) => (a.dias_restantes ?? 9999) - (b.dias_restantes ?? 9999));
+      return res.json({ ok: true, promocoes: detalhadas, seller_id: uid, total: detalhadas.length });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
