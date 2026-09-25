@@ -877,23 +877,26 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     }
   }
 
-  // ── Promoções: buscar vendas dos últimos 30 dias por item e salvar no Firebase ──
+  // ── Promoções: buscar vendas desde o início da promoção por item ──
   if (req.query.action === "buscar-vendas-promocao" && req.method === "POST") {
     try {
-      const { item_ids, token: tokenV } = req.body || {};
-      if (!tokenV || !Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ ok: false, error: "token e item_ids obrigatórios" });
+      const { itens, token: tokenV } = req.body || {};
+      if (!tokenV || !Array.isArray(itens) || !itens.length) return res.status(400).json({ ok: false, error: "token e itens obrigatórios" });
 
-      const fbUrl = process.env.FIREBASE_URL;
-      const hoje = new Date();
-      const d30 = new Date(hoje - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      const d15 = new Date(hoje - 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenV}` } });
+      const me = await meRes.json();
+      const uid = me.id;
 
-      // Buscar pedidos dos últimos 30 dias
+      // Data mais antiga entre os start_dates para buscar pedidos de uma vez
+      const datas = itens.map(i => i.start_date).filter(Boolean).sort();
+      const dataFrom = datas[0] ? datas[0].slice(0, 10) : new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0, 10);
+
+      // Buscar todos os pedidos desde a promoção mais antiga
       const pedidos = [];
-      for (let offset = 0; offset < 500; offset += 50) {
+      for (let offset = 0; offset < 1000; offset += 50) {
         try {
           const r = await fetch(
-            `https://api.mercadolibre.com/orders/search?seller=${(await fetch("https://api.mercadolibre.com/users/me",{headers:{Authorization:`Bearer ${tokenV}`}}).then(r=>r.json())).id}&order.status=paid&order.date_created.from=${d30}T00:00:00.000-00:00&limit=50&offset=${offset}`,
+            `https://api.mercadolibre.com/orders/search?seller=${uid}&order.status=paid&order.date_created.from=${dataFrom}T00:00:00.000-00:00&limit=50&offset=${offset}`,
             { headers: { Authorization: `Bearer ${tokenV}` } }
           );
           const d = await r.json();
@@ -903,31 +906,53 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         } catch(e) { break; }
       }
 
-      // Calcular vendas por item
-      const vendasPorItem = {};
-      pedidos.forEach(order => {
-        const data = (order.date_created || "").slice(0, 10);
-        (order.order_items || []).forEach(oi => {
-          const iid = oi.item?.id;
-          if (!iid || !item_ids.includes(iid)) return;
-          if (!vendasPorItem[iid]) vendasPorItem[iid] = { total: 0, ultimos15: 0, anteriores15: 0, receita: 0 };
-          const qty = oi.quantity || 1;
-          vendasPorItem[iid].total += qty;
-          vendasPorItem[iid].receita += (oi.unit_price || 0) * qty;
-          if (data >= d15) vendasPorItem[iid].ultimos15 += qty;
-          else vendasPorItem[iid].anteriores15 += qty;
-        });
-      });
-
-      // Calcular tendência e salvar no Firebase
+      const fbUrl = process.env.FIREBASE_URL;
       const resultado = {};
-      for (const itemId of item_ids) {
-        const v = vendasPorItem[itemId] || { total: 0, ultimos15: 0, anteriores15: 0, receita: 0 };
-        const tendencia = v.anteriores15 > 0
-          ? Math.round(((v.ultimos15 - v.anteriores15) / v.anteriores15) * 100)
-          : v.ultimos15 > 0 ? 100 : 0;
-        const dados = { total: v.total, ultimos15: v.ultimos15, anteriores15: v.anteriores15, receita: Math.round(v.receita), tendencia, atualizado: new Date().toISOString().slice(0, 10) };
+
+      for (const item of itens) {
+        const itemId = item.item_id;
+        const startDate = item.start_date ? item.start_date.slice(0, 10) : dataFrom;
+        const hoje = new Date().toISOString().slice(0, 10);
+
+        // Dias desde início da promoção
+        const diasPromo = Math.max(1, Math.ceil((new Date(hoje) - new Date(startDate)) / (1000*60*60*24)));
+        const metade = Math.floor(diasPromo / 2);
+        const dataMeio = new Date(new Date(startDate).getTime() + metade*24*60*60*1000).toISOString().slice(0, 10);
+
+        let vendas = 0, receita = 0, primeira_metade = 0, segunda_metade = 0;
+
+        pedidos.forEach(order => {
+          const data = (order.date_created || "").slice(0, 10);
+          if (data < startDate) return;
+          (order.order_items || []).forEach(oi => {
+            if (oi.item?.id !== itemId) return;
+            const qty = oi.quantity || 1;
+            vendas += qty;
+            receita += (oi.unit_price || 0) * qty;
+            if (data < dataMeio) primeira_metade += qty;
+            else segunda_metade += qty;
+          });
+        });
+
+        // Tendência: segunda metade vs primeira metade do período
+        const tendencia = primeira_metade > 0
+          ? Math.round(((segunda_metade - primeira_metade) / primeira_metade) * 100)
+          : segunda_metade > 0 ? 100 : 0;
+
+        const media_dia = vendas > 0 ? Math.round((vendas / diasPromo) * 10) / 10 : 0;
+
+        const dados = {
+          vendas_na_promo: vendas,
+          receita_na_promo: Math.round(receita),
+          media_dia,
+          tendencia,
+          dias_ativo: diasPromo,
+          start_date: startDate,
+          atualizado: hoje,
+        };
+
         resultado[itemId] = dados;
+
         // Salvar no Firebase
         if (fbUrl) {
           try {
