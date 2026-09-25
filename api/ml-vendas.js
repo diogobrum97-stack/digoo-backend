@@ -734,13 +734,14 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       for (const tipo of tiposPromo) {
         for (const status of statusPromo) {
           try {
-            const url = `https://api.mercadolibre.com/seller-promotions/promotions?seller_id=${uid}&promotion_type=${tipo}&status=${status}&app_version=v2`;
+            // Sem seller_id — a API usa o token para identificar o vendedor
+            const url = `https://api.mercadolibre.com/seller-promotions/promotions?promotion_type=${tipo}&status=${status}&app_version=v2`;
             const r = await fetch(url, { headers: { Authorization: `Bearer ${tokenP}` } });
             const rawText = await r.text();
             let d;
-            try { d = JSON.parse(rawText); } catch(e) { debugLog.push(`${tipo}/${status}: parse error`); continue; }
+            try { d = JSON.parse(rawText); } catch(e) { debugLog.push(`${tipo}/${status}: parse error HTTP ${r.status} — ${rawText.slice(0,100)}`); continue; }
             const promos = Array.isArray(d) ? d : (Array.isArray(d.results) ? d.results : []);
-            debugLog.push(`${tipo}/${status}: ${promos.length} promos (status HTTP ${r.status})`);
+            debugLog.push(`${tipo}/${status}: ${promos.length} promos (HTTP ${r.status})`);
             promos.forEach(p => { if (p?.id) todasPromocoes.push({ ...p, tipo }); });
           } catch(e) { debugLog.push(`${tipo}/${status}: exception ${e.message}`); }
         }
