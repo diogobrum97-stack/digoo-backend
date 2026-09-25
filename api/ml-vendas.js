@@ -726,22 +726,23 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (!uid) return res.status(400).json({ ok: false, error: "Token inválido ou expirado" });
 
       // 1. Listar todas as promoções ativas do vendedor (todos os tipos)
-      const tiposPromo = ["PRICE_DISCOUNT", "DEAL", "SELLER_CAMPAIGN", "LIGHTNING", "SMART"];
+      const tiposPromo = ["PRICE_DISCOUNT", "DEAL", "SELLER_CAMPAIGN", "LIGHTNING", "SMART", "MARKETPLACE_CAMPAIGN"];
       const statusPromo = ["started", "pending"];
       const todasPromocoes = [];
+      const debugLog = [];
 
       for (const tipo of tiposPromo) {
         for (const status of statusPromo) {
           try {
-            const r = await fetch(
-              `https://api.mercadolibre.com/seller-promotions/promotions?seller_id=${uid}&promotion_type=${tipo}&status=${status}&app_version=v2`,
-              { headers: { Authorization: `Bearer ${tokenP}` } }
-            );
-            if (!r.ok) continue;
-            const d = await r.json();
+            const url = `https://api.mercadolibre.com/seller-promotions/promotions?seller_id=${uid}&promotion_type=${tipo}&status=${status}&app_version=v2`;
+            const r = await fetch(url, { headers: { Authorization: `Bearer ${tokenP}` } });
+            const rawText = await r.text();
+            let d;
+            try { d = JSON.parse(rawText); } catch(e) { debugLog.push(`${tipo}/${status}: parse error`); continue; }
             const promos = Array.isArray(d) ? d : (Array.isArray(d.results) ? d.results : []);
+            debugLog.push(`${tipo}/${status}: ${promos.length} promos (status HTTP ${r.status})`);
             promos.forEach(p => { if (p?.id) todasPromocoes.push({ ...p, tipo }); });
-          } catch(e) {}
+          } catch(e) { debugLog.push(`${tipo}/${status}: exception ${e.message}`); }
         }
       }
 
@@ -777,7 +778,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       }
 
       if (itensPorPromo.length === 0) {
-        return res.json({ ok: true, promocoes: [], seller_id: uid, total: 0, _debug: `Promoções encontradas: ${todasPromocoes.length}` });
+        return res.json({ ok: true, promocoes: [], seller_id: uid, total: 0, _debug: `Promoções encontradas: ${todasPromocoes.length}`, _debugLog: debugLog });
       }
 
       // 3. Deduplicar por item_id (pegar a com menor finish_date se duplicado)
