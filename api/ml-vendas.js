@@ -887,9 +887,12 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const me = await meRes.json();
       const uid = me.id;
 
-      // Data mais antiga entre os start_dates para buscar pedidos de uma vez
+      // Data mais antiga — inclui período antes das promoções para comparação
       const datas = itens.map(i => i.start_date).filter(Boolean).sort();
-      const dataFrom = datas[0] ? datas[0].slice(0, 10) : new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0, 10);
+      const startMaisAntigo = datas[0] ? datas[0].slice(0, 10) : new Date(Date.now() - 90*24*60*60*1000).toISOString().slice(0, 10);
+      // Buscar desde o dobro do período mais antigo (para ter dados antes da promoção)
+      const diasAtras = Math.ceil((new Date() - new Date(startMaisAntigo)) / (1000*60*60*24));
+      const dataFrom = new Date(Date.now() - diasAtras * 2 * 24*60*60*1000).toISOString().slice(0, 10);
 
       // Buscar todos os pedidos desde a promoção mais antiga
       const pedidos = [];
@@ -913,36 +916,37 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         const itemId = item.item_id;
         const startDate = item.start_date ? item.start_date.slice(0, 10) : dataFrom;
         const hoje = new Date().toISOString().slice(0, 10);
-
-        // Dias desde início da promoção
         const diasPromo = Math.max(1, Math.ceil((new Date(hoje) - new Date(startDate)) / (1000*60*60*24)));
-        const metade = Math.floor(diasPromo / 2);
-        const dataMeio = new Date(new Date(startDate).getTime() + metade*24*60*60*1000).toISOString().slice(0, 10);
 
-        let vendas = 0, receita = 0, primeira_metade = 0, segunda_metade = 0;
+        // Período antes da promoção (mesmo número de dias)
+        const dataAntes = new Date(new Date(startDate).getTime() - diasPromo*24*60*60*1000).toISOString().slice(0, 10);
+
+        let vendas_durante = 0, vendas_antes = 0, receita = 0;
 
         pedidos.forEach(order => {
           const data = (order.date_created || "").slice(0, 10);
-          if (data < startDate) return;
           (order.order_items || []).forEach(oi => {
             if (oi.item?.id !== itemId) return;
             const qty = oi.quantity || 1;
-            vendas += qty;
-            receita += (oi.unit_price || 0) * qty;
-            if (data < dataMeio) primeira_metade += qty;
-            else segunda_metade += qty;
+            if (data >= startDate) {
+              vendas_durante += qty;
+              receita += (oi.unit_price || 0) * qty;
+            } else if (data >= dataAntes) {
+              vendas_antes += qty;
+            }
           });
         });
 
-        // Tendência: segunda metade vs primeira metade do período
-        const tendencia = primeira_metade > 0
-          ? Math.round(((segunda_metade - primeira_metade) / primeira_metade) * 100)
-          : segunda_metade > 0 ? 100 : 0;
+        // Tendência: durante promoção vs antes da promoção
+        const tendencia = vendas_antes > 0
+          ? Math.round(((vendas_durante - vendas_antes) / vendas_antes) * 100)
+          : vendas_durante > 0 ? 100 : 0;
 
-        const media_dia = vendas > 0 ? Math.round((vendas / diasPromo) * 10) / 10 : 0;
+        const media_dia = vendas_durante > 0 ? Math.round((vendas_durante / diasPromo) * 10) / 10 : 0;
 
         const dados = {
-          vendas_na_promo: vendas,
+          vendas_na_promo: vendas_durante,
+          vendas_antes_promo: vendas_antes,
           receita_na_promo: Math.round(receita),
           media_dia,
           tendencia,
