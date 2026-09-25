@@ -845,6 +845,74 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   }
 
 
+  // ── Promoções: buscar vendas dos últimos 30 dias por item e salvar no Firebase ──
+  if (req.query.action === "buscar-vendas-promocao" && req.method === "POST") {
+    try {
+      const { item_ids, token: tokenV } = req.body || {};
+      if (!tokenV || !Array.isArray(item_ids) || !item_ids.length) return res.status(400).json({ ok: false, error: "token e item_ids obrigatórios" });
+
+      const fbUrl = process.env.FIREBASE_URL;
+      const hoje = new Date();
+      const d30 = new Date(hoje - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const d15 = new Date(hoje - 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+      // Buscar pedidos dos últimos 30 dias
+      const pedidos = [];
+      for (let offset = 0; offset < 500; offset += 50) {
+        try {
+          const r = await fetch(
+            `https://api.mercadolibre.com/orders/search?seller=${(await fetch("https://api.mercadolibre.com/users/me",{headers:{Authorization:`Bearer ${tokenV}`}}).then(r=>r.json())).id}&order.status=paid&order.date_created.from=${d30}T00:00:00.000-00:00&limit=50&offset=${offset}`,
+            { headers: { Authorization: `Bearer ${tokenV}` } }
+          );
+          const d = await r.json();
+          const batch = d.results || [];
+          pedidos.push(...batch);
+          if (batch.length < 50) break;
+        } catch(e) { break; }
+      }
+
+      // Calcular vendas por item
+      const vendasPorItem = {};
+      pedidos.forEach(order => {
+        const data = (order.date_created || "").slice(0, 10);
+        (order.order_items || []).forEach(oi => {
+          const iid = oi.item?.id;
+          if (!iid || !item_ids.includes(iid)) return;
+          if (!vendasPorItem[iid]) vendasPorItem[iid] = { total: 0, ultimos15: 0, anteriores15: 0, receita: 0 };
+          const qty = oi.quantity || 1;
+          vendasPorItem[iid].total += qty;
+          vendasPorItem[iid].receita += (oi.unit_price || 0) * qty;
+          if (data >= d15) vendasPorItem[iid].ultimos15 += qty;
+          else vendasPorItem[iid].anteriores15 += qty;
+        });
+      });
+
+      // Calcular tendência e salvar no Firebase
+      const resultado = {};
+      for (const itemId of item_ids) {
+        const v = vendasPorItem[itemId] || { total: 0, ultimos15: 0, anteriores15: 0, receita: 0 };
+        const tendencia = v.anteriores15 > 0
+          ? Math.round(((v.ultimos15 - v.anteriores15) / v.anteriores15) * 100)
+          : v.ultimos15 > 0 ? 100 : 0;
+        const dados = { total: v.total, ultimos15: v.ultimos15, anteriores15: v.anteriores15, receita: Math.round(v.receita), tendencia, atualizado: new Date().toISOString().slice(0, 10) };
+        resultado[itemId] = dados;
+        // Salvar no Firebase
+        if (fbUrl) {
+          try {
+            await fetch(`${fbUrl}/promocoes_vendas/${itemId}.json`, {
+              method: "PUT", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(dados)
+            });
+          } catch(e) {}
+        }
+      }
+
+      return res.json({ ok: true, vendas: resultado });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Promoções: renovar/alterar desconto ──
   if (req.query.action === "renovar-promocao" && req.method === "POST") {
     try {
