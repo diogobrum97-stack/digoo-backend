@@ -725,65 +725,93 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const uid = me.id;
       if (!uid) return res.status(400).json({ ok: false, error: "Token inválido ou expirado" });
 
-      // Buscar todos os IDs de itens ativos e pausados
-      const ids = [];
-      for (const status of ["active", "paused"]) {
-        for (let off = 0; off < 300; off += 50) {
+      // 1. Listar todas as promoções ativas do vendedor (todos os tipos)
+      const tiposPromo = ["PRICE_DISCOUNT", "DEAL", "SELLER_CAMPAIGN", "LIGHTNING", "SMART"];
+      const statusPromo = ["started", "pending"];
+      const todasPromocoes = [];
+
+      for (const tipo of tiposPromo) {
+        for (const status of statusPromo) {
           try {
-            const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=${status}&limit=50&offset=${off}`, { headers: { Authorization: `Bearer ${tokenP}` } });
+            const r = await fetch(
+              `https://api.mercadolibre.com/seller-promotions/promotions?seller_id=${uid}&promotion_type=${tipo}&status=${status}&app_version=v2`,
+              { headers: { Authorization: `Bearer ${tokenP}` } }
+            );
+            if (!r.ok) continue;
             const d = await r.json();
-            const batch = Array.isArray(d.results) ? d.results : [];
-            ids.push(...batch);
-            if (batch.length < 50) break;
-          } catch(e) { break; }
+            const promos = Array.isArray(d) ? d : (Array.isArray(d.results) ? d.results : []);
+            promos.forEach(p => { if (p?.id) todasPromocoes.push({ ...p, tipo }); });
+          } catch(e) {}
         }
       }
 
-      // Verificar quais têm promoção ativa — em chunks de 10 paralelos
-      const comPromo = [];
-      const chunks = [];
-      for (let i = 0; i < ids.length; i += 10) chunks.push(ids.slice(i, i + 10));
-
-      for (const chunk of chunks) {
-        const results = await Promise.all(chunk.map(async itemId => {
-          try {
-            const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
-            if (!r.ok) return null;
+      // 2. Para cada promoção, buscar os itens participantes
+      const itensPorPromo = [];
+      for (const promo of todasPromocoes) {
+        try {
+          let offset = 0;
+          while (true) {
+            const r = await fetch(
+              `https://api.mercadolibre.com/seller-promotions/promotions/${promo.id}/items?promotion_type=${promo.tipo}&limit=50&offset=${offset}&app_version=v2`,
+              { headers: { Authorization: `Bearer ${tokenP}` } }
+            );
+            if (!r.ok) break;
             const d = await r.json();
-            const promos = Array.isArray(d) ? d : (d && typeof d === "object" && d.promotion_type ? [d] : []);
-            const promo = promos.find(p => p.status === "started" || p.status === "candidate");
-            if (!promo) return null;
-            return { itemId, promo };
-          } catch(e) { return null; }
-        }));
-        comPromo.push(...results.filter(Boolean));
+            const items = Array.isArray(d.results) ? d.results : (Array.isArray(d) ? d : []);
+            items.filter(i => i.status === "started" || i.status === "candidate" || i.status === "pending").forEach(item => {
+              itensPorPromo.push({
+                item_id: item.id,
+                preco_original: item.original_price || 0,
+                preco_desconto: item.price || 0,
+                start_date: item.start_date || promo.start_date || null,
+                finish_date: item.end_date || item.finish_date || promo.finish_date || null,
+                tipo_promo: promo.tipo,
+                nome_promo: promo.name || promo.tipo,
+                status_item: item.status,
+              });
+            });
+            if (items.length < 50) break;
+            offset += 50;
+          }
+        } catch(e) {}
       }
 
-      if (comPromo.length === 0) return res.json({ ok: true, promocoes: [], seller_id: uid, total: 0 });
+      if (itensPorPromo.length === 0) {
+        return res.json({ ok: true, promocoes: [], seller_id: uid, total: 0, _debug: `Promoções encontradas: ${todasPromocoes.length}` });
+      }
 
-      // Buscar detalhes dos itens com promoção
-      const itemIds = comPromo.map(p => p.itemId);
+      // 3. Deduplicar por item_id (pegar a com menor finish_date se duplicado)
+      const itemMap = {};
+      itensPorPromo.forEach(p => {
+        if (!itemMap[p.item_id] || (p.finish_date && p.finish_date < itemMap[p.item_id].finish_date)) {
+          itemMap[p.item_id] = p;
+        }
+      });
+      const itemIds = Object.keys(itemMap);
+
+      // 4. Buscar detalhes dos itens em lotes
+      const itemsData = {};
       const lotes = [];
       for (let i = 0; i < itemIds.length; i += 20) lotes.push(itemIds.slice(i, i + 20));
-      const itemsData = {};
       await Promise.all(lotes.map(async lote => {
         try {
           const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink`, { headers: { Authorization: `Bearer ${tokenP}` } });
           const d = await r.json();
-          const entries = Array.isArray(d) ? d : [];
-          entries.forEach(entry => {
+          (Array.isArray(d) ? d : []).forEach(entry => {
             const item = entry?.body || entry;
             if (item?.id) itemsData[item.id] = item;
           });
         } catch(e) {}
       }));
 
-      const resultado = comPromo.map(({ itemId, promo }) => {
+      // 5. Montar resultado final
+      const resultado = itemIds.map(itemId => {
+        const p = itemMap[itemId];
         const item = itemsData[itemId] || {};
-        const precoOriginal = item.original_price || promo.original_price || 0;
-        const precoDesconto = promo.deal_price || item.price || 0;
+        const precoOriginal = p.preco_original || item.original_price || item.price || 0;
+        const precoDesconto = p.preco_desconto || item.price || 0;
         const desconto = precoOriginal > 0 ? Math.round((1 - precoDesconto / precoOriginal) * 100) : 0;
-        const diasRestantes = promo.finish_date ? Math.ceil((new Date(promo.finish_date) - new Date()) / (1000*60*60*24)) : null;
+        const diasRestantes = p.finish_date ? Math.ceil((new Date(p.finish_date) - new Date()) / (1000*60*60*24)) : null;
         return {
           item_id: itemId,
           titulo: item.title || itemId,
@@ -793,10 +821,11 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
           preco_desconto: precoDesconto,
           desconto_pct: desconto,
           permalink: item.permalink || "",
-          start_date: promo.start_date || null,
-          finish_date: promo.finish_date || null,
+          start_date: p.start_date,
+          finish_date: p.finish_date,
           dias_restantes: diasRestantes,
-          status: promo.status || "",
+          tipo_promo: p.tipo_promo,
+          nome_promo: p.nome_promo,
         };
       });
 
