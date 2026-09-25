@@ -731,21 +731,29 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const todasPromocoes = [];
       const debugLog = [];
 
-      for (const tipo of tiposPromo) {
-        for (const status of statusPromo) {
-          try {
-            // Sem seller_id — a API usa o token para identificar o vendedor
-            const url = `https://api.mercadolibre.com/seller-promotions/promotions?promotion_type=${tipo}&status=${status}&app_version=v2`;
-            const r = await fetch(url, { headers: { Authorization: `Bearer ${tokenP}` } });
-            const rawText = await r.text();
-            let d;
-            try { d = JSON.parse(rawText); } catch(e) { debugLog.push(`${tipo}/${status}: parse error HTTP ${r.status} — ${rawText.slice(0,100)}`); continue; }
-            const promos = Array.isArray(d) ? d : (Array.isArray(d.results) ? d.results : []);
-            debugLog.push(`${tipo}/${status}: ${promos.length} promos (HTTP ${r.status})`);
-            promos.forEach(p => { if (p?.id) todasPromocoes.push({ ...p, tipo }); });
-          } catch(e) { debugLog.push(`${tipo}/${status}: exception ${e.message}`); }
-        }
+      // Testar endpoint alternativo: buscar promoções de um item específico para ver o formato
+      // Primeiro pega alguns IDs de itens ativos
+      const testIds = [];
+      try {
+        const tr = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=active&limit=5`, { headers: { Authorization: `Bearer ${tokenP}` } });
+        const td = await tr.json();
+        testIds.push(...(td.results || []).slice(0, 3));
+      } catch(e) {}
+
+      for (const testId of testIds) {
+        try {
+          const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${testId}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
+          const rawText = await r.text();
+          debugLog.push(`item ${testId} HTTP ${r.status}: ${rawText.slice(0, 200)}`);
+        } catch(e) { debugLog.push(`item ${testId}: exception ${e.message}`); }
       }
+
+      // Testar também o endpoint de promotions com um log do raw
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/seller-promotions/promotions?promotion_type=PRICE_DISCOUNT&status=started&app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
+        const rawText = await r.text();
+        debugLog.push(`promotions endpoint HTTP ${r.status}: ${rawText.slice(0, 300)}`);
+      } catch(e) { debugLog.push(`promotions: ${e.message}`); }
 
       // 2. Para cada promoção, buscar os itens participantes
       const itensPorPromo = [];
