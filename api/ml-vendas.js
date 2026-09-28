@@ -1253,6 +1253,31 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     } catch (e) { /* segue sem token, cai no erro padrão abaixo */ }
   }
 
+  // ── Buscar detalhes de item para modal de confirmação ──────────────────
+  if (req.query.action === 'buscar-item-detalhes' && req.method === 'GET') {
+    try {
+      const { item_id, token: tokenD } = req.query;
+      if (!item_id || !tokenD) return res.status(400).json({ ok: false, error: "item_id e token obrigatórios" });
+      const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id}?attributes=category_id,thumbnail,listing_type_id,attributes`, {
+        headers: { Authorization: `Bearer ${tokenD}` }
+      });
+      const item = await itemRes.json();
+      let categoriaNome = item.category_id || "—";
+      try {
+        const catRes = await fetch(`https://api.mercadolibre.com/categories/${item.category_id}`);
+        const catData = await catRes.json();
+        categoriaNome = catData.name || item.category_id;
+      } catch(e) {}
+      const atributos = (item.attributes || [])
+        .filter(a => a.value_name && !['SELLER_SKU','ITEM_CONDITION'].includes(a.id))
+        .slice(0, 10)
+        .map(a => ({ name: a.name, value_name: a.value_name }));
+      return res.json({ ok: true, categoria: categoriaNome, thumbnail: item.thumbnail || "", listing_type: item.listing_type_id || "", atributos });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Criar anúncio no ML ─────────────────────────────────────────────────
   if (req.query.action === 'criar-anuncio' && req.method === 'POST') {
     try {
