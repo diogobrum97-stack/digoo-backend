@@ -369,22 +369,26 @@ module.exports = async function handler(req, res) {
           } catch(e) { return []; }
         }));
         const todosItens = cacheResults.flat();
+        // Deduplicar por SKU mantendo o de maior estoque (pode ter mesmo produto nas duas contas)
+        const porSku = {};
+        todosItens.forEach(item => {
+          const key = item.sku || item.id;
+          if (!porSku[key] || (item.estoque || 0) > (porSku[key].estoque || 0)) {
+            porSku[key] = item;
+          }
+        });
+        const todosItensDeduplic = Object.values(porSku);
 
-        if (todosItens.length > 0) {
+        if (todosItensDeduplic.length > 0) {
           perguntas.forEach((p, i) => {
             const tituloAnuncio = itemsInfo[p.item_id]?.title || "";
             const textoPergunta = p.text || "";
-
-            // Keywords do título do anúncio + da pergunta do cliente
             const kwAnuncio = extrairKeywords(tituloAnuncio);
             const kwPergunta = extrairKeywords(textoPergunta);
-            // Modelo detectado no anúncio tem peso extra — garante que só itens do mesmo modelo pontuam alto
             const modeloAnuncio = kwAnuncio.filter(w => MODELOS.has(w));
             const todasKw = [...new Set([...kwAnuncio, ...kwPergunta])];
-
             if (todasKw.length === 0) return;
-
-            const pontuados = todosItens
+            const pontuados = todosItensDeduplic
               .filter(item => item.id !== p.item_id)
               .map(item => {
                 const tituloItem = (item.titulo || "").toLowerCase();
@@ -415,9 +419,14 @@ module.exports = async function handler(req, res) {
       try {
         const fbUrl = process.env.FIREBASE_URL;
         if (fbUrl) {
-          [{ token: tokenP, uid: me.id }].forEach(({ token, uid }) => {
-            atualizarCatalogoBackground(token, uid, fbUrl).catch(() => {});
-          });
+          // Atualizar catálogo de ambas as contas em background
+          atualizarCatalogoBackground(tokenP, me.id, fbUrl).catch(() => {});
+          if (tokenOutro) {
+            fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenOutro}` } })
+              .then(r => r.json())
+              .then(meOut => { if (meOut.id) atualizarCatalogoBackground(tokenOutro, meOut.id, fbUrl).catch(() => {}); })
+              .catch(() => {});
+          }
         }
       } catch(e) {}
 
