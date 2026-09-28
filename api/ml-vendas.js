@@ -1284,7 +1284,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const picturesHTTPS = pictures.map(p => ({ source: p.source.replace('http://', 'https://') }));
 
       const body = {
-        family_name: titulo,
+        title: titulo,
         category_id,
         price: Number(preco),
         currency_id: "BRL",
