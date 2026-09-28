@@ -1258,58 +1258,34 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     try {
       const { token: tokenBody, titulo, descricao, preco, estoque, item_id_origem } = req.body;
       if (!tokenBody || !titulo || !preco) return res.status(400).json({ ok: false, error: "token, titulo e preco obrigatórios" });
+      if (!item_id_origem) return res.status(400).json({ ok: false, error: "item_id_origem obrigatório" });
 
-      const meRes = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${tokenBody}` } });
-      const me = await meRes.json();
-      if (!me.id) return res.status(400).json({ ok: false, error: "Token inválido" });
-
-      const catRes = await fetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?limit=1&q=${encodeURIComponent(titulo)}`, {
+      // Buscar item original completo para clonar atributos
+      const itemOrigRes = await fetch(`https://api.mercadolibre.com/items/${item_id_origem}`, {
         headers: { Authorization: `Bearer ${tokenBody}` }
       });
-      const catData = await catRes.json();
-      const category_id = catData?.[0]?.category_id || "MLB1648";
+      const itemOrig = await itemOrigRes.json();
+      if (!itemOrig.id) return res.status(400).json({ ok: false, error: "Item original não encontrado" });
 
-      let pictures = [];
-      if (item_id_origem) {
-        try {
-          const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id_origem}?attributes=pictures`, {
-            headers: { Authorization: `Bearer ${tokenBody}` }
-          });
-          const itemData = await itemRes.json();
-          pictures = (itemData.pictures || []).slice(0, 3).map(p => ({ source: p.url || p.secure_url }));
-        } catch(e) {}
-      }
-
-      // Garantir URLs HTTPS nas pictures
-      const picturesHTTPS = pictures.map(p => ({ source: p.source.replace('http://', 'https://') }));
-
-      // Buscar atributos obrigatórios da categoria
-      let attributes = [];
-      try {
-        const attrRes = await fetch(`https://api.mercadolibre.com/categories/${category_id}/attributes`, {
-          headers: { Authorization: `Bearer ${tokenBody}` }
-        });
-        const attrData = await attrRes.json();
-        // Pegar apenas os obrigatórios com value_type que possamos preencher
-        const obrigatorios = (Array.isArray(attrData) ? attrData : [])
-          .filter(a => a.tags?.required && a.value_type === 'string')
-          .slice(0, 5);
-        console.log("[criar-anuncio] atributos obrigatórios:", obrigatorios.map(a => a.id));
-      } catch(e) {}
+      const pictures = (itemOrig.pictures || []).slice(0, 5)
+        .map(p => ({ source: (p.url || p.secure_url || "").replace('http://', 'https://') }))
+        .filter(p => p.source);
 
       const body = {
         family_name: titulo,
-        category_id,
+        category_id: itemOrig.category_id,
         price: Number(preco),
         currency_id: "BRL",
         available_quantity: Number(estoque) || 1,
-        buying_mode: "buy_it_now",
-        condition: "new",
-        listing_type_id: "gold_special",
-        ...(picturesHTTPS.length > 0 ? { pictures: picturesHTTPS } : {}),
+        buying_mode: itemOrig.buying_mode || "buy_it_now",
+        condition: itemOrig.condition || "new",
+        listing_type_id: itemOrig.listing_type_id || "gold_special",
+        ...(itemOrig.sale_terms?.length ? { sale_terms: itemOrig.sale_terms } : {}),
+        ...(itemOrig.attributes?.length ? { attributes: itemOrig.attributes.filter(a => a.value_name && a.id !== 'SELLER_SKU') } : {}),
+        ...(pictures.length > 0 ? { pictures } : {}),
       };
 
-      console.log("[criar-anuncio] body enviado:", JSON.stringify(body).slice(0, 400));
+      console.log("[criar-anuncio] category:", body.category_id, "attrs:", body.attributes?.length, "pics:", pictures.length);
 
       const crRes = await fetch('https://api.mercadolibre.com/items', {
         method: 'POST',
@@ -1331,13 +1307,14 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         }
         return res.json({ ok: true, item_id: crData.id, permalink: crData.permalink });
       } else {
-        console.log("[criar-anuncio] erro completo:", JSON.stringify(crData));
-        return res.status(400).json({ ok: false, error: crData.message || "Campos obrigatórios faltando", cause: crData.cause, required_fields: crData.required_fields });
+        console.log("[criar-anuncio] erro:", JSON.stringify(crData));
+        return res.status(400).json({ ok: false, error: crData.message || JSON.stringify(crData.cause || crData), cause: crData.cause });
       }
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
   }
+
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
