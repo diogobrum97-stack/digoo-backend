@@ -464,15 +464,12 @@ LÓGICA DE RESPOSTA:
    → NUNCA sugira um produto diferente do que o cliente pediu como "alternativa". Se pediu Forward e só tem Reverse, NÃO indique a Reverse — crie rascunho de anúncio Forward.
    → NUNCA invente que "a linha é somente X" — você não sabe o catálogo completo, só o que está em itens_relacionados.
 
-3. Ao criar rascunhos (criar_rascunho), analise o produto original e sugira até 3 opções inteligentes:
-   → SEMPRE pense em duas perspectivas de cliente: (A) quem já vai comprar o produto original e quer só o complementar, (B) quem quer uma solução completa num único produto.
-   → Sugestão tipo A — complementar exato: só o que falta, sem duplicar o que o produto original já inclui. Ex: produto original tem controladora → complementar sem controladora.
-   → Sugestão tipo B — bundle completo: tudo junto num kit, incluindo controladora se necessário, mesmo que o produto original já tenha. É um produto diferente e autônomo.
-   → Exemplo CORRETO para "Kit 6 Zoloe Reverse + Controladora", cliente quer 4 Forward:
-     - Sugestão 1 (complementar): "Kit 4 Fan Zoloe Forward Argb 120mm" (sem controladora — para quem já vai ter o kit 6)
-     - Sugestão 2 (bundle completo): "Kit 10 Fan Zoloe 6 Reverse + 4 Forward + Controladora" (solução completa para quem quer tudo junto)
-   → Se houver outras variações de quantidade que fazem sentido (3 un, 5 un), adicione como sugestão 3.
-   → Máximo 3 sugestões por pergunta, da mais relevante para a menos relevante.
+3. Ao criar rascunhos (criar_rascunho), analise o produto original do anúncio:
+   → Se o produto original já inclui controladora/hub/controle, NÃO inclua controladora nos rascunhos complementares.
+   → Pense no que o cliente realmente precisa: se ele já tem o produto original, o complementar deve ser só o que falta.
+   → Quando fizer sentido, sugira o BUNDLE COMPLETO como primeira opção (ex: Kit com as duas versões juntas), e o complementar avulso como segunda opção.
+   → Exemplo: cliente comprou "Kit 6 Zoloe Reverse + Controladora" e quer 4 Forward → sugestão 1: "Kit 10 Zoloe 6 Reverse + 4 Forward" (bundle completo, sem controladora separada), sugestão 2: "Kit 4 Zoloe Forward" (avulso, sem controladora pois o original já tem).
+   → Máximo 3 sugestões por pergunta, priorizando o que o cliente mais precisa.
 
 EXEMPLO REAL — siga este raciocínio:
 Produto: "Kit 10 Fan Digoo Wind X Reverse Argb 120mm + Controladora Preto"
@@ -2163,50 +2160,6 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         listing_type_id: "gold_special",
         description: { plain_text: descricao || titulo },
         ...(pictures.length > 0 ? { pictures } : {}),
-      };
-
-      const crRes = await fetch('https://api.mercadolibre.com/items', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      const crData = await crRes.json();
-
-      if (crData.id) {
-        return res.json({ ok: true, item_id: crData.id, permalink: crData.permalink });
-      } else {
-        return res.status(400).json({ ok: false, error: crData.message || JSON.stringify(crData.cause || crData) });
-      }
-    } catch (e) {
-      return res.status(500).json({ ok: false, error: e.message });
-    }
-  }
-    try {
-      const { token, titulo, descricao, preco, estoque } = req.body;
-      if (!token || !titulo || !preco) return res.status(400).json({ ok: false, error: "token, titulo e preco obrigatórios" });
-
-      // Buscar user_id e category_id
-      const meRes = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${token}` } });
-      const me = await meRes.json();
-      if (!me.id) return res.status(400).json({ ok: false, error: "Token inválido" });
-
-      // Predizer categoria automaticamente pelo título
-      const catRes = await fetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?limit=1&q=${encodeURIComponent(titulo)}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const catData = await catRes.json();
-      const category_id = catData?.[0]?.category_id || "MLB1648";
-
-      const body = {
-        title: titulo,
-        category_id,
-        price: Number(preco),
-        currency_id: "BRL",
-        available_quantity: Number(estoque) || 1,
-        buying_mode: "buy_it_now",
-        condition: "new",
-        listing_type_id: "gold_special",
-        description: { plain_text: descricao || titulo },
       };
 
       const crRes = await fetch('https://api.mercadolibre.com/items', {
