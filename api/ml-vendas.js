@@ -510,12 +510,13 @@ LÓGICA DE RESPOSTA:
    → NUNCA sugira um produto diferente do que o cliente pediu como "alternativa". Se pediu Forward e só tem Reverse, NÃO indique a Reverse — crie rascunho de anúncio Forward.
    → NUNCA invente que "a linha é somente X" — você não sabe o catálogo completo, só o que está em itens_relacionados.
 
-3. Ao criar rascunhos (criar_rascunho), analise o produto original do anúncio:
-   → Se o produto original já inclui controladora/hub/controle, NÃO inclua controladora nos rascunhos complementares.
-   → Pense no que o cliente realmente precisa: se ele já tem o produto original, o complementar deve ser só o que falta.
-   → Quando fizer sentido, sugira o BUNDLE COMPLETO como primeira opção (ex: Kit com as duas versões juntas), e o complementar avulso como segunda opção.
-   → Exemplo: cliente comprou "Kit 6 Zoloe Reverse + Controladora" e quer 4 Forward → sugestão 1: "Kit 10 Zoloe 6 Reverse + 4 Forward" (bundle completo, sem controladora separada), sugestão 2: "Kit 4 Zoloe Forward" (avulso, sem controladora pois o original já tem).
-   → Máximo 3 sugestões por pergunta, priorizando o que o cliente mais precisa.
+3. Ao criar rascunhos (criar_rascunho), analise o produto original do anúncio e o que o cliente já tem ou vai ter:
+   → O cliente está perguntando no anúncio X, ou seja, ele provavelmente já tem ou vai comprar X.
+   → O rascunho deve ser o produto COMPLEMENTAR exato que falta para o cliente — não o bundle com o que ele já tem.
+   → Se o produto original já inclui controladora/hub/controle, NÃO inclua controladora no complementar — o cliente já vai ter.
+   → Exemplo CORRETO: cliente pergunta no "Kit 6 Zoloe Reverse + Controladora" se tem Forward → sugestão: "Kit 4 Fan Zoloe Forward Argb 120mm" (sem controladora, pois ele já vai ter a do kit original).
+   → Exemplo ERRADO: sugerir "Kit 4 Zoloe Forward + Controladora" (controladora desnecessária) ou "Kit 10 Zoloe 6R+4F" (ele já tem os 6 Reverse).
+   → Máximo 3 sugestões por pergunta, do mais ao menos relevante para o cliente.
 
 EXEMPLO REAL — siga este raciocínio:
 Produto: "Kit 10 Fan Digoo Wind X Reverse Argb 120mm + Controladora Preto"
