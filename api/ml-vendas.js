@@ -1274,7 +1274,8 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         .slice(0, 10)
         .map(a => ({ name: a.name, value_name: a.value_name }));
       const thumbnail = (item.pictures?.[0]?.url || item.thumbnail || "").replace('http://', 'https://');
-      return res.json({ ok: true, categoria: categoriaNome, thumbnail, listing_type: item.listing_type_id || "", atributos });
+      const pictures_count = (item.pictures || []).length;
+      return res.json({ ok: true, categoria: categoriaNome, thumbnail, listing_type: item.listing_type_id || "", atributos, pictures_count });
     } catch(e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
