@@ -1258,7 +1258,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     try {
       const { item_id, token: tokenD } = req.query;
       if (!item_id || !tokenD) return res.status(400).json({ ok: false, error: "item_id e token obrigatórios" });
-      const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id}?attributes=category_id,thumbnail,listing_type_id,attributes`, {
+      const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id}`, {
         headers: { Authorization: `Bearer ${tokenD}` }
       });
       const item = await itemRes.json();
@@ -1273,7 +1273,8 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         .filter(a => a.value_name && !['SELLER_SKU','ITEM_CONDITION'].includes(a.id))
         .slice(0, 10)
         .map(a => ({ name: a.name, value_name: a.value_name }));
-      return res.json({ ok: true, categoria: categoriaNome, thumbnail: item.thumbnail || "", listing_type: item.listing_type_id || "", atributos });
+      const thumbnail = (item.pictures?.[0]?.url || item.thumbnail || "").replace('http://', 'https://');
+      return res.json({ ok: true, categoria: categoriaNome, thumbnail, listing_type: item.listing_type_id || "", atributos });
     } catch(e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
