@@ -1283,8 +1283,22 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       // Garantir URLs HTTPS nas pictures
       const picturesHTTPS = pictures.map(p => ({ source: p.source.replace('http://', 'https://') }));
 
+      // Buscar atributos obrigatórios da categoria
+      let attributes = [];
+      try {
+        const attrRes = await fetch(`https://api.mercadolibre.com/categories/${category_id}/attributes`, {
+          headers: { Authorization: `Bearer ${tokenBody}` }
+        });
+        const attrData = await attrRes.json();
+        // Pegar apenas os obrigatórios com value_type que possamos preencher
+        const obrigatorios = (Array.isArray(attrData) ? attrData : [])
+          .filter(a => a.tags?.required && a.value_type === 'string')
+          .slice(0, 5);
+        console.log("[criar-anuncio] atributos obrigatórios:", obrigatorios.map(a => a.id));
+      } catch(e) {}
+
       const body = {
-        title: titulo,
+        family_name: titulo,
         category_id,
         price: Number(preco),
         currency_id: "BRL",
@@ -1292,7 +1306,6 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         buying_mode: "buy_it_now",
         condition: "new",
         listing_type_id: "gold_special",
-        status: "inactive",
         ...(picturesHTTPS.length > 0 ? { pictures: picturesHTTPS } : {}),
       };
 
