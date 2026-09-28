@@ -1317,7 +1317,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         return res.json({ ok: true, item_id: crData.id, permalink: crData.permalink });
       } else {
         console.log("[criar-anuncio] erro completo:", JSON.stringify(crData));
-        return res.status(400).json({ ok: false, error: crData.message || JSON.stringify(crData.cause || crData) });
+        return res.status(400).json({ ok: false, error: crData.message || "Campos obrigatórios faltando", cause: crData.cause, required_fields: crData.required_fields });
       }
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
