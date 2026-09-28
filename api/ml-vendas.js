@@ -1255,6 +1255,63 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
 
   if (!token) return res.status(400).json({ error: "Token ausente" });
 
+  // ── Criar anúncio no ML ─────────────────────────────────────────────────
+  if (req.query.action === 'criar-anuncio' && req.method === 'POST') {
+    try {
+      const { token: tokenBody, titulo, descricao, preco, estoque, item_id_origem } = req.body;
+      if (!tokenBody || !titulo || !preco) return res.status(400).json({ ok: false, error: "token, titulo e preco obrigatórios" });
+
+      const meRes = await fetch('https://api.mercadolibre.com/users/me', { headers: { Authorization: `Bearer ${tokenBody}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(400).json({ ok: false, error: "Token inválido" });
+
+      const catRes = await fetch(`https://api.mercadolibre.com/sites/MLB/domain_discovery/search?limit=1&q=${encodeURIComponent(titulo)}`, {
+        headers: { Authorization: `Bearer ${tokenBody}` }
+      });
+      const catData = await catRes.json();
+      const category_id = catData?.[0]?.category_id || "MLB1648";
+
+      let pictures = [];
+      if (item_id_origem) {
+        try {
+          const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id_origem}?attributes=pictures`, {
+            headers: { Authorization: `Bearer ${tokenBody}` }
+          });
+          const itemData = await itemRes.json();
+          pictures = (itemData.pictures || []).slice(0, 3).map(p => ({ source: p.url || p.secure_url }));
+        } catch(e) {}
+      }
+
+      const body = {
+        title: titulo,
+        category_id,
+        price: Number(preco),
+        currency_id: "BRL",
+        available_quantity: Number(estoque) || 1,
+        buying_mode: "buy_it_now",
+        condition: "new",
+        listing_type_id: "gold_special",
+        description: { plain_text: descricao || titulo },
+        ...(pictures.length > 0 ? { pictures } : {}),
+      };
+
+      const crRes = await fetch('https://api.mercadolibre.com/items', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tokenBody}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const crData = await crRes.json();
+
+      if (crData.id) {
+        return res.json({ ok: true, item_id: crData.id, permalink: crData.permalink });
+      } else {
+        return res.status(400).json({ ok: false, error: crData.message || JSON.stringify(crData.cause || crData) });
+      }
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // Modo "testinbound": busca entrada pendente OZKO53026
   if (req.query.action === "testinbound") {
     const safeJson = async (r) => {
