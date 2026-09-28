@@ -1280,9 +1280,11 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         } catch(e) {}
       }
 
+      // Garantir URLs HTTPS nas pictures
+      const picturesHTTPS = pictures.map(p => ({ source: p.source.replace('http://', 'https://') }));
+
       const body = {
         family_name: titulo,
-        title: titulo,
         category_id,
         price: Number(preco),
         currency_id: "BRL",
@@ -1294,8 +1296,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
           { id: "WARRANTY_TYPE", value_name: "Garantia do vendedor" },
           { id: "WARRANTY_TIME", value_name: "90 dias" }
         ],
-        ...(pictures.length > 0 ? { pictures } : {}),
+        ...(picturesHTTPS.length > 0 ? { pictures: picturesHTTPS } : {}),
       };
+
+      console.log("[criar-anuncio] body enviado:", JSON.stringify(body).slice(0, 400));
 
       const crRes = await fetch('https://api.mercadolibre.com/items', {
         method: 'POST',
