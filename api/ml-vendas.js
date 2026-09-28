@@ -1262,6 +1262,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         headers: { Authorization: `Bearer ${tokenD}` }
       });
       const item = await itemRes.json();
+      console.log("[buscar-item-detalhes]", item_id, "category:", item.category_id, "attrs:", item.attributes?.length, "thumb:", !!item.thumbnail, "error:", item.error);
       let categoriaNome = item.category_id || "—";
       try {
         const catRes = await fetch(`https://api.mercadolibre.com/categories/${item.category_id}`);
