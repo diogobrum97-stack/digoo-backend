@@ -1291,7 +1291,6 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         buying_mode: "buy_it_now",
         condition: "new",
         listing_type_id: "gold_special",
-        description: { plain_text: descricao || titulo },
         ...(pictures.length > 0 ? { pictures } : {}),
       };
 
@@ -1301,10 +1300,22 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         body: JSON.stringify(body)
       });
       const crData = await crRes.json();
+      console.log("[criar-anuncio] ML response:", JSON.stringify(crData).slice(0, 500));
 
       if (crData.id) {
+        // Adicionar descrição separadamente
+        if (descricao) {
+          try {
+            await fetch(`https://api.mercadolibre.com/items/${crData.id}/description`, {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${tokenBody}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ plain_text: descricao })
+            });
+          } catch(e) {}
+        }
         return res.json({ ok: true, item_id: crData.id, permalink: crData.permalink });
       } else {
+        console.log("[criar-anuncio] erro completo:", JSON.stringify(crData));
         return res.status(400).json({ ok: false, error: crData.message || JSON.stringify(crData.cause || crData) });
       }
     } catch (e) {
