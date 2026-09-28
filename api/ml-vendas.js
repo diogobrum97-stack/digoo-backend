@@ -1281,6 +1281,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       }
 
       const body = {
+        family_name: titulo,
         title: titulo,
         category_id,
         price: Number(preco),
