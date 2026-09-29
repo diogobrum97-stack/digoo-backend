@@ -1286,7 +1286,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
       const limit = req.query.limit || 30;
       const page = req.query.page || 1;
-      const url = `https://api.mail.hostinger.com/v1/messages?mailbox=diogo@digoo.com.br&limit=${limit}&page=${page}`;
+      const url = `https://api.mail.hostinger.com/v1/emails?mailbox=diogo@digoo.com.br&limit=${limit}&page=${page}`;
       console.log("[email-listar] url:", url);
       const r = await fetch(url, { headers: { Authorization: `Bearer ${emailToken}` } });
       const rawText = await r.text();
@@ -1306,7 +1306,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
       const { id } = req.query;
       if (!id) return res.status(400).json({ ok: false, error: "id obrigatório" });
-      const r = await fetch(`https://api.mail.hostinger.com/v1/messages/${id}?mailbox=diogo@digoo.com.br`, {
+      const r = await fetch(`https://api.mail.hostinger.com/v1/emails/${id}?mailbox=diogo@digoo.com.br`, {
         headers: { Authorization: `Bearer ${emailToken}` }
       });
       const d = await r.json();
@@ -1323,7 +1323,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
       const { id, para, assunto, texto } = req.body || {};
       if (!texto || !para) return res.status(400).json({ ok: false, error: "para e texto obrigatórios" });
-      const r = await fetch(`https://api.mail.hostinger.com/v1/messages`, {
+      const r = await fetch(`https://api.mail.hostinger.com/v1/emails`, {
         method: "POST",
         headers: { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" },
         body: JSON.stringify({
