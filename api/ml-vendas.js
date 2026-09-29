@@ -1344,16 +1344,26 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const d = await r.json();
       const msg = d.data || d;
 
-      // Buscar conteúdo de texto separado
+      // Tentar buscar conteúdo via diferentes endpoints
       let textContent = "", htmlContent = "";
-      try {
-        const textRes = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}/text`, { headers });
-        const textData = await textRes.json();
-        const td = textData.data || textData;
-        textContent = td.plain || td.text || "";
-        htmlContent = td.html || "";
-        console.log("[email-ler] text keys:", Object.keys(td));
-      } catch(e) { console.log("[email-ler] text error:", e.message); }
+      const endpointsTentativa = [
+        `https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}/text`,
+        `https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}/body`,
+        `https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}/content`,
+      ];
+      for (const url of endpointsTentativa) {
+        try {
+          const textRes = await fetch(url, { headers });
+          const textData = await textRes.json();
+          const td = textData.data || textData;
+          console.log("[email-ler] tentativa", url.split("/").pop(), "status:", textRes.status, "keys:", Object.keys(td));
+          if (textRes.ok && (td.plain || td.text || td.html || td.body)) {
+            textContent = td.plain || td.text || td.body || "";
+            htmlContent = td.html || "";
+            break;
+          }
+        } catch(e) {}
+      }
 
       console.log("[email-ler] msg keys:", Object.keys(msg), "from:", JSON.stringify(msg.from)?.slice(0,60), "subject:", msg.subject);
       return res.json({ ok: true, message: { ...msg, text: textContent, html: htmlContent } });
