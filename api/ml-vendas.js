@@ -1276,6 +1276,65 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     } catch (e) { /* segue sem token, cai no erro padrão abaixo */ }
   }
 
+  // ── Email Hostinger: listar ──
+  if (req.query.action === "email-listar" && req.method === "GET") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      let emailToken = "";
+      try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
+      if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
+      const limit = req.query.limit || 30;
+      const page = req.query.page || 1;
+      const r = await fetch(`https://api.mail.hostinger.com/v1/messages?mailbox=diogo@digoo.com.br&limit=${limit}&page=${page}`, {
+        headers: { Authorization: `Bearer ${emailToken}` }
+      });
+      const d = await r.json();
+      return res.json({ ok: true, ...d });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
+  // ── Email Hostinger: ler mensagem ──
+  if (req.query.action === "email-ler" && req.method === "GET") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      let emailToken = "";
+      try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
+      if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
+      const { id } = req.query;
+      if (!id) return res.status(400).json({ ok: false, error: "id obrigatório" });
+      const r = await fetch(`https://api.mail.hostinger.com/v1/messages/${id}?mailbox=diogo@digoo.com.br`, {
+        headers: { Authorization: `Bearer ${emailToken}` }
+      });
+      const d = await r.json();
+      return res.json({ ok: true, message: d });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
+  // ── Email Hostinger: responder ──
+  if (req.query.action === "email-responder" && req.method === "POST") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      let emailToken = "";
+      try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
+      if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
+      const { id, para, assunto, texto } = req.body || {};
+      if (!texto || !para) return res.status(400).json({ ok: false, error: "para e texto obrigatórios" });
+      const r = await fetch(`https://api.mail.hostinger.com/v1/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mailbox: "diogo@digoo.com.br",
+          to: [{ address: para }],
+          subject: assunto || "Re:",
+          text: texto,
+          ...(id ? { in_reply_to: id } : {})
+        })
+      });
+      const d = await r.json();
+      return res.json({ ok: r.ok, ...d });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Buscar detalhes de item para modal de confirmação ──────────────────
   if (req.query.action === 'buscar-item-detalhes' && req.method === 'GET') {
     try {
