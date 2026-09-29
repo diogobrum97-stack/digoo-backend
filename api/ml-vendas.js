@@ -1380,12 +1380,18 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const headers = { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" };
       const { mailbox_id, id, para, assunto, texto } = req.body || {};
       if (!texto || !para || !mailbox_id) return res.status(400).json({ ok: false, error: "para, texto e mailbox_id obrigatórios" });
-      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/send`, {
-        method: "POST", headers,
-        body: JSON.stringify({ to: [{ address: para }], subject: assunto || "Re:", text: texto, ...(id ? { inReplyTo: id } : {}) })
+
+      const body = { to: [{ address: para }], subject: assunto || "Re:", text: texto, ...(id ? { inReplyTo: id } : {}) };
+      console.log("[email-responder] para:", para, "assunto:", assunto, "mbId:", mailbox_id, "body:", JSON.stringify(body).slice(0,200));
+
+      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages`, {
+        method: "POST", headers, body: JSON.stringify(body)
       });
-      const d = await r.json();
-      return res.json({ ok: r.ok, ...d });
+      const rawText = await r.text();
+      console.log("[email-responder] status:", r.status, "raw:", rawText.slice(0, 300));
+      let d;
+      try { d = JSON.parse(rawText); } catch(e) { d = { raw: rawText }; }
+      return res.json({ ok: r.ok, status: r.status, ...d });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
   // ── Buscar detalhes de item para modal de confirmação ──────────────────
