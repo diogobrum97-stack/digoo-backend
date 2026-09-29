@@ -25,7 +25,7 @@ async function atualizarCatalogoBackground(token, uid, fbUrl) {
   const itens = [];
   resultados.flat().forEach(entry => {
     if (entry.code === 200 && entry.body)
-      itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0, status: entry.body.status || "active" });
+      itens.push({ id: entry.body.id, titulo: entry.body.title, sku: entry.body.seller_sku || "", link: entry.body.permalink, estoque: entry.body.available_quantity || 0, status: entry.body.status || "active", seller_id: uid });
   });
   await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, {
     method: "PUT", headers: { "Content-Type": "application/json" },
@@ -369,14 +369,25 @@ module.exports = async function handler(req, res) {
           } catch(e) { return []; }
         }));
         const todosItens = cacheResults.flat();
-        // Deduplicar por título normalizado mantendo o de maior estoque
+        // Deduplicar por título normalizado — priorizar Filial (Full) com estoque, senão Matriz
+        const filialUid = String(me.id); // conta que fez a requisição (Filial)
         const porTitulo = {};
         todosItens.forEach(item => {
-          const key = (item.sku && item.sku.trim()) 
-            ? item.sku.trim().toLowerCase() 
+          const key = (item.sku && item.sku.trim())
+            ? item.sku.trim().toLowerCase()
             : (item.titulo || "").toLowerCase().trim().slice(0, 60);
-          if (!porTitulo[key] || (item.estoque || 0) > (porTitulo[key].estoque || 0)) {
+          if (!porTitulo[key]) {
             porTitulo[key] = item;
+          } else {
+            const atual = porTitulo[key];
+            const itemEstoque = item.estoque || 0;
+            const atualEstoque = atual.estoque || 0;
+            // Preferir o de maior estoque; empate: preferir Filial (Full)
+            if (itemEstoque > atualEstoque) {
+              porTitulo[key] = item;
+            } else if (itemEstoque === atualEstoque && String(item.seller_id) === filialUid) {
+              porTitulo[key] = item;
+            }
           }
         });
         const todosItensDeduplic = Object.values(porTitulo);
