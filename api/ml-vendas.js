@@ -1336,6 +1336,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (!id || !mailbox_id) return res.status(400).json({ ok: false, error: "id e mailbox_id obrigatórios" });
       const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}`, { headers });
       const d = await r.json();
+      console.log("[email-ler] keys:", Object.keys(d), "from:", JSON.stringify(d.from), "subject:", d.subject, "text:", JSON.stringify(d.text)?.slice(0,100), "html:", !!d.html);
       return res.json({ ok: true, message: d });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
