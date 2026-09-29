@@ -1384,7 +1384,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const body = { to: [{ address: para }], subject: assunto || "Re:", text: texto, ...(id ? { inReplyTo: id } : {}) };
       console.log("[email-responder] para:", para, "assunto:", assunto, "mbId:", mailbox_id, "body:", JSON.stringify(body).slice(0,200));
 
-      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages`, {
+      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/send`, {
         method: "POST", headers, body: JSON.stringify(body)
       });
       const rawText = await r.text();
