@@ -1305,6 +1305,25 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
+  // ── Email Hostinger: excluir mensagens ──
+  if (req.query.action === "email-excluir" && req.method === "POST") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      let emailToken = "";
+      try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
+      if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
+      const headers = { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" };
+      const { mailbox_id, uids } = req.body || {};
+      if (!mailbox_id || !uids?.length) return res.status(400).json({ ok: false, error: "mailbox_id e uids obrigatórios" });
+      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/delete`, {
+        method: "POST", headers,
+        body: JSON.stringify({ uids })
+      });
+      const d = await r.json();
+      return res.json({ ok: r.ok, ...d });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Email Hostinger: ler mensagem ──
   if (req.query.action === "email-ler" && req.method === "GET") {
     try {
