@@ -1282,13 +1282,17 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const fbUrl = process.env.FIREBASE_URL;
       let emailToken = "";
       try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
+      console.log("[email-listar] token:", emailToken?.slice(0,10), "fbUrl:", !!fbUrl);
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
       const limit = req.query.limit || 30;
       const page = req.query.page || 1;
-      const r = await fetch(`https://api.mail.hostinger.com/v1/messages?mailbox=diogo@digoo.com.br&limit=${limit}&page=${page}`, {
-        headers: { Authorization: `Bearer ${emailToken}` }
-      });
-      const d = await r.json();
+      const url = `https://api.mail.hostinger.com/v1/messages?mailbox=diogo@digoo.com.br&limit=${limit}&page=${page}`;
+      console.log("[email-listar] url:", url);
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${emailToken}` } });
+      const rawText = await r.text();
+      console.log("[email-listar] status:", r.status, "raw:", rawText.slice(0, 200));
+      let d;
+      try { d = JSON.parse(rawText); } catch(e) { return res.status(500).json({ ok: false, error: "parse error", raw: rawText.slice(0,200) }); }
       return res.json({ ok: true, ...d });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
