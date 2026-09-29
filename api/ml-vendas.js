@@ -1338,11 +1338,25 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const headers = { Authorization: `Bearer ${emailToken}` };
       const { id, mailbox_id } = req.query;
       if (!id || !mailbox_id) return res.status(400).json({ ok: false, error: "id e mailbox_id obrigatórios" });
+
+      // Buscar metadados do email
       const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}`, { headers });
       const d = await r.json();
       const msg = d.data || d;
-      console.log("[email-ler] keys:", Object.keys(msg), "from:", JSON.stringify(msg.from)?.slice(0,50), "subject:", msg.subject, "text:", JSON.stringify(msg.text)?.slice(0,80));
-      return res.json({ ok: true, message: msg });
+
+      // Buscar conteúdo de texto separado
+      let textContent = "", htmlContent = "";
+      try {
+        const textRes = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}/text`, { headers });
+        const textData = await textRes.json();
+        const td = textData.data || textData;
+        textContent = td.plain || td.text || "";
+        htmlContent = td.html || "";
+        console.log("[email-ler] text keys:", Object.keys(td));
+      } catch(e) { console.log("[email-ler] text error:", e.message); }
+
+      console.log("[email-ler] msg keys:", Object.keys(msg), "from:", JSON.stringify(msg.from)?.slice(0,60), "subject:", msg.subject);
+      return res.json({ ok: true, message: { ...msg, text: textContent, html: htmlContent } });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
