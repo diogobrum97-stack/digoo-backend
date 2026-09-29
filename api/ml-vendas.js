@@ -1282,18 +1282,24 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const fbUrl = process.env.FIREBASE_URL;
       let emailToken = "";
       try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
-      console.log("[email-listar] token:", emailToken?.slice(0,10), "fbUrl:", !!fbUrl);
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
+      const headers = { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" };
+
+      // Buscar mailboxes disponíveis
+      const mbRes = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes`, { headers });
+      const mbData = await mbRes.json();
+      console.log("[email-listar] mailboxes:", JSON.stringify(mbData).slice(0, 300));
+      const mailboxes = Array.isArray(mbData) ? mbData : (mbData.data || mbData.mailboxes || []);
+      const mailbox = mailboxes.find(m => m.address === "diogo@digoo.com.br" || m.email === "diogo@digoo.com.br") || mailboxes[0];
+      if (!mailbox) return res.status(400).json({ ok: false, error: "Mailbox não encontrado", raw: mbData });
+      const mbId = mailbox.id || mailbox.resourceId || mailbox.mailbox_id;
+
+      // Listar mensagens da INBOX
       const limit = req.query.limit || 30;
-      const page = req.query.page || 1;
-      const url = `https://api.mail.hostinger.com/v1/emails?mailbox=diogo@digoo.com.br&limit=${limit}&page=${page}`;
-      console.log("[email-listar] url:", url);
-      const r = await fetch(url, { headers: { Authorization: `Bearer ${emailToken}` } });
-      const rawText = await r.text();
-      console.log("[email-listar] status:", r.status, "raw:", rawText.slice(0, 200));
-      let d;
-      try { d = JSON.parse(rawText); } catch(e) { return res.status(500).json({ ok: false, error: "parse error", raw: rawText.slice(0,200) }); }
-      return res.json({ ok: true, ...d });
+      const msgRes = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mbId}/folders/INBOX/messages?limit=${limit}`, { headers });
+      const msgData = await msgRes.json();
+      console.log("[email-listar] msgs:", msgRes.status, JSON.stringify(msgData).slice(0, 200));
+      return res.json({ ok: true, mailbox_id: mbId, ...msgData });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
@@ -1304,11 +1310,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       let emailToken = "";
       try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
-      const { id } = req.query;
-      if (!id) return res.status(400).json({ ok: false, error: "id obrigatório" });
-      const r = await fetch(`https://api.mail.hostinger.com/v1/emails/${id}?mailbox=diogo@digoo.com.br`, {
-        headers: { Authorization: `Bearer ${emailToken}` }
-      });
+      const headers = { Authorization: `Bearer ${emailToken}` };
+      const { id, mailbox_id } = req.query;
+      if (!id || !mailbox_id) return res.status(400).json({ ok: false, error: "id e mailbox_id obrigatórios" });
+      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}`, { headers });
       const d = await r.json();
       return res.json({ ok: true, message: d });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
@@ -1321,24 +1326,17 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       let emailToken = "";
       try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
-      const { id, para, assunto, texto } = req.body || {};
-      if (!texto || !para) return res.status(400).json({ ok: false, error: "para e texto obrigatórios" });
-      const r = await fetch(`https://api.mail.hostinger.com/v1/emails`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mailbox: "diogo@digoo.com.br",
-          to: [{ address: para }],
-          subject: assunto || "Re:",
-          text: texto,
-          ...(id ? { in_reply_to: id } : {})
-        })
+      const headers = { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" };
+      const { mailbox_id, id, para, assunto, texto } = req.body || {};
+      if (!texto || !para || !mailbox_id) return res.status(400).json({ ok: false, error: "para, texto e mailbox_id obrigatórios" });
+      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/send`, {
+        method: "POST", headers,
+        body: JSON.stringify({ to: [{ address: para }], subject: assunto || "Re:", text: texto, ...(id ? { inReplyTo: id } : {}) })
       });
       const d = await r.json();
       return res.json({ ok: r.ok, ...d });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
-
   // ── Buscar detalhes de item para modal de confirmação ──────────────────
   if (req.query.action === 'buscar-item-detalhes' && req.method === 'GET') {
     try {
