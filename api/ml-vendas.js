@@ -1381,7 +1381,12 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const { mailbox_id, id, para, assunto, texto } = req.body || {};
       if (!texto || !para || !mailbox_id) return res.status(400).json({ ok: false, error: "para, texto e mailbox_id obrigatórios" });
 
-      const body = { to: [para], subject: assunto || "Re:", text: texto, ...(id ? { inReplyTo: id } : {}) };
+      const body = {
+        to: [para],
+        subject: assunto || "Re:",
+        text: texto,
+        ...(id ? { inReplyTo: { uid: Number(id), folder: "INBOX" } } : {})
+      };
       console.log("[email-responder] para:", para, "assunto:", assunto, "mbId:", mailbox_id, "body:", JSON.stringify(body).slice(0,200));
 
       const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/send`, {
