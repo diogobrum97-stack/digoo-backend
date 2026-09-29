@@ -369,15 +369,17 @@ module.exports = async function handler(req, res) {
           } catch(e) { return []; }
         }));
         const todosItens = cacheResults.flat();
-        // Deduplicar por SKU mantendo o de maior estoque (pode ter mesmo produto nas duas contas)
-        const porSku = {};
+        // Deduplicar por título normalizado mantendo o de maior estoque
+        const porTitulo = {};
         todosItens.forEach(item => {
-          const key = item.sku || item.id;
-          if (!porSku[key] || (item.estoque || 0) > (porSku[key].estoque || 0)) {
-            porSku[key] = item;
+          const key = (item.sku && item.sku.trim()) 
+            ? item.sku.trim().toLowerCase() 
+            : (item.titulo || "").toLowerCase().trim().slice(0, 60);
+          if (!porTitulo[key] || (item.estoque || 0) > (porTitulo[key].estoque || 0)) {
+            porTitulo[key] = item;
           }
         });
-        const todosItensDeduplic = Object.values(porSku);
+        const todosItensDeduplic = Object.values(porTitulo);
 
         if (todosItensDeduplic.length > 0) {
           perguntas.forEach((p, i) => {
