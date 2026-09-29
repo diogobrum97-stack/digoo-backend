@@ -1300,8 +1300,12 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const limit = req.query.limit || 30;
       const msgRes = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mbId}/folders/INBOX/messages?limit=${limit}`, { headers });
       const msgData = await msgRes.json();
-      console.log("[email-listar] msgs:", msgRes.status, JSON.stringify(msgData).slice(0, 200));
-      return res.json({ ok: true, mailbox_id: mbId, ...msgData });
+      console.log("[email-listar] msgs:", msgRes.status, JSON.stringify(msgData).slice(0, 300));
+      // A API retorna { data: { messages: [...] } } ou { data: [...] }
+      const msgs = msgData.data?.messages || msgData.data || msgData.messages || msgData.items || [];
+      const msgsArr = Array.isArray(msgs) ? msgs : [];
+      if (msgsArr[0]) console.log("[email-listar] email[0] keys:", Object.keys(msgsArr[0]), "uid:", msgsArr[0].uid, "id:", msgsArr[0].id, "from:", JSON.stringify(msgsArr[0].from)?.slice(0,60), "seen:", msgsArr[0].seen, "flags:", msgsArr[0].flags);
+      return res.json({ ok: true, mailbox_id: mbId, messages: msgsArr });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
@@ -1336,8 +1340,9 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (!id || !mailbox_id) return res.status(400).json({ ok: false, error: "id e mailbox_id obrigatórios" });
       const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/${id}`, { headers });
       const d = await r.json();
-      console.log("[email-ler] keys:", Object.keys(d), "from:", JSON.stringify(d.from), "subject:", d.subject, "text:", JSON.stringify(d.text)?.slice(0,100), "html:", !!d.html);
-      return res.json({ ok: true, message: d });
+      const msg = d.data || d;
+      console.log("[email-ler] keys:", Object.keys(msg), "from:", JSON.stringify(msg.from)?.slice(0,50), "subject:", msg.subject, "text:", JSON.stringify(msg.text)?.slice(0,80));
+      return res.json({ ok: true, message: msg });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
