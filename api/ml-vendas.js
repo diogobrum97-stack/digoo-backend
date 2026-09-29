@@ -1285,14 +1285,16 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (!emailToken) return res.status(400).json({ ok: false, error: "Token Hostinger não configurado" });
       const headers = { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" };
 
-      // Buscar mailboxes disponíveis
-      const mbRes = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes`, { headers });
-      const mbData = await mbRes.json();
-      console.log("[email-listar] mailboxes:", JSON.stringify(mbData).slice(0, 300));
-      const mailboxes = Array.isArray(mbData) ? mbData : (mbData.data || mbData.mailboxes || []);
+      // Buscar mailbox ID via /api/v1/me
+      const meRes = await fetch(`https://api.mail.hostinger.com/api/v1/me`, { headers });
+      const meData = await meRes.json();
+      console.log("[email-listar] me:", JSON.stringify(meData).slice(0, 300));
+      // meData.data.mailboxes[] ou meData.mailboxes[] ou meData diretamente
+      const mailboxes = meData?.data?.mailboxes || meData?.mailboxes || (Array.isArray(meData) ? meData : [meData]);
       const mailbox = mailboxes.find(m => m.address === "diogo@digoo.com.br" || m.email === "diogo@digoo.com.br") || mailboxes[0];
-      if (!mailbox) return res.status(400).json({ ok: false, error: "Mailbox não encontrado", raw: mbData });
-      const mbId = mailbox.id || mailbox.resourceId || mailbox.mailbox_id;
+      if (!mailbox) return res.status(400).json({ ok: false, error: "Mailbox não encontrado", raw: meData });
+      const mbId = mailbox.id || mailbox.resourceId || mailbox.resource_id || mailbox.mailbox_id;
+      console.log("[email-listar] mbId:", mbId);
 
       // Listar mensagens da INBOX
       const limit = req.query.limit || 30;
