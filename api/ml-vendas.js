@@ -369,8 +369,8 @@ module.exports = async function handler(req, res) {
           } catch(e) { return []; }
         }));
         const todosItens = cacheResults.flat();
-        // Deduplicar por título normalizado — priorizar Filial (Full) com estoque, senão Matriz
-        const filialUid = String(me.id); // conta que fez a requisição (Filial)
+        // Deduplicar por título — priorizar Filial (Full SP) se tiver estoque > 0, senão maior estoque
+        const filialUid = String(me.id);
         const porTitulo = {};
         todosItens.forEach(item => {
           const key = (item.sku && item.sku.trim())
@@ -382,12 +382,13 @@ module.exports = async function handler(req, res) {
             const atual = porTitulo[key];
             const itemEstoque = item.estoque || 0;
             const atualEstoque = atual.estoque || 0;
-            // Preferir o de maior estoque; empate: preferir Filial (Full)
-            if (itemEstoque > atualEstoque) {
-              porTitulo[key] = item;
-            } else if (itemEstoque === atualEstoque && String(item.seller_id) === filialUid) {
-              porTitulo[key] = item;
-            }
+            const itemEFilial = String(item.seller_id) === filialUid;
+            const atualEFilial = String(atual.seller_id) === filialUid;
+            // Filial com estoque > 0 sempre vence
+            if (itemEFilial && itemEstoque > 0 && !atualEFilial) { porTitulo[key] = item; }
+            // Se nenhum é Filial ou ambos são, pega maior estoque
+            else if (!itemEFilial && !atualEFilial && itemEstoque > atualEstoque) { porTitulo[key] = item; }
+            else if (itemEFilial && atualEFilial && itemEstoque > atualEstoque) { porTitulo[key] = item; }
           }
         });
         const todosItensDeduplic = Object.values(porTitulo);
