@@ -1082,6 +1082,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const blingHeaders = {
         Authorization: `Bearer ${blingToken?.access_token}`,
         Accept: "application/json",
+        "enable-jwt": "1",
       };
 
       // Busca pedidos pagos dos últimos X dias (máx 200)
@@ -2380,7 +2381,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
 
       const blingSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
       const blingToken = await blingSnap.json();
-      const blingH = { Authorization: `Bearer ${blingToken?.access_token}`, Accept: "application/json" };
+      const blingH = { Authorization: `Bearer ${blingToken?.access_token}`, Accept: "application/json", "enable-jwt": "1" };
 
       // Busca vendas ML paginado
       const dataDe = new Date(Date.now() - dias * 86400000).toISOString();
