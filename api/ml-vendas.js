@@ -1369,21 +1369,26 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   if (req.query.action === "buscar-catalogo" && req.method === "GET") {
     try {
       const { token: tokenC } = req.query;
+      const forceRefresh = req.query.refresh === "1";
       if (!tokenC) return res.status(400).json({ ok: false, error: "token obrigatório" });
       const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenC}` } });
       const me = await meRes.json();
       if (!me.id) return res.status(401).json({ ok: false, error: "Token inválido" });
       const sellerId = me.id;
-      // Tentar Firebase primeiro (rápido)
       const fbUrl = process.env.FIREBASE_URL;
-      try {
-        const fbSnap = await fetch(`${fbUrl}/catalogo_ml/${sellerId}.json`);
-        const fbData = await fbSnap.json();
-        if (fbData && fbData.itens && fbData.itens.length > 0) {
-          return res.json({ ok: true, itens: fbData.itens, seller_id: sellerId, source: "firebase" });
-        }
-      } catch(e) {}
-      // Fallback: buscar do ML diretamente
+
+      // Tentar Firebase primeiro (só se não for refresh forçado)
+      if (!forceRefresh) {
+        try {
+          const fbSnap = await fetch(`${fbUrl}/catalogo_ml/${sellerId}.json`);
+          const fbData = await fbSnap.json();
+          if (fbData && fbData.itens && fbData.itens.length > 0) {
+            return res.json({ ok: true, itens: fbData.itens, seller_id: sellerId, source: "cache" });
+          }
+        } catch(e) {}
+      }
+
+      // Buscar do ML
       const ids = [];
       for (const status of ["active", "paused"]) {
         for (let offset = 0; offset < 300; offset += 50) {
@@ -1405,6 +1410,15 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
           }
         });
       }
+
+      // Salvar no Firebase para uso futuro
+      if (fbUrl && itens.length > 0) {
+        fetch(`${fbUrl}/catalogo_ml/${sellerId}.json`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length })
+        }).catch(() => {});
+      }
+
       return res.json({ ok: true, itens, seller_id: sellerId, source: "ml" });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
