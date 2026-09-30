@@ -80,7 +80,7 @@ export default async function handler(req, res) {
     try {
       const blingR2 = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
       const blingToken2 = await blingR2.json();
-      const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json" };
+      const blingH2 = { Authorization: `Bearer ${blingToken2.access_token}`, Accept: "application/json", "enable-jwt": "1" };
       const blingDate = new Date(Date.now() - 120*86400000).toISOString().slice(0,10);
       const r = await fetch(`https://www.bling.com.br/Api/v3/pedidos/vendas?pagina=1&limite=10&dataInicial=${blingDate}&situacao=9`, { headers: blingH2 });
       const d = await r.json();
@@ -122,7 +122,7 @@ export default async function handler(req, res) {
     if (!blingToken?.access_token) return res.status(401).json({ error: "Bling não conectado" });
 
     const mlHeaders    = { Authorization: `Bearer ${mlToken.access_token}` };
-    const blingHeaders = { Authorization: `Bearer ${blingToken.access_token}`, Accept: "application/json" };
+    const blingHeaders = { Authorization: `Bearer ${blingToken.access_token}`, Accept: "application/json", "enable-jwt": "1" };
 
     const dias          = parseInt(req.query.dias || "30");
     const dateFrom      = new Date(Date.now() - dias*86400000).toISOString().slice(0,10) + "T00:00:00.000-03:00";
