@@ -633,6 +633,32 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     }
   }
 
+  // ── Catálogo: retorna todos os anúncios ativos com título, SKU, preço ──
+  if (req.query.action === "buscar-catalogo" && req.method === "GET") {
+    try {
+      const tokenC = req.query.token;
+      if (!tokenC) return res.status(400).json({ ok: false, error: "token obrigatório" });
+      const fbUrl = process.env.FIREBASE_URL;
+      // Buscar seller_id via ML
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenC}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ ok: false, error: "Token inválido" });
+      // Tentar do Firebase primeiro (cache)
+      const fbSnap = await fetch(`${fbUrl}/catalogo_ml/${me.id}.json`);
+      const fbData = await fbSnap.json();
+      if (fbData && fbData.itens && fbData.itens.length) {
+        return res.json({ ok: true, itens: fbData.itens, total: fbData.total, seller_id: me.id, source: "cache" });
+      }
+      // Fallback: buscar do ML e salvar no Firebase
+      await atualizarCatalogoBackground(tokenC, me.id, fbUrl);
+      const fbSnap2 = await fetch(`${fbUrl}/catalogo_ml/${me.id}.json`);
+      const fbData2 = await fbSnap2.json();
+      return res.json({ ok: true, itens: fbData2?.itens || [], total: fbData2?.total || 0, seller_id: me.id, source: "ml" });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Promoções: listar itens com desconto ativo ──
   if (req.query.action === "buscar-promocoes" && req.method === "GET") {
     try {
