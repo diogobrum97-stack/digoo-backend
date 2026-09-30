@@ -1290,17 +1290,81 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       }
       const payload = req.body || {};
       console.log("[email-webhook] recebido:", JSON.stringify(payload).slice(0, 300));
-      const notif = {
-        recebido_em: Date.now(),
-        from: payload.from || payload.message?.from || "",
-        subject: payload.subject || payload.message?.subject || "",
-        uid: payload.uid || payload.message?.uid || ""
-      };
+
+      const from = payload.from || payload.message?.from || "";
+      const subject = payload.subject || payload.message?.subject || "";
+      const uid = payload.uid || payload.message?.uid || "";
+      const recebido_em = Date.now();
+
+      const notif = { recebido_em, from, subject, uid };
+
+      // Salvar em email_notificacoes (todos)
       await fetch(`${fbUrl}/email_notificacoes.json`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(notif)
       });
+
+      const fromStr = (typeof from === "object" ? (from.address || from.name || "") : from).toLowerCase();
+      const subjectStr = subject.toLowerCase();
+
+      // ── Classificar: Vencimento no dia (eContador) ──
+      if (subjectStr.includes("vencimento no dia") || subjectStr.includes("guia com vencimento")) {
+        try {
+          // Buscar corpo do email para extrair dados
+          let emailToken = "";
+          try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
+
+          let titulo = "", valor = "", vencimento = "", corpo = "";
+          if (emailToken && uid) {
+            // Buscar mailbox_id
+            const meRes = await fetch("https://api.mail.hostinger.com/api/v1/me", { headers: { Authorization: `Bearer ${emailToken}` } });
+            const meData = await meRes.json();
+            const mailboxes = meData?.data?.mailboxes || meData?.mailboxes || [];
+            const mailbox = mailboxes[0];
+            const mbId = mailbox?.id || mailbox?.resourceId;
+            if (mbId) {
+              // Buscar conteúdo texto do email
+              const textRes = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mbId}/folders/INBOX/messages/${uid}/text`, {
+                headers: { Authorization: `Bearer ${emailToken}` }
+              });
+              if (textRes.ok) {
+                const textData = await textRes.json();
+                corpo = (textData.data?.plain || textData.data?.text || textData.plain || textData.text || "");
+              }
+            }
+          }
+
+          // Extrair campos via regex do corpo
+          const rTitulo = corpo.match(/T[ií]tulo do documento[:\s]+([^\n\r]+)/i);
+          const rVenc   = corpo.match(/Data de Vencimento[:\s]+([0-9\/\-]+)/i);
+          const rValor  = corpo.match(/Valor[:\s]+R\$\s*([\d.,]+)/i);
+
+          titulo     = rTitulo ? rTitulo[1].trim() : subject;
+          vencimento = rVenc   ? rVenc[1].trim()   : new Date().toLocaleDateString("pt-BR");
+          valor      = rValor  ? rValor[1].trim()   : "";
+
+          await fetch(`${fbUrl}/email_vencimentos.json`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ recebido_em, from: fromStr, subject, titulo, valor, vencimento, uid, lido: false })
+          });
+          console.log("[email-webhook] vencimento detectado:", titulo, valor, vencimento);
+        } catch(e) { console.error("[email-webhook] erro ao processar vencimento:", e.message); }
+      }
+
+      // ── Classificar: Formulário do site (Formspree) ──
+      if (fromStr.includes("formspree")) {
+        try {
+          await fetch(`${fbUrl}/email_formularios.json`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ recebido_em, from: fromStr, subject, uid, lido: false })
+          });
+          console.log("[email-webhook] formulário detectado:", subject);
+        } catch(e) { console.error("[email-webhook] erro ao salvar formulário:", e.message); }
+      }
+
       return res.status(200).json({ ok: true });
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
