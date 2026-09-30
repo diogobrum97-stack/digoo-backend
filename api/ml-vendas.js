@@ -1280,9 +1280,16 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   if (req.query.action === "email-webhook" && req.method === "POST") {
     try {
       const fbUrl = process.env.FIREBASE_URL;
+      // Validar secret
+      const secret = req.headers["x-webhook-secret"] || req.headers["x-hostinger-signature"] || req.query.secret || "";
+      let webhookSecret = "";
+      try { const sr = await fetch(`${fbUrl}/config/hostinger_webhook_secret.json`); webhookSecret = (await sr.json()) || ""; } catch(e) {}
+      if (webhookSecret && secret !== webhookSecret) {
+        console.log("[email-webhook] secret inválido:", secret?.slice(0,10));
+        return res.status(401).json({ ok: false, error: "Unauthorized" });
+      }
       const payload = req.body || {};
       console.log("[email-webhook] recebido:", JSON.stringify(payload).slice(0, 300));
-      // Salvar notificação no Firebase para o frontend escutar
       const notif = {
         recebido_em: Date.now(),
         from: payload.from || payload.message?.from || "",
