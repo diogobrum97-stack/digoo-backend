@@ -925,23 +925,37 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const { item_id, deal_price, finish_date, token: tokenR } = req.body || {};
       if (!item_id || !deal_price || !finish_date || !tokenR) return res.status(400).json({ ok: false, error: "item_id, deal_price, finish_date e token obrigatórios" });
 
-      // Buscar preço atual para calcular start_date
-      const itemRes = await fetch(`https://api.mercadolibre.com/items/${item_id}?attributes=price,original_price`, { headers: { Authorization: `Bearer ${tokenR}` } });
-      const itemData = await itemRes.json();
-
       const start_date = new Date().toISOString().slice(0, 19);
-      const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+      const promoBody = { deal_price: Number(deal_price), start_date, finish_date, promotion_type: "PRICE_DISCOUNT" };
+
+      // Tentar PUT primeiro (atualiza promoção existente)
+      const rPut = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
+        body: JSON.stringify(promoBody)
+      });
+      const dPut = await rPut.json();
+      console.log("[renovar-promocao] PUT:", rPut.status, JSON.stringify(dPut).slice(0, 200));
+
+      if (rPut.ok) {
+        return res.json({ ok: true, price: dPut.price, original_price: dPut.original_price, method: "PUT" });
+      }
+
+      // Se PUT falhou, tenta POST (criar nova)
+      const rPost = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "POST",
         headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ deal_price: Number(deal_price), start_date, finish_date, promotion_type: "PRICE_DISCOUNT" })
+        body: JSON.stringify(promoBody)
       });
-      const d = await r.json();
-      if (r.ok) {
-        return res.json({ ok: true, price: d.price, original_price: d.original_price });
-      } else {
-        console.log("[renovar-promocao] ML erro:", r.status, JSON.stringify(d).slice(0,300));
-        return res.status(400).json({ ok: false, error: d.message || d.error || "Erro ao renovar promoção", causa: d.cause || d.causes || null, raw: d });
+      const dPost = await rPost.json();
+      console.log("[renovar-promocao] POST:", rPost.status, JSON.stringify(dPost).slice(0, 200));
+
+      if (rPost.ok) {
+        return res.json({ ok: true, price: dPost.price, original_price: dPost.original_price, method: "POST" });
       }
+
+      // Ambos falharam — retorna erro detalhado
+      return res.status(400).json({ ok: false, error: dPost.message || dPut.message || "Erro ao renovar promoção", causa_put: dPut.cause || dPut.causes || null, causa_post: dPost.cause || dPost.causes || null });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
