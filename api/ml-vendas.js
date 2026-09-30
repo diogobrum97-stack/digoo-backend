@@ -1402,11 +1402,11 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const itens = [];
       for (let i = 0; i < ids.length; i += 20) {
         const lote = ids.slice(i, i + 20);
-        const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,seller_sku,available_quantity,price,status`, { headers: { Authorization: `Bearer ${tokenC}` } });
+        const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,seller_sku,available_quantity,price,status,thumbnail`, { headers: { Authorization: `Bearer ${tokenC}` } });
         const arr = await r.json();
         arr.forEach(e => {
           if (e.code === 200 && e.body) {
-            itens.push({ id: e.body.id, titulo: e.body.title, sku: e.body.seller_sku || "", estoque: e.body.available_quantity || 0, preco: e.body.price || 0, status: e.body.status || "active" });
+            itens.push({ id: e.body.id, titulo: e.body.title, sku: e.body.seller_sku || "", estoque: e.body.available_quantity || 0, preco: e.body.price || 0, status: e.body.status || "active", thumbnail: (e.body.thumbnail||"").replace("http://","https://") });
           }
         });
       }
