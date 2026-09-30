@@ -1678,9 +1678,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         .filter(a => a.value_name && !['SELLER_SKU','ITEM_CONDITION'].includes(a.id))
         .slice(0, 10)
         .map(a => ({ name: a.name, value_name: a.value_name }));
+      const sku = item.seller_custom_field || (item.attributes||[]).find(a => a.id === 'SELLER_SKU')?.value_name || '';
       const thumbnail = (item.pictures?.[0]?.url || item.thumbnail || "").replace('http://', 'https://');
       const pictures_count = (item.pictures || []).length;
-      return res.json({ ok: true, categoria: categoriaNome, thumbnail, listing_type: item.listing_type_id || "", atributos, pictures_count });
+      return res.json({ ok: true, categoria: categoriaNome, thumbnail, listing_type: item.listing_type_id || "", atributos, pictures_count, sku, price: item.price || 0, available_quantity: item.available_quantity || 0 });
     } catch(e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
