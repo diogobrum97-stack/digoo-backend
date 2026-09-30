@@ -925,37 +925,38 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const { item_id, deal_price, finish_date, token: tokenR } = req.body || {};
       if (!item_id || !deal_price || !finish_date || !tokenR) return res.status(400).json({ ok: false, error: "item_id, deal_price, finish_date e token obrigatórios" });
 
+      const headers = { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" };
+      const baseUrl = `https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`;
+
+      // 1) Verificar se já tem promoção ativa
+      const getRes = await fetch(baseUrl, { headers });
+      const getJson = await getRes.json();
+      const promoAtiva = Array.isArray(getJson)
+        ? getJson.find(p => p.status === "started" && p.type === "PRICE_DISCOUNT")
+        : null;
+
+      // 2) Se tem promoção PRICE_DISCOUNT ativa, excluir antes
+      if (promoAtiva) {
+        const delRes = await fetch(`${baseUrl}&promotion_type=PRICE_DISCOUNT`, { method: "DELETE", headers });
+        console.log("[renovar-promocao] DELETE:", delRes.status);
+        // Aguardar um momento para o ML processar a exclusão
+        await new Promise(r => setTimeout(r, 1500));
+      }
+
+      // 3) Criar nova promoção
       const start_date = new Date().toISOString().slice(0, 19);
-      const promoBody = { deal_price: Number(deal_price), start_date, finish_date, promotion_type: "PRICE_DISCOUNT" };
-
-      // Tentar PUT primeiro (atualiza promoção existente)
-      const rPut = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
-        body: JSON.stringify(promoBody)
-      });
-      const dPut = await rPut.json();
-      console.log("[renovar-promocao] PUT:", rPut.status, JSON.stringify(dPut).slice(0, 200));
-
-      if (rPut.ok) {
-        return res.json({ ok: true, price: dPut.price, original_price: dPut.original_price, method: "PUT" });
-      }
-
-      // Se PUT falhou, tenta POST (criar nova)
-      const rPost = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+      const postRes = await fetch(baseUrl, {
         method: "POST",
-        headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
-        body: JSON.stringify(promoBody)
+        headers,
+        body: JSON.stringify({ deal_price: Number(deal_price), start_date, finish_date, promotion_type: "PRICE_DISCOUNT" })
       });
-      const dPost = await rPost.json();
-      console.log("[renovar-promocao] POST:", rPost.status, JSON.stringify(dPost).slice(0, 200));
+      const postJson = await postRes.json();
+      console.log("[renovar-promocao] POST:", postRes.status, JSON.stringify(postJson).slice(0, 200));
 
-      if (rPost.ok) {
-        return res.json({ ok: true, price: dPost.price, original_price: dPost.original_price, method: "POST" });
+      if (postRes.ok) {
+        return res.json({ ok: true, price: postJson.price, original_price: postJson.original_price });
       }
-
-      // Ambos falharam — retorna erro detalhado
-      return res.status(400).json({ ok: false, error: dPost.message || dPut.message || "Erro ao renovar promoção", causa_put: dPut.cause || dPut.causes || null, causa_post: dPost.cause || dPost.causes || null });
+      return res.status(400).json({ ok: false, error: postJson.message || postJson.error || "Erro ao aplicar promoção", causa: postJson.cause || postJson.causes || null });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
