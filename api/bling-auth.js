@@ -19,6 +19,7 @@ export default async function handler(req, res) {
         headers: {
           "Authorization": `Basic ${creds}`,
           "Content-Type": "application/x-www-form-urlencoded",
+          "enable-jwt": "1",
         },
         body: new URLSearchParams({
           grant_type: "authorization_code",
