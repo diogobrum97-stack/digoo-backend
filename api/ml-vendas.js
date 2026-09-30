@@ -939,7 +939,8 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (r.ok) {
         return res.json({ ok: true, price: d.price, original_price: d.original_price });
       } else {
-        return res.status(400).json({ ok: false, error: d.message || "Erro ao renovar promoção" });
+        console.log("[renovar-promocao] ML erro:", r.status, JSON.stringify(d).slice(0,300));
+        return res.status(400).json({ ok: false, error: d.message || d.error || "Erro ao renovar promoção", causa: d.cause || d.causes || null, raw: d });
       }
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
@@ -1301,6 +1302,50 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const tData = await tR.json();
       token = tData?.access_token;
     } catch (e) { /* segue sem token, cai no erro padrão abaixo */ }
+  }
+
+  // ── Catálogo de anúncios ativos (para modal de promoção) ──────────────────
+  if (req.query.action === "buscar-catalogo" && req.method === "GET") {
+    try {
+      const { token: tokenC } = req.query;
+      if (!tokenC) return res.status(400).json({ ok: false, error: "token obrigatório" });
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenC}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ ok: false, error: "Token inválido" });
+      const sellerId = me.id;
+      // Tentar Firebase primeiro (rápido)
+      const fbUrl = process.env.FIREBASE_URL;
+      try {
+        const fbSnap = await fetch(`${fbUrl}/catalogo_ml/${sellerId}.json`);
+        const fbData = await fbSnap.json();
+        if (fbData && fbData.itens && fbData.itens.length > 0) {
+          return res.json({ ok: true, itens: fbData.itens, seller_id: sellerId, source: "firebase" });
+        }
+      } catch(e) {}
+      // Fallback: buscar do ML diretamente
+      const ids = [];
+      for (const status of ["active", "paused"]) {
+        for (let offset = 0; offset < 300; offset += 50) {
+          const r = await fetch(`https://api.mercadolibre.com/users/${sellerId}/items/search?status=${status}&limit=50&offset=${offset}`, { headers: { Authorization: `Bearer ${tokenC}` } });
+          const d = await r.json();
+          const batch = d.results || [];
+          ids.push(...batch);
+          if (batch.length < 50) break;
+        }
+      }
+      const itens = [];
+      for (let i = 0; i < ids.length; i += 20) {
+        const lote = ids.slice(i, i + 20);
+        const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,seller_sku,available_quantity,price,status`, { headers: { Authorization: `Bearer ${tokenC}` } });
+        const arr = await r.json();
+        arr.forEach(e => {
+          if (e.code === 200 && e.body) {
+            itens.push({ id: e.body.id, titulo: e.body.title, sku: e.body.seller_sku || "", estoque: e.body.available_quantity || 0, preco: e.body.price || 0, status: e.body.status || "active" });
+          }
+        });
+      }
+      return res.json({ ok: true, itens, seller_id: sellerId, source: "ml" });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
   // ── Email Hostinger: webhook (recebe notificação de email novo) ──
