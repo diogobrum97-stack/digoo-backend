@@ -919,6 +919,38 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     }
   }
 
+  // ── Promoções: encerrar promoção ativa ──
+  if (req.query.action === "encerrar-promocao" && req.method === "POST") {
+    try {
+      const { item_id, token: tokenR } = req.body || {};
+      if (!item_id || !tokenR) return res.status(400).json({ ok: false, error: "item_id e token obrigatórios" });
+      const headers = { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" };
+      const delRes = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2&promotion_type=PRICE_DISCOUNT`, { method: "DELETE", headers });
+      const delJson = delRes.status === 204 ? {} : await delRes.json().catch(() => ({}));
+      console.log("[encerrar-promocao] DELETE:", delRes.status, JSON.stringify(delJson).slice(0,200));
+      if (delRes.ok || delRes.status === 204) {
+        return res.json({ ok: true, message: "Promoção encerrada. Aguarde alguns minutos antes de aplicar nova promoção." });
+      }
+      return res.status(400).json({ ok: false, error: delJson.message || "Erro ao encerrar promoção" });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
+  // ── Promoções: checar status do item ──
+  if (req.query.action === "status-promocao" && req.method === "GET") {
+    try {
+      const { item_id, token: tokenR } = req.query;
+      if (!item_id || !tokenR) return res.status(400).json({ ok: false, error: "item_id e token obrigatórios" });
+      const headers = { Authorization: `Bearer ${tokenR}` };
+      const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, { headers });
+      const d = await r.json();
+      const promos = Array.isArray(d) ? d : [];
+      const ativa = promos.find(p => p.status === "started");
+      const pendente = promos.find(p => ["restore_requested","pending"].includes(p.status));
+      const candidato = !ativa && !pendente;
+      return res.json({ ok: true, candidato, ativa: !!ativa, pendente: !!pendente, promos });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Promoções: renovar/alterar desconto ──
   if (req.query.action === "renovar-promocao" && req.method === "POST") {
     try {
@@ -939,8 +971,22 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       if (promoAtiva) {
         const delRes = await fetch(`${baseUrl}&promotion_type=PRICE_DISCOUNT`, { method: "DELETE", headers });
         console.log("[renovar-promocao] DELETE:", delRes.status);
-        // Aguardar um momento para o ML processar a exclusão
-        await new Promise(r => setTimeout(r, 1500));
+
+        // Aguardar item voltar ao status candidate (até 15s)
+        let candidato = false;
+        for (let tentativa = 0; tentativa < 6; tentativa++) {
+          await new Promise(r => setTimeout(r, 2500));
+          try {
+            const checkRes = await fetch(baseUrl, { headers });
+            const checkJson = await checkRes.json();
+            console.log("[renovar-promocao] check status:", JSON.stringify(checkJson).slice(0, 200));
+            const ainda_ativo = Array.isArray(checkJson)
+              ? checkJson.find(p => ["started","restore_requested","pending"].includes(p.status))
+              : null;
+            if (!ainda_ativo) { candidato = true; break; }
+          } catch(e) {}
+        }
+        if (!candidato) console.log("[renovar-promocao] aviso: item pode ainda não ser candidato");
       }
 
       // 3) Criar nova promoção
