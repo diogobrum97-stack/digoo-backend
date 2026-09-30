@@ -1276,6 +1276,28 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     } catch (e) { /* segue sem token, cai no erro padrão abaixo */ }
   }
 
+  // ── Email Hostinger: webhook (recebe notificação de email novo) ──
+  if (req.query.action === "email-webhook" && req.method === "POST") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      const payload = req.body || {};
+      console.log("[email-webhook] recebido:", JSON.stringify(payload).slice(0, 300));
+      // Salvar notificação no Firebase para o frontend escutar
+      const notif = {
+        recebido_em: Date.now(),
+        from: payload.from || payload.message?.from || "",
+        subject: payload.subject || payload.message?.subject || "",
+        uid: payload.uid || payload.message?.uid || ""
+      };
+      await fetch(`${fbUrl}/email_notificacoes.json`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(notif)
+      });
+      return res.status(200).json({ ok: true });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Email Hostinger: marcar como lido ──
   if (req.query.action === "email-marcar-lido" && req.method === "POST") {
     try {
