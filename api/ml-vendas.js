@@ -1276,6 +1276,25 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     } catch (e) { /* segue sem token, cai no erro padrão abaixo */ }
   }
 
+  // ── Email Hostinger: marcar como lido ──
+  if (req.query.action === "email-marcar-lido" && req.method === "POST") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      let emailToken = "";
+      try { const tr = await fetch(`${fbUrl}/config/hostinger_mail_token.json`); emailToken = (await tr.json()) || ""; } catch(e) {}
+      if (!emailToken) return res.status(400).json({ ok: false, error: "Token não configurado" });
+      const headers = { Authorization: `Bearer ${emailToken}`, "Content-Type": "application/json" };
+      const { mailbox_id, uid } = req.body || {};
+      if (!mailbox_id || !uid) return res.status(400).json({ ok: false, error: "mailbox_id e uid obrigatórios" });
+      const r = await fetch(`https://api.mail.hostinger.com/api/v1/mailboxes/${mailbox_id}/folders/INBOX/messages/flags`, {
+        method: "POST", headers,
+        body: JSON.stringify({ uids: [Number(uid)], flags: ["\\Seen"], action: "add" })
+      });
+      const d = await r.json();
+      return res.json({ ok: r.ok, ...d });
+    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Email Hostinger: listar ──
   if (req.query.action === "email-listar" && req.method === "GET") {
     try {
