@@ -1436,14 +1436,21 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         return res.status(401).json({ ok: false, error: "Unauthorized" });
       }
       const payload = req.body || {};
-      console.log("[email-webhook] recebido:", JSON.stringify(payload).slice(0, 300));
+      const rawBody = JSON.stringify(payload).slice(0, 500);
+      console.log("[email-webhook] headers:", JSON.stringify({
+        'content-type': req.headers['content-type'],
+        'x-webhook-secret': req.headers['x-webhook-secret']?.slice(0,10),
+        'x-hostinger-signature': req.headers['x-hostinger-signature']?.slice(0,10),
+      }));
+      console.log("[email-webhook] body completo:", rawBody);
 
-      const from = payload.from || payload.message?.from || "";
-      const subject = payload.subject || payload.message?.subject || "";
-      const uid = payload.uid || payload.message?.uid || "";
+      // Tentar extrair de múltiplos formatos possíveis da Hostinger
+      const from = payload.from || payload.sender || payload.message?.from || payload.email?.from || payload.data?.from || "";
+      const subject = payload.subject || payload.message?.subject || payload.email?.subject || payload.data?.subject || "";
+      const uid = payload.uid || payload.message?.uid || payload.message_id || payload.id || "";
       const recebido_em = Date.now();
 
-      const notif = { recebido_em, from, subject, uid };
+      const notif = { recebido_em, from, subject, uid, _raw: rawBody };
 
       // Salvar em email_notificacoes (todos)
       await fetch(`${fbUrl}/email_notificacoes.json`, {
