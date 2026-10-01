@@ -1423,6 +1423,79 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
+  // ── Parsear JSON da DUIMP ──────────────────────────────────────────────────
+  if (req.query.action === 'parsear-duimp' && req.method === 'POST') {
+    try {
+      const duimp = req.body || {};
+      const eg = duimp.extratoGeral || {};
+      const ei = duimp.extratoItens || [];
+
+      const getTrib = (tributos, codigo) => {
+        const t = (tributos || []).find(x => String(x.tributo?.codigo || x.codigo || '') === String(codigo));
+        if (!t) return { valor: 0, aliquota: 0, base: 0 };
+        return {
+          valor:    Number(t.valorDevido ?? t.valorARecolher ?? 0),
+          aliquota: Number(t.valorAliquota ?? t.aliquota ?? 0),
+          base:     Number(t.valorBaseCalculo ?? t.baseCalculo ?? 0),
+        };
+      };
+
+      // SISCOMEX nos tributos gerais
+      let siscomex = 0;
+      (eg.listaTributos || []).forEach(t => {
+        const cod  = String(t.tributo?.codigo || t.codigo || '');
+        const desc = (t.tributo?.descricao || t.descricao || '').toUpperCase();
+        if (cod === 'I' || desc.includes('SISCOMEX') || desc.includes('UTILIZA')) {
+          siscomex = Number(t.valorDevido ?? t.valorARecolher ?? 0);
+        }
+      });
+
+      const exportadorNome = ei[0]?.exportadorNome || ei[0]?.fabricanteCodigo || '';
+      const frete = Number(eg.cargaValorFreteTotalReal ?? eg.carga?.totalFreteReal ?? eg.cargaValorFreteTotal ?? 0);
+
+      const resultado = {
+        numero:      eg.numeroDuimp || '',
+        dataRegistro: eg.dataRegistro ? new Date(eg.dataRegistro).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+        importador:  { cnpj: eg.identificacao?.cpfCnpj?.codigo || '', nome: eg.identificacao?.cpfCnpj?.descricao || '' },
+        paisProcedencia: eg.paisProcedencia?.descricao || '',
+        vmleTotal:   Number(eg.vmleReal || 0),
+        frete,
+        seguro:      Number(eg.seguroValorMoedaReal || 0),
+        siscomex,
+        exportador:  { nome: exportadorNome, pais: eg.paisProcedencia?.descricao || 'China, República Popular', codigoPais: '1058' },
+        itens: ei.map(item => {
+          const tributos = item.tributosCalculados || [];
+          const ii     = getTrib(tributos, '1');
+          const ipi    = getTrib(tributos, '2');
+          const pis    = getTrib(tributos, '6');
+          const cofins = getTrib(tributos, '7');
+          const vmle   = Number(item.vmle || 0);
+          const qtd    = Number(item.quantidadeComercial || 1);
+          const descricao = (item.produto?.denominacao || item.produto?.descricao || item.descricaoMercadoria || '').trim();
+          return {
+            numeroItem:       item.numeroItem || '',
+            ncm:              (item.ncm?.codigo || '').replace(/\D/g, ''),
+            descricao:        descricao.slice(0, 120),
+            descricaoCompleta: descricao.slice(0, 500),
+            quantidade:       qtd,
+            unidade:          item.unidadeComercial?.codigo || 'UN',
+            vmle,
+            valorUnitario:    qtd > 0 ? Math.round((vmle / qtd) * 10000) / 10000 : 0,
+            exportador:       item.exportadorNome || exportadorNome,
+            valorII:    ii.valor,     aliqII:    ii.aliquota,    baseII:    ii.base,
+            valorIPI:   ipi.valor,    aliqIPI:   ipi.aliquota,   baseIPI:   ipi.base,
+            valorPIS:   pis.valor,    aliqPIS:   pis.aliquota,   basePIS:   pis.base || vmle,
+            valorCOFINS: cofins.valor, aliqCOFINS: cofins.aliquota, baseCOFINS: cofins.base || vmle,
+            icmsAliquota: 17.5,
+            baseIcms: 0,
+            sku: '',
+          };
+        }),
+      };
+      return res.json({ ok: true, resultado });
+    } catch(e) { return res.status(500).json({ ok: false, erro: e.message }); }
+  }
+
   // ── Email Hostinger: webhook (recebe notificação de email novo) ──
   if (req.query.action === "email-webhook" && req.method === "POST") {
     try {
