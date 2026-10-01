@@ -1309,46 +1309,73 @@ export default async function handler(req, res) {
       const eg = duimp.extratoGeral || {};
       const ei = duimp.extratoItens || [];
 
+      // Formato real: tributo.tributo.codigo + tributo.valorDevido + tributo.valorBaseCalculo + tributo.valorAliquota
+      const getTribFromList = (tributos, codigo) => {
+        const t = (tributos || []).find(x => String(x.tributo?.codigo || x.codigo || '') === String(codigo));
+        if (!t) return { valor: 0, aliquota: 0, base: 0 };
+        return {
+          valor:    Number(t.valorDevido || t.valorARecolher || 0),
+          aliquota: Number(t.valorAliquota || t.aliquota || 0),
+          base:     Number(t.valorBaseCalculo || t.baseCalculo || 0),
+        };
+      };
+
+      // SISCOMEX nos tributos gerais (código 16 ou descrição)
       let siscomex = 0;
       (eg.listaTributos || []).forEach(t => {
-        if (String(t.codigo) === '16' || (t.descricao||'').includes('SISCOMEX')) siscomex = Number(t.valorDevido || 0);
+        const cod = String(t.tributo?.codigo || t.codigo || '');
+        const desc = (t.tributo?.descricao || t.descricao || '').toUpperCase();
+        if (cod === '16' || desc.includes('SISCOMEX')) siscomex = Number(t.valorDevido || t.valorARecolher || 0);
       });
+
+      // Exportador do primeiro item
+      const primeiroItem = ei[0] || {};
+      const exportadorNome = primeiroItem.exportadorNome || primeiroItem.fabricanteCodigo || '';
 
       const resultado = {
         numero: eg.numeroDuimp || '',
-        dataRegistro: eg.dataRegistro ? new Date(eg.dataRegistro).toISOString().split('T')[0] : '',
-        importador: { cnpj: eg.identificacao?.cpfCnpj?.codigo || '', nome: eg.identificacao?.cpfCnpj?.descricao || '' },
+        dataRegistro: eg.dataRegistro ? new Date(eg.dataRegistro).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
+        importador: {
+          cnpj: eg.identificacao?.cpfCnpj?.codigo || eg.identificacao?.numero || '',
+          nome: eg.identificacao?.cpfCnpj?.descricao || eg.identificacao?.nome || 'DIGOO BRASIL IMPORTACAO E DISTRIBUICAO LTDA'
+        },
         paisProcedencia: eg.paisProcedencia?.descricao || '',
-        vmleTotal: Number(eg.vmleReal || 0),
-        frete: Number(eg.cargaValorFreteTotalReal || 0),
-        seguro: Number(eg.seguroValorMoedaReal || 0),
+        vmleTotal: Number(eg.vmleReal || eg.totalVmle || 0),
+        frete: Number(eg.cargaValorFreteTotalReal || eg.valorFrete || 0),
+        seguro: Number(eg.seguroValorMoedaReal || eg.valorSeguro || 0),
         siscomex,
-        exportador: { nome: ei[0]?.exportadorNome || '', pais: eg.paisProcedencia?.descricao || 'China, República Popular', codigoPais: '1058' },
+        exportador: {
+          nome: exportadorNome,
+          pais: eg.paisProcedencia?.descricao || 'China, República Popular',
+          codigoPais: '1058',
+        },
         itens: ei.map(item => {
           const tributos = item.tributosCalculados || [];
-          const getTrib = (idx) => {
-            const t = tributos[idx];
-            return t ? { valor: Number(t.valorDevido||0), aliquota: Number(t.aliquota||0), base: Number(t.baseCalculo||0) } : { valor: 0, aliquota: 0, base: 0 };
-          };
-          // Ordem típica: II(0), IPI(1), PIS(2), COFINS(3)
-          const ii = getTrib(0); const ipi = getTrib(1);
-          const pis = getTrib(2); const cofins = getTrib(3);
-          const vmle = Number(item.vmle || 0);
-          const qtd = Number(item.quantidadeComercial || 1);
+          const ii     = getTribFromList(tributos, '1');
+          const ipi    = getTribFromList(tributos, '2');
+          const pis    = getTribFromList(tributos, '3');
+          const cofins = getTribFromList(tributos, '4');
+          const vmle = Number(item.vmle || item.valorVmle || 0);
+          const qtd  = Number(item.quantidadeComercial || 1);
+          const ncm  = (item.ncm?.codigo || item.codigoNcm || '').replace(/\D/g, '');
+          const descricao = (item.produto?.denominacao || item.produto?.descricao || item.descricaoMercadoria || '').trim();
           return {
             numeroItem: item.numeroItem || '',
-            ncm: (item.ncm?.codigo || '').replace(/\D/g, ''),
-            descricao: (item.produto?.denominacao || item.descricaoMercadoria || '').trim(),
-            descricaoCompleta: (item.produto?.descricao || '').trim().slice(0, 500),
+            ncm,
+            descricao: descricao.slice(0, 120),
+            descricaoCompleta: descricao.slice(0, 500),
             quantidade: qtd,
             unidade: item.unidadeComercial?.codigo || 'UN',
-            vmle, valorUnitario: qtd > 0 ? Math.round((vmle/qtd)*10000)/10000 : 0,
-            exportador: item.exportadorNome || '',
-            valorII: ii.valor, aliqII: ii.aliquota,
-            valorIPI: ipi.valor, aliqIPI: ipi.aliquota,
+            vmle,
+            valorUnitario: qtd > 0 ? Math.round((vmle/qtd)*10000)/10000 : 0,
+            exportador: item.exportadorNome || exportadorNome,
+            valorII: ii.valor,   aliqII: ii.aliquota,   baseII: ii.base,
+            valorIPI: ipi.valor, aliqIPI: ipi.aliquota, baseIPI: ipi.base,
             valorPIS: pis.valor, aliqPIS: pis.aliquota, basePIS: pis.base || vmle,
             valorCOFINS: cofins.valor, aliqCOFINS: cofins.aliquota, baseCOFINS: cofins.base || vmle,
-            icmsAliquota: 17.5, baseIcms: 0, sku: '',
+            icmsAliquota: 17.5,
+            baseIcms: 0, // calculado no frontend
+            sku: '',
           };
         }),
       };
