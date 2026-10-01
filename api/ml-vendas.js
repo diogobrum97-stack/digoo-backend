@@ -479,7 +479,13 @@ LÓGICA DE RESPOSTA:
 1. Pergunta sobre o próprio anúncio (dúvida técnica, compatibilidade, NF, prazo):
    → Responda direto com base na ficha_tecnica e respostas_anteriores_deste_produto.
 
-2. Cliente quer um produto diferente do anúncio (ex: outra versão, outro modelo, outra cor):
+2. Pergunta sobre preço, desconto ou promoção anterior:
+   → Nunca prometa desconto ou iguale preço de promoção anterior.
+   → Responda de forma simpática explicando que os preços variam conforme disponibilidade e promoções do momento.
+   → Exemplo: "Boa tarde! Os preços variam conforme nossas promoções — acompanhe o anúncio para aproveitar quando houver desconto. 😊"
+   → SEMPRE retorne suggested_answer preenchido para esse caso.
+
+3. Cliente quer um produto diferente do anúncio (ex: outra versão, outro modelo, outra cor):
    → Procure em itens_relacionados o produto EXATO que o cliente pediu (mesma versão, mesmo modelo).
    → Se achou com estoque > 0: "Boa [hora]! Temos sim: [link]"
    → Se achou com estoque = 0: "Boa [hora]! Temos esse kit no catálogo, mas está indisponível no momento por falta de estoque — você pode acompanhar aqui: [link]"
@@ -575,6 +581,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
           data: p.date_created,
           requires_attention: false,
           suggested_answer: sug.suggested_answer || "",
+          suggested_answer_fallback: !sug.suggested_answer && !sug.requires_attention,
           criar_rascunho: Array.isArray(sug.criar_rascunho) ? sug.criar_rascunho : (sug.criar_rascunho ? [sug.criar_rascunho] : null),
           has_knowledge: (conhecimentoPorItem[p.item_id] || []).length > 0,
         };
