@@ -1220,6 +1220,142 @@ export default async function handler(req, res) {
   }
 
   } catch (e) {
+  // ── Emitir NF-e de Entrada de Importação via DUIMP ────────────────────────
+  if (req.query.action === 'emitir-nf-importacao' && req.method === 'POST') {
+    try {
+      const { itens, duimp, exportador, dataEmissao, frete, seguro, siscomex, icmsAliquota, infComplementar } = req.body || {};
+      if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+
+      const dataOp = dataEmissao || new Date().toISOString().split('T')[0];
+
+      const payload = {
+        tipo: 1,
+        finalidade: 1,
+        dataOperacao: dataOp,
+        naturezaOperacao: { id: 15109130797 },
+        contato: {
+          nome: exportador?.nome || 'EXPORTADOR EXTERIOR',
+          numeroDocumento: exportador?.tin || '',
+          tipoPessoa: 'J',
+          indicadorIe: 9,
+          endereco: {
+            endereco: exportador?.endereco || 'EXTERIOR',
+            numero: 'SN',
+            bairro: 'NAO INFORMADO',
+            cep: '00000000',
+            municipio: exportador?.cidade || 'EXTERIOR',
+            uf: 'EX',
+            pais: exportador?.pais || 'China, República Popular',
+            codigoPais: exportador?.codigoPais || '1058'
+          }
+        },
+        frete: Number(frete || 0),
+        seguro: Number(seguro || 0),
+        outrasDespesas: Number(siscomex || 0),
+        itens: itens.map((it, idx) => {
+          const baseIcms = Number(it.baseIcms || it.vmle || 0);
+          const aliqIcms = Number(icmsAliquota || it.icmsAliquota || 17.5);
+          const valorIcms = Math.round(baseIcms * (aliqIcms / 100) * 100) / 100;
+          return {
+            codigo: it.sku || String(idx + 1),
+            descricao: it.descricao || '',
+            unidade: 'UN',
+            ncm: String(it.ncm || '').replace(/\D/g, ''),
+            quantidade: Number(it.quantidade),
+            valor: Number(it.valorUnitario || 0),
+            cfop: '3102',
+            icms: {
+              situacaoTributaria: '900',
+              baseCalculo: baseIcms,
+              aliquota: aliqIcms,
+              valor: valorIcms,
+              origemMercadoria: 8,
+            },
+            ...(it.valorII > 0 ? { ii: { baseCalculo: Number(it.vmle||0), despesasAduaneiras: 0, valor: Number(it.valorII), iof: 0 } } : {}),
+            ipi: it.valorIPI > 0
+              ? { situacaoTributaria: '50', aliquota: Number(it.aliqIPI||0), valor: Number(it.valorIPI||0) }
+              : { situacaoTributaria: '53', aliquota: 0, valor: 0 },
+            pis: { situacaoTributaria: '70', baseCalculo: Number(it.basePIS||it.vmle||0), aliquota: Number(it.aliqPIS||0), valor: Number(it.valorPIS||0) },
+            cofins: { situacaoTributaria: '70', baseCalculo: Number(it.baseCOFINS||it.vmle||0), aliquota: Number(it.aliqCOFINS||0), valor: Number(it.valorCOFINS||0) },
+          };
+        }),
+        informacoesAdicionais: infComplementar || `Conforme DUIMP Nr. ${duimp?.numero || ''} registrada em ${dataOp}, desembaracada em ${dataOp}. Os valores de PIS e COFINS na NF-e de entrada foram: PIS R$ ${itens.reduce((s,i) => s + Number(i.valorPIS||0), 0).toFixed(2)} COFINS R$ ${itens.reduce((s,i) => s + Number(i.valorCOFINS||0), 0).toFixed(2)}, a taxa SISCOMEX foi de R$ ${Number(siscomex||0).toFixed(2)}. Nao houve multas no curso do despacho aduaneiro.`,
+      };
+
+      console.log('[nf-importacao] payload:', JSON.stringify(payload).slice(0, 500));
+
+      const resp = await fetch('https://api.bling.com.br/Api/v3/nfe', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const respData = await resp.json();
+      if (!resp.ok) return res.status(resp.status).json({ erro: respData.error?.description || 'Erro ao criar NF no Bling', detalhe: respData });
+
+      const nfeId = respData.data?.id;
+      if (!nfeId) return res.status(500).json({ erro: 'NF criada mas sem ID retornado', raw: respData });
+
+      const envioResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${nfeId}/enviar`, { method: 'POST', headers });
+      const envioData = await envioResp.json();
+
+      return res.json({ ok: true, nfeId, numero: respData.data?.numero || null, chaveAcesso: envioData.data?.chaveAcesso || null, status: envioData.data?.situacao || null, raw: envioData });
+    } catch(e) { return res.status(500).json({ erro: e.message }); }
+  }
+
+  // ── Parsear JSON da DUIMP ──────────────────────────────────────────────────
+  if (req.query.action === 'parsear-duimp' && req.method === 'POST') {
+    try {
+      const duimp = req.body || {};
+      const eg = duimp.extratoGeral || {};
+      const ei = duimp.extratoItens || [];
+
+      let siscomex = 0;
+      (eg.listaTributos || []).forEach(t => {
+        if (String(t.codigo) === '16' || (t.descricao||'').includes('SISCOMEX')) siscomex = Number(t.valorDevido || 0);
+      });
+
+      const resultado = {
+        numero: eg.numeroDuimp || '',
+        dataRegistro: eg.dataRegistro ? new Date(eg.dataRegistro).toISOString().split('T')[0] : '',
+        importador: { cnpj: eg.identificacao?.cpfCnpj?.codigo || '', nome: eg.identificacao?.cpfCnpj?.descricao || '' },
+        paisProcedencia: eg.paisProcedencia?.descricao || '',
+        vmleTotal: Number(eg.vmleReal || 0),
+        frete: Number(eg.cargaValorFreteTotalReal || 0),
+        seguro: Number(eg.seguroValorMoedaReal || 0),
+        siscomex,
+        exportador: { nome: ei[0]?.exportadorNome || '', pais: eg.paisProcedencia?.descricao || 'China, República Popular', codigoPais: '1058' },
+        itens: ei.map(item => {
+          const tributos = item.tributosCalculados || [];
+          const getTrib = (idx) => {
+            const t = tributos[idx];
+            return t ? { valor: Number(t.valorDevido||0), aliquota: Number(t.aliquota||0), base: Number(t.baseCalculo||0) } : { valor: 0, aliquota: 0, base: 0 };
+          };
+          // Ordem típica: II(0), IPI(1), PIS(2), COFINS(3)
+          const ii = getTrib(0); const ipi = getTrib(1);
+          const pis = getTrib(2); const cofins = getTrib(3);
+          const vmle = Number(item.vmle || 0);
+          const qtd = Number(item.quantidadeComercial || 1);
+          return {
+            numeroItem: item.numeroItem || '',
+            ncm: (item.ncm?.codigo || '').replace(/\D/g, ''),
+            descricao: (item.produto?.denominacao || item.descricaoMercadoria || '').trim(),
+            descricaoCompleta: (item.produto?.descricao || '').trim().slice(0, 500),
+            quantidade: qtd,
+            unidade: item.unidadeComercial?.codigo || 'UN',
+            vmle, valorUnitario: qtd > 0 ? Math.round((vmle/qtd)*10000)/10000 : 0,
+            exportador: item.exportadorNome || '',
+            valorII: ii.valor, aliqII: ii.aliquota,
+            valorIPI: ipi.valor, aliqIPI: ipi.aliquota,
+            valorPIS: pis.valor, aliqPIS: pis.aliquota, basePIS: pis.base || vmle,
+            valorCOFINS: cofins.valor, aliqCOFINS: cofins.aliquota, baseCOFINS: cofins.base || vmle,
+            icmsAliquota: 17.5, baseIcms: 0, sku: '',
+          };
+        }),
+      };
+      return res.json({ ok: true, resultado });
+    } catch(e) { return res.status(500).json({ erro: e.message }); }
+  }
+
     return res.status(500).json({ error: e.message });
   }
 }
