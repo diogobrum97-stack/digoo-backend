@@ -1341,7 +1341,7 @@ export default async function handler(req, res) {
         },
         paisProcedencia: eg.paisProcedencia?.descricao || '',
         vmleTotal: Number(eg.vmleReal || eg.totalVmle || 0),
-        frete: Number(eg.cargaValorFreteTotalReal || eg.valorFrete || 0),
+        frete: Number(eg.cargaValorFreteTotalReal || eg.carga?.totalFreteReal || eg.valorFrete || 0),
         seguro: Number(eg.seguroValorMoedaReal || eg.valorSeguro || 0),
         siscomex,
         exportador: {
@@ -1353,8 +1353,8 @@ export default async function handler(req, res) {
           const tributos = item.tributosCalculados || [];
           const ii     = getTribFromList(tributos, '1');
           const ipi    = getTribFromList(tributos, '2');
-          const pis    = getTribFromList(tributos, '3');
-          const cofins = getTribFromList(tributos, '4');
+          const pis    = getTribFromList(tributos, '6');
+          const cofins = getTribFromList(tributos, '7');
           const vmle = Number(item.vmle || item.valorVmle || 0);
           const qtd  = Number(item.quantidadeComercial || 1);
           const ncm  = (item.ncm?.codigo || item.codigoNcm || '').replace(/\D/g, '');
