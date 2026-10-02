@@ -112,7 +112,6 @@ export default async function handler(req, res) {
           headers: {
             "Authorization": `Basic ${creds}`,
             "Content-Type": "application/x-www-form-urlencoded",
-            "enable-jwt": "1",
           },
           body: new URLSearchParams({
             grant_type: "refresh_token",
@@ -141,7 +140,6 @@ export default async function handler(req, res) {
     const headers = {
       Authorization: `Bearer ${token.access_token}`,
       Accept: "application/json",
-      "enable-jwt": "1",
     };
 
     // ── Debug: ver estrutura raw de um produto no Bling ──────────────────────
