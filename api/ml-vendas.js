@@ -642,6 +642,9 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   }
 
   // ── Perguntas: excluir pergunta ──
+  if (req.query.action === "excluir-pergunta" && req.method === "GET" && req.query.debug === "1") {
+    return res.json({ ok: true, msg: "endpoint excluir-pergunta ativo", v: "2026-10-12" });
+  }
   if (req.query.action === "excluir-pergunta") {
     if (req.method === "OPTIONS") return res.status(200).end();
     try {
