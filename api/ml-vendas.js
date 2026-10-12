@@ -575,6 +575,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         return {
           question_id: p.id,
           item_id: p.item_id,
+          from_user: p.buyer_id || null,
           produto: itemsInfo[p.item_id]?.title || "Produto",
           thumbnail: itemsInfo[p.item_id]?.thumbnail || "",
           pergunta: p.text,
@@ -635,6 +636,45 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       }
 
       return res.json({ ok: true, raw: data });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Perguntas: excluir pergunta ──
+  if (req.query.action === "excluir-pergunta" && req.method === "POST") {
+    try {
+      const { question_id, token: tokenR } = req.body || {};
+      if (!question_id || !tokenR) return res.status(400).json({ ok: false, error: "question_id e token obrigatórios" });
+      const r = await fetch(`https://api.mercadolibre.com/questions/${question_id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${tokenR}` },
+      });
+      const raw = r.status === 204 ? {} : await r.json().catch(() => ({}));
+      if (r.ok || r.status === 204) return res.json({ ok: true });
+      return res.json({ ok: false, error: raw?.message || "Erro ao excluir", raw });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Perguntas: bloquear comprador ──
+  if (req.query.action === "bloquear-comprador" && req.method === "POST") {
+    try {
+      const { from_user, token: tokenR } = req.body || {};
+      if (!from_user || !tokenR) return res.status(400).json({ ok: false, error: "from_user e token obrigatórios" });
+      // Pegar seller_id via /users/me
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenR}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ ok: false, error: "Token inválido" });
+      const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/blocked_users`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ user: { id: Number(from_user) } }),
+      });
+      const raw = await r.json().catch(() => ({}));
+      if (r.ok) return res.json({ ok: true, raw });
+      return res.json({ ok: false, error: raw?.message || raw?.error || "Erro ao bloquear", raw });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
