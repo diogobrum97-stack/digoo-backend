@@ -642,10 +642,16 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   }
 
   // ── Perguntas: excluir pergunta ──
-  if (req.query.action === "excluir-pergunta" && req.method === "POST") {
+  if (req.query.action === "excluir-pergunta") {
+    if (req.method === "OPTIONS") return res.status(200).end();
     try {
-      const { question_id, token: tokenR } = req.body || {};
-      if (!question_id || !tokenR) return res.status(400).json({ ok: false, error: "question_id e token obrigatórios" });
+      let body = req.body || {};
+      // fallback: parsear manualmente se body vier como string
+      if (typeof body === "string") { try { body = JSON.parse(body); } catch(e) { body = {}; } }
+      const question_id = body.question_id || req.query.question_id;
+      const tokenR = body.token || req.query.token;
+      console.log("[excluir-pergunta] qid:", question_id, "token:", tokenR ? "ok" : "ausente", "body keys:", Object.keys(body));
+      if (!question_id || !tokenR) return res.status(400).json({ ok: false, error: "question_id e token obrigatórios", debug: { qid: question_id, hasToken: !!tokenR, bodyKeys: Object.keys(body) } });
       const r = await fetch(`https://api.mercadolibre.com/questions/${question_id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${tokenR}` },
@@ -659,9 +665,14 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   }
 
   // ── Perguntas: bloquear comprador ──
-  if (req.query.action === "bloquear-comprador" && req.method === "POST") {
+  if (req.query.action === "bloquear-comprador") {
+    if (req.method === "OPTIONS") return res.status(200).end();
     try {
-      const { from_user, token: tokenR } = req.body || {};
+      let body = req.body || {};
+      if (typeof body === "string") { try { body = JSON.parse(body); } catch(e) { body = {}; } }
+      const from_user = body.from_user || req.query.from_user;
+      const tokenR = body.token || req.query.token;
+      console.log("[bloquear-comprador] from_user:", from_user, "token:", tokenR ? "ok" : "ausente");
       if (!from_user || !tokenR) return res.status(400).json({ ok: false, error: "from_user e token obrigatórios" });
       // Pegar seller_id via /users/me
       const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenR}` } });
