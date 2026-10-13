@@ -93,6 +93,90 @@ module.exports = async function handler(req, res) {
     }
   }
 
+  // ── Faturamento YTD: soma pedidos pagos do ano nas duas contas ML ──
+  // Exclui pedidos cancelados/devolvidos (order.status !== "paid" já filtra isso,
+  // mas também exclui via status "cancelled"). Soma total_amount de cada pedido.
+  if (req.query.action === "faturamento-ytd" && req.method === "GET") {
+    try {
+      const { token: tokenMatriz, token_filial: tokenFilial } = req.query;
+      if (!tokenMatriz) return res.status(400).json({ ok: false, error: "token obrigatório" });
+
+      const anoAtual = new Date().getFullYear();
+      const dataInicio = `${anoAtual}-01-01T00:00:00.000-00:00`;
+      const mesAtual = new Date().getMonth() + 1; // 1-12
+      const diaAtual = new Date().getDate();
+
+      async function buscarFaturamentoConta(token, nomeConta) {
+        const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${token}` } });
+        const me = await meRes.json();
+        if (!me.id) return { conta: nomeConta, erro: "Token inválido", total: 0, pedidos: 0, porMes: {} };
+
+        let totalGeral = 0;
+        let totalPedidos = 0;
+        const porMes = {}; // "2026-01" -> valor
+
+        for (let offset = 0; offset < 2000; offset += 50) {
+          const url = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataInicio)}&sort=date_desc&limit=50&offset=${offset}`;
+          const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+          if (!r.ok) break;
+          const d = await r.json();
+          const pagina = d.results || [];
+          for (const order of pagina) {
+            const valor = Number(order.total_amount || 0);
+            totalGeral += valor;
+            totalPedidos++;
+            const mesKey = (order.date_created || "").slice(0, 7); // "2026-01"
+            porMes[mesKey] = (porMes[mesKey] || 0) + valor;
+          }
+          if (pagina.length < 50) break;
+        }
+
+        return { conta: nomeConta, seller_id: me.id, total: totalGeral, pedidos: totalPedidos, porMes };
+      }
+
+      // Busca Matriz (obrigatório) e Filial (opcional) em paralelo
+      const promessas = [buscarFaturamentoConta(tokenMatriz, "Matriz")];
+      if (tokenFilial) promessas.push(buscarFaturamentoConta(tokenFilial, "Filial"));
+
+      const resultados = await Promise.all(promessas);
+      const matriz = resultados[0];
+      const filial = resultados[1] || { conta: "Filial", total: 0, pedidos: 0, porMes: {} };
+
+      const totalCombinado = matriz.total + filial.total;
+      const META_ANUAL = 6500000;
+
+      // Projeção: ritmo médio mensal até agora → extrapola para 12 meses
+      // Meses completos = mesAtual - 1; mês atual = parcial (dia/diasNoMes)
+      const diasNoMesAtual = new Date(anoAtual, mesAtual, 0).getDate();
+      const fracaoMesAtual = diaAtual / diasNoMesAtual;
+      const mesesEquivalentes = (mesAtual - 1) + fracaoMesAtual; // ex: 9.43 em meados de outubro
+      const mediaMensal = mesesEquivalentes > 0 ? totalCombinado / mesesEquivalentes : 0;
+      const projecaoAnual = mediaMensal * 12;
+
+      // Meses combinados (Matriz + Filial)
+      const todosMeses = new Set([...Object.keys(matriz.porMes || {}), ...Object.keys(filial.porMes || {})]);
+      const porMesCombinado = {};
+      todosMeses.forEach(m => {
+        porMesCombinado[m] = (matriz.porMes?.[m] || 0) + (filial.porMes?.[m] || 0);
+      });
+
+      return res.json({
+        ok: true,
+        ano: anoAtual,
+        meta: META_ANUAL,
+        total: totalCombinado,
+        pct_meta: META_ANUAL > 0 ? Math.round((totalCombinado / META_ANUAL) * 1000) / 10 : 0,
+        projecao_anual: Math.round(projecaoAnual),
+        media_mensal: Math.round(mediaMensal),
+        meses_equivalentes: Math.round(mesesEquivalentes * 10) / 10,
+        contas: { matriz, filial },
+        por_mes: porMesCombinado,
+      });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Picking: fila de pedidos pendentes de envio (paga, pronto pra separar, sem ser Full) ──
   if (req.query.action === "picking-fila" && req.method === "GET") {
     try {
