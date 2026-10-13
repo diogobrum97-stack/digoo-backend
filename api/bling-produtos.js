@@ -597,7 +597,30 @@ export default async function handler(req, res) {
       if (!encontrada) return res.status(404).json({ error: `Nota ${numeroAlvo} não encontrada`, tentativas });
       const detResp = await fetch(`https://api.bling.com.br/Api/v3/nfe/${encontrada.id}`, { headers });
       const detData = await detResp.json();
-      return res.json(detData);
+      const corpo = detData.data || {};
+
+      // Extrai IPI total somando tributosCalculados (código '2' = IPI) de cada item
+      // O Bling v3 retorna tributos calculados por item em `tributosCalculados`
+      const itensBrutos = corpo.itens || corpo.itensNota || [];
+      let ipiTotal = 0;
+      for (const it of itensBrutos) {
+        const tributos = it.tributosCalculados || [];
+        const ipiTrib = tributos.find(t => String(t.tributo?.codigo || t.codigo || '') === '2');
+        ipiTotal += Number(ipiTrib?.valor || ipiTrib?.valorTributo || 0);
+      }
+      // Fallback: tentar campos diretos no item
+      if (!ipiTotal) {
+        for (const it of itensBrutos) {
+          ipiTotal += Number(it.valorIPI || it.ipi?.valor || it.ipi?.vIPI || 0);
+        }
+      }
+      // Fallback: totalizadores da nota
+      if (!ipiTotal) {
+        const tot = corpo.totais || corpo.totalImpostos || corpo.impostos || {};
+        ipiTotal = Number(tot.ipi || tot.vIPI || tot.totalIpi || 0);
+      }
+
+      return res.json({ ...detData, ipiTotal: ipiTotal || null });
     }
 
     // ── Modo "notas": detecta notas fiscais de transferência de mercadoria
