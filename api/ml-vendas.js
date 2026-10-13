@@ -137,12 +137,11 @@ module.exports = async function handler(req, res) {
       }
 
       // Filtra: só o que está REALMENTE pendente de separar/despachar —
-      // "ready_to_ship" sozinho não basta, porque inclui "dropped_off" (já
-      // despachado fisicamente) e "invoice_pending" (esperando nota fiscal).
-      // Só entram: ready_to_print (etiqueta gerada) e printed (já impressa,
-      // ainda não despachada) — que é exatamente o que aparece pendente no
-      // painel do próprio ML. E continua excluindo Full, que o ML resolve sozinho.
-      const SUBSTATUS_PENDENTES = ["ready_to_print", "printed", "waiting_for_carrier", null, undefined];
+      // "ready_to_ship" + substatuses que indicam pendente físico de separar.
+      // "dropped_off" (já despachado) fica de fora; "invoice_pending" entra —
+      // pedido pago aguardando NF já deve aparecer pra o operacional separar.
+      // Full (fulfillment) excluído — o ML resolve sozinho.
+      const SUBSTATUS_PENDENTES = ["ready_to_print", "printed", "waiting_for_carrier", "invoice_pending", null, undefined];
       const filaFinal = comEnvio.filter(({ shipment }) =>
         shipment.status === "ready_to_ship" &&
         (SUBSTATUS_PENDENTES.includes(shipment.substatus) || !shipment.substatus) &&
@@ -175,22 +174,73 @@ module.exports = async function handler(req, res) {
             dataDe,
             totalPedidosEncontrados: pedidos.length,
             totalComEnvioConsultado: comEnvio.length,
-            statusEncontrados: comEnvio
-              .filter(({ shipment }) => shipment.status === "ready_to_ship" && ["ready_to_print", "printed"].includes(shipment.substatus) && shipment.logistic_type !== "fulfillment")
-              .map(({ order, shipment }) => ({
-                order_id: order.id,
-                shipment_status: shipment.status,
-                shipment_substatus: shipment.substatus,
-                logistic_type: shipment.logistic_type,
-                mode: shipment.mode,
-                date_created: shipment.date_created,
-                last_updated: shipment.last_updated,
-                estimated_handling_limit: shipment.lead_time?.estimated_handling_limit?.date || null,
-                shipping_option_estimated_handling_limit: shipment.shipping_option?.estimated_handling_limit?.date || null,
-                status_history: shipment.status_history || null,
-              })),
+            // Mostra TODOS os pedidos com envio consultado — status, substatus, logistic_type
+            // Útil pra diagnosticar por que um pedido não aparece na fila
+            todosPedidosComEnvio: comEnvio.map(({ order, shipment }) => ({
+              order_id: order.id,
+              order_status: order.status,
+              shipment_status: shipment.status,
+              shipment_substatus: shipment.substatus,
+              logistic_type: shipment.logistic_type,
+              mode: shipment.mode,
+              na_fila: filaFinal.some(f => f.order.id === order.id),
+              data: order.date_created,
+            })),
           },
         } : {}),
+      });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Picking: inspecionar pedido específico por order_id (diagnóstico) ──
+  if (req.query.action === "picking-inspecionar" && req.method === "GET") {
+    try {
+      const { token: tokenPk, order_id } = req.query;
+      if (!tokenPk || !order_id) return res.status(400).json({ ok: false, error: "token e order_id obrigatórios" });
+
+      const [orderRes, shipRes] = await Promise.all([
+        fetch(`https://api.mercadolibre.com/orders/${order_id}`, { headers: { Authorization: `Bearer ${tokenPk}` } }),
+        fetch(`https://api.mercadolibre.com/orders/${order_id}/shipments`, { headers: { Authorization: `Bearer ${tokenPk}` } }),
+      ]);
+      const order = await orderRes.json();
+      const shipment = await shipRes.json();
+
+      const SUBSTATUS_PENDENTES = ["ready_to_print", "printed", "waiting_for_carrier", "invoice_pending", null, undefined];
+      const entrariaNaFila =
+        order.status === "paid" &&
+        shipment.status === "ready_to_ship" &&
+        (SUBSTATUS_PENDENTES.includes(shipment.substatus) || !shipment.substatus) &&
+        shipment.logistic_type !== "fulfillment";
+
+      return res.json({
+        ok: true,
+        order_id,
+        diagnostico: {
+          entraria_na_fila: entrariaNaFila,
+          motivo_exclusao: !entrariaNaFila ? [
+            order.status !== "paid" ? `order.status="${order.status}" (precisa ser "paid")` : null,
+            shipment.status !== "ready_to_ship" ? `shipment.status="${shipment.status}" (precisa ser "ready_to_ship")` : null,
+            shipment.status === "ready_to_ship" && !SUBSTATUS_PENDENTES.includes(shipment.substatus) ? `shipment.substatus="${shipment.substatus}" não está na lista de aceitos` : null,
+            shipment.logistic_type === "fulfillment" ? `logistic_type="fulfillment" — Full é excluído` : null,
+          ].filter(Boolean) : [],
+        },
+        order: {
+          status: order.status,
+          date_created: order.date_created,
+          buyer: order.buyer?.nickname || order.buyer?.first_name,
+          itens: (order.order_items || []).map(it => ({ titulo: it.item?.title, sku: it.item?.seller_sku, qty: it.quantity })),
+        },
+        shipment: {
+          id: shipment.id,
+          status: shipment.status,
+          substatus: shipment.substatus,
+          logistic_type: shipment.logistic_type,
+          mode: shipment.mode,
+          date_created: shipment.date_created,
+          last_updated: shipment.last_updated,
+        },
       });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
