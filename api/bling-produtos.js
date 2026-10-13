@@ -620,6 +620,20 @@ export default async function handler(req, res) {
         ipiTotal = Number(tot.ipi || tot.vIPI || tot.totalIpi || 0);
       }
 
+      // Se debug=1, retorna estrutura raw para diagnóstico
+      if (req.query.debug) {
+        return res.json({
+          ...detData,
+          ipiTotal: ipiTotal || null,
+          _debug: {
+            ipiTotal,
+            primeiroItem: itensBrutos[0] || null,
+            camposDoCorpo: Object.keys(corpo),
+            totais: corpo.totais || corpo.totalImpostos || corpo.impostos || null,
+          }
+        });
+      }
+
       return res.json({ ...detData, ipiTotal: ipiTotal || null });
     }
 
