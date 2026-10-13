@@ -599,39 +599,26 @@ export default async function handler(req, res) {
       const detData = await detResp.json();
       const corpo = detData.data || {};
 
-      // Extrai IPI total somando tributosCalculados (código '2' = IPI) de cada item
-      // O Bling v3 retorna tributos calculados por item em `tributosCalculados`
-      const itensBrutos = corpo.itens || corpo.itensNota || [];
+      // O Bling v3 não retorna IPI no JSON da NF — precisa buscar do XML
+      // O link do XML vem em corpo.xml
       let ipiTotal = 0;
-      for (const it of itensBrutos) {
-        const tributos = it.tributosCalculados || [];
-        const ipiTrib = tributos.find(t => String(t.tributo?.codigo || t.codigo || '') === '2');
-        ipiTotal += Number(ipiTrib?.valor || ipiTrib?.valorTributo || 0);
-      }
-      // Fallback: tentar campos diretos no item
-      if (!ipiTotal) {
-        for (const it of itensBrutos) {
-          ipiTotal += Number(it.valorIPI || it.ipi?.valor || it.ipi?.vIPI || 0);
-        }
-      }
-      // Fallback: totalizadores da nota
-      if (!ipiTotal) {
-        const tot = corpo.totais || corpo.totalImpostos || corpo.impostos || {};
-        ipiTotal = Number(tot.ipi || tot.vIPI || tot.totalIpi || 0);
-      }
-
-      // Se debug=1, retorna estrutura raw para diagnóstico
-      if (req.query.debug) {
-        return res.json({
-          ...detData,
-          ipiTotal: ipiTotal || null,
-          _debug: {
-            ipiTotal,
-            primeiroItem: itensBrutos[0] || null,
-            camposDoCorpo: Object.keys(corpo),
-            totais: corpo.totais || corpo.totalImpostos || corpo.impostos || null,
+      const xmlUrl = corpo.xml || null;
+      if (xmlUrl) {
+        try {
+          const xmlResp = await fetch(xmlUrl);
+          const xmlText = await xmlResp.text();
+          // Extrai vIPI do total da nota: <ICMSTot>...<vIPI>317.47</vIPI>...</ICMSTot>
+          const matchTotal = xmlText.match(/<ICMSTot>[\s\S]*?<vIPI>([\d.]+)<\/vIPI>/);
+          if (matchTotal) {
+            ipiTotal = Number(matchTotal[1]) || 0;
+          } else {
+            // Fallback: soma todos os <vIPI> dos itens
+            const matchesItens = [...xmlText.matchAll(/<IPI>[\s\S]*?<vIPI>([\d.]+)<\/vIPI>[\s\S]*?<\/IPI>/g)];
+            ipiTotal = matchesItens.reduce((acc, m) => acc + (Number(m[1]) || 0), 0);
           }
-        });
+        } catch (e) {
+          // ignora erro de busca do XML — retorna ipiTotal=null
+        }
       }
 
       return res.json({ ...detData, ipiTotal: ipiTotal || null });
