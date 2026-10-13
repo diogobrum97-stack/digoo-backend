@@ -115,20 +115,36 @@ module.exports = async function handler(req, res) {
         let totalPedidos = 0;
         const porMes = {}; // "2026-01" -> valor
 
-        for (let offset = 0; offset < 2000; offset += 50) {
-          const url = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataInicio)}&sort=date_desc&limit=50&offset=${offset}`;
-          const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-          if (!r.ok) break;
-          const d = await r.json();
-          const pagina = d.results || [];
-          for (const order of pagina) {
-            const valor = Number(order.total_amount || 0);
-            totalGeral += valor;
-            totalPedidos++;
-            const mesKey = (order.date_created || "").slice(0, 7); // "2026-01"
-            porMes[mesKey] = (porMes[mesKey] || 0) + valor;
+        // Pagina mês a mês para contornar o limite de offset=1000 da API ML.
+        // Para cada mês, busca todas as páginas (offset 0..950 de 50 em 50).
+        for (let mes = 1; mes <= mesAtual; mes++) {
+          const from = `${anoAtual}-${String(mes).padStart(2,"0")}-01T00:00:00.000-03:00`;
+          // Último dia do mês; para o mês atual usa hoje como limite
+          const ultimoDia = mes === mesAtual
+            ? `${anoAtual}-${String(mes).padStart(2,"0")}-${String(diaAtual).padStart(2,"0")}T23:59:59.999-03:00`
+            : (() => {
+                const d = new Date(anoAtual, mes, 0); // último dia do mês
+                return `${anoAtual}-${String(mes).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}T23:59:59.999-03:00`;
+              })();
+
+          for (let offset = 0; offset < 1000; offset += 50) {
+            const url = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid`
+              + `&order.date_created.from=${encodeURIComponent(from)}`
+              + `&order.date_created.to=${encodeURIComponent(ultimoDia)}`
+              + `&sort=date_desc&limit=50&offset=${offset}`;
+            const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+            if (!r.ok) break;
+            const d = await r.json();
+            const pagina = d.results || [];
+            for (const order of pagina) {
+              const valor = Number(order.total_amount || 0);
+              totalGeral += valor;
+              totalPedidos++;
+              const mesKey = (order.date_created || "").slice(0, 7); // "2026-01"
+              porMes[mesKey] = (porMes[mesKey] || 0) + valor;
+            }
+            if (pagina.length < 50) break;
           }
-          if (pagina.length < 50) break;
         }
 
         return { conta: nomeConta, seller_id: me.id, total: totalGeral, pedidos: totalPedidos, porMes };
