@@ -113,37 +113,77 @@ module.exports = async function handler(req, res) {
 
         let totalGeral = 0;
         let totalPedidos = 0;
-        const porMes = {}; // "2026-01" -> valor
+        const porMes = {};
 
-        // Pagina mês a mês para contornar o limite de offset=1000 da API ML.
-        // Para cada mês, busca todas as páginas (offset 0..950 de 50 em 50).
-        for (let mes = 1; mes <= mesAtual; mes++) {
-          const from = `${anoAtual}-${String(mes).padStart(2,"0")}-01T00:00:00.000-03:00`;
-          // Último dia do mês; para o mês atual usa hoje como limite
-          const ultimoDia = mes === mesAtual
-            ? `${anoAtual}-${String(mes).padStart(2,"0")}-${String(diaAtual).padStart(2,"0")}T23:59:59.999-03:00`
-            : (() => {
-                const d = new Date(anoAtual, mes, 0); // último dia do mês
-                return `${anoAtual}-${String(mes).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}T23:59:59.999-03:00`;
-              })();
-
+        // Busca pedidos num range de datas (from/to no formato ISO-03:00).
+        // Retorna { total, pedidos, porMes, saturou } onde saturou=true se bateu em 1000.
+        async function buscarRange(from, to) {
+          let rangeTotal = 0, rangePedidos = 0;
+          const rangeMes = {};
+          let saturou = false;
           for (let offset = 0; offset < 1000; offset += 50) {
             const url = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid`
               + `&order.date_created.from=${encodeURIComponent(from)}`
-              + `&order.date_created.to=${encodeURIComponent(ultimoDia)}`
-              + `&sort=date_desc&limit=50&offset=${offset}`;
+              + `&order.date_created.to=${encodeURIComponent(to)}`
+              + `&sort=date_asc&limit=50&offset=${offset}`;
             const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
             if (!r.ok) break;
             const d = await r.json();
             const pagina = d.results || [];
             for (const order of pagina) {
               const valor = Number(order.total_amount || 0);
-              totalGeral += valor;
-              totalPedidos++;
-              const mesKey = (order.date_created || "").slice(0, 7); // "2026-01"
-              porMes[mesKey] = (porMes[mesKey] || 0) + valor;
+              rangeTotal += valor;
+              rangePedidos++;
+              const mk = (order.date_created || "").slice(0, 7);
+              rangeMes[mk] = (rangeMes[mk] || 0) + valor;
             }
             if (pagina.length < 50) break;
+            if (offset + 50 >= 1000) { saturou = true; break; }
+          }
+          return { total: rangeTotal, pedidos: rangePedidos, porMes: rangeMes, saturou };
+        }
+
+        // Pagina mês a mês; se um mês saturar, subdivide em semanas.
+        for (let mes = 1; mes <= mesAtual; mes++) {
+          const mm = String(mes).padStart(2, "0");
+          const ultimoDiaMes = mes === mesAtual ? diaAtual : new Date(anoAtual, mes, 0).getDate();
+          const fromMes = `${anoAtual}-${mm}-01T00:00:00.000-03:00`;
+          const toMes   = `${anoAtual}-${mm}-${String(ultimoDiaMes).padStart(2,"0")}T23:59:59.999-03:00`;
+
+          const resMes = await buscarRange(fromMes, toMes);
+
+          if (!resMes.saturou) {
+            // Mês inteiro coube — soma direto
+            totalGeral   += resMes.total;
+            totalPedidos += resMes.pedidos;
+            for (const [k,v] of Object.entries(resMes.porMes)) porMes[k] = (porMes[k]||0) + v;
+          } else {
+            // Mês saturou → subdivide em semanas (7 dias cada)
+            let dia = 1;
+            while (dia <= ultimoDiaMes) {
+              const diaFim = Math.min(dia + 6, ultimoDiaMes);
+              const fromSem = `${anoAtual}-${mm}-${String(dia).padStart(2,"0")}T00:00:00.000-03:00`;
+              const toSem   = `${anoAtual}-${mm}-${String(diaFim).padStart(2,"0")}T23:59:59.999-03:00`;
+              const resSem = await buscarRange(fromSem, toSem);
+
+              if (!resSem.saturou) {
+                totalGeral   += resSem.total;
+                totalPedidos += resSem.pedidos;
+                for (const [k,v] of Object.entries(resSem.porMes)) porMes[k] = (porMes[k]||0) + v;
+              } else {
+                // Semana também saturou → subdivide em dias individuais
+                for (let d2 = dia; d2 <= diaFim; d2++) {
+                  const dd = String(d2).padStart(2,"0");
+                  const fromDia = `${anoAtual}-${mm}-${dd}T00:00:00.000-03:00`;
+                  const toDia   = `${anoAtual}-${mm}-${dd}T23:59:59.999-03:00`;
+                  const resDia = await buscarRange(fromDia, toDia);
+                  totalGeral   += resDia.total;
+                  totalPedidos += resDia.pedidos;
+                  for (const [k,v] of Object.entries(resDia.porMes)) porMes[k] = (porMes[k]||0) + v;
+                }
+              }
+              dia = diaFim + 1;
+            }
           }
         }
 
