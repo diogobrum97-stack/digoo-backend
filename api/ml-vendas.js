@@ -197,15 +197,28 @@ module.exports = async function handler(req, res) {
   // ── Picking: inspecionar pedido específico por order_id (diagnóstico) ──
   if (req.query.action === "picking-inspecionar" && req.method === "GET") {
     try {
-      const { token: tokenPk, order_id } = req.query;
-      if (!tokenPk || !order_id) return res.status(400).json({ ok: false, error: "token e order_id obrigatórios" });
+      const { token: tokenPk, order_id, shipment_id: shipmentIdDireto } = req.query;
+      if (!tokenPk || (!order_id && !shipmentIdDireto)) return res.status(400).json({ ok: false, error: "token e (order_id ou shipment_id) obrigatórios" });
 
-      const [orderRes, shipRes] = await Promise.all([
-        fetch(`https://api.mercadolibre.com/orders/${order_id}`, { headers: { Authorization: `Bearer ${tokenPk}` } }),
-        fetch(`https://api.mercadolibre.com/orders/${order_id}/shipments`, { headers: { Authorization: `Bearer ${tokenPk}` } }),
-      ]);
-      const order = await orderRes.json();
-      const shipment = await shipRes.json();
+      let order = {}, shipment = {};
+
+      if (shipmentIdDireto) {
+        // Busca direto pelo shipment_id
+        const shipRes = await fetch(`https://api.mercadolibre.com/shipments/${shipmentIdDireto}`, { headers: { Authorization: `Bearer ${tokenPk}` } });
+        shipment = await shipRes.json();
+        // Tenta buscar o pedido pelo order_id que vem dentro do shipment
+        if (shipment.order_id) {
+          const orderRes = await fetch(`https://api.mercadolibre.com/orders/${shipment.order_id}`, { headers: { Authorization: `Bearer ${tokenPk}` } });
+          order = await orderRes.json();
+        }
+      } else {
+        const [orderRes, shipRes] = await Promise.all([
+          fetch(`https://api.mercadolibre.com/orders/${order_id}`, { headers: { Authorization: `Bearer ${tokenPk}` } }),
+          fetch(`https://api.mercadolibre.com/orders/${order_id}/shipments`, { headers: { Authorization: `Bearer ${tokenPk}` } }),
+        ]);
+        order = await orderRes.json();
+        shipment = await shipRes.json();
+      }
 
       const SUBSTATUS_PENDENTES = ["ready_to_print", "printed", "waiting_for_carrier", "invoice_pending", null, undefined];
       const entrariaNaFila =
@@ -216,7 +229,8 @@ module.exports = async function handler(req, res) {
 
       return res.json({
         ok: true,
-        order_id,
+        order_id: order.id || order_id,
+        shipment_id: shipment.id || shipmentIdDireto,
         diagnostico: {
           entraria_na_fila: entrariaNaFila,
           motivo_exclusao: !entrariaNaFila ? [
