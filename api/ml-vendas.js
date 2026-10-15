@@ -243,14 +243,14 @@ module.exports = async function handler(req, res) {
       const me = await meRes.json();
       if (!me.id) return res.status(400).json({ ok: false, error: "Não foi possível identificar o vendedor" });
 
-      // Pedidos pagos dos últimos 4 dias — já é margem de sobra (na prática
-      // pedido pendente de separar é sempre bem recente); reduz muito o
-      // volume de chamadas comparado aos 15 dias de antes, deixando mais rápido.
-      const dataDe = new Date(Date.now() - 7 * 86400000).toISOString();
+      // Usa last_update (não date_created) pra pegar pedidos que ficaram pendentes
+      // por mais de 7 dias — ex: pedido criado há 10 dias que só entrou em
+      // ready_to_ship agora. Janela de 15 dias cobre edge cases sem ser pesado.
+      const dataDe = new Date(Date.now() - 15 * 86400000).toISOString();
       // ML limita a 50 por página — busca até 3 páginas (150 pedidos, mais que suficiente)
       let pedidos = [];
       for (let offset = 0; offset < 150; offset += 50) {
-        const mlUrl = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50&offset=${offset}`;
+        const mlUrl = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.last_update.from=${encodeURIComponent(dataDe)}&sort=last_update_desc&limit=50&offset=${offset}`;
         const ordersRes = await fetch(mlUrl, { headers: { Authorization: `Bearer ${tokenPk}` } });
         const ordersData = await ordersRes.json();
         const pagina = ordersData.results || [];
