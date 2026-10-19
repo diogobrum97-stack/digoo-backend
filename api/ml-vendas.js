@@ -1360,7 +1360,11 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         return res.status(400).json({ ok: false, error: "Anúncios com variações ainda não são suportados na clonagem." });
       }
 
-      const body = {
+      // Atributos não-modificáveis que o ML rejeita se enviados na criação
+      const ATTRS_IGNORAR = new Set(["SYI_PYMES_ID", "ITEM_CONDITION", "SELLER_SKU"]);
+      const atributosLimpos = (item.attributes || []).filter(a => !ATTRS_IGNORAR.has(a.id));
+
+      const buildBody = (attrs) => ({
         family_name: (item.title || "").slice(0, 60),
         category_id: item.category_id,
         price: item.price,
@@ -1371,21 +1375,36 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         listing_type_id: item.listing_type_id || "gold_special",
         seller_custom_field: novoSku || item.seller_custom_field || item.sku || undefined,
         pictures: item.pictures,
-        attributes: item.attributes,
-      };
-
-      const createRes = await fetch("https://api.mercadolibre.com/items", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${tokenDestino}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
+        attributes: attrs,
       });
-      const created = await createRes.json();
 
-      if (created.error || created.cause) {
-        return res.status(400).json({ ok: false, error: created.message || "Erro ao criar anúncio", detalhes: created.cause || [], raw: created });
+      // Tenta criar com os atributos limpos
+      let createRes = await fetch("https://api.mercadolibre.com/items", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tokenDestino}`, "Content-Type": "application/json" },
+        body: JSON.stringify(buildBody(atributosLimpos)),
+      });
+      let created = await createRes.json();
+
+      // Se falhar por atributos obrigatórios ausentes (ex: GTIN), tenta sem nenhum atributo
+      // O ML às vezes aceita a criação e pede preenchimento depois pelo painel
+      if ((created.error || created.cause) && (created.cause || []).some(c => c.code === "item.attribute.missing_conditional_required")) {
+        const attrsObrigatorios = (created.cause || [])
+          .filter(c => c.code === "item.attribute.missing_conditional_required")
+          .flatMap(c => (c.message.match(/\[([A-Z_,\s]+)\]/g) || []).flatMap(m => m.replace(/[\[\]]/g, "").split(/,\s*/)));
+        // Remove os atributos que estão causando problema e tenta de novo
+        const attrsSemProblema = atributosLimpos.filter(a => !attrsObrigatorios.includes(a.id));
+        createRes = await fetch("https://api.mercadolibre.com/items", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${tokenDestino}`, "Content-Type": "application/json" },
+          body: JSON.stringify(buildBody(attrsSemProblema)),
+        });
+        created = await createRes.json();
+      }
+
+      if (created.error || created.cause?.some(c => c.type === "error")) {
+        const erros = (created.cause || []).filter(c => c.type === "error");
+        return res.status(400).json({ ok: false, error: created.message || "Erro ao criar anúncio", detalhes: erros.length ? erros : created.cause, raw: created });
       }
 
       if (item.descricao) {
