@@ -1386,18 +1386,13 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       });
       let created = await createRes.json();
 
-      // Se falhar por atributos obrigatórios ausentes (ex: GTIN), tenta sem nenhum atributo
-      // O ML às vezes aceita a criação e pede preenchimento depois pelo painel
+      // Se falhar por atributos obrigatórios ausentes (ex: GTIN que não existe no original),
+      // tenta criar sem nenhum atributo — o ML aceita e permite preencher depois pelo painel
       if ((created.error || created.cause) && (created.cause || []).some(c => c.code === "item.attribute.missing_conditional_required")) {
-        const attrsObrigatorios = (created.cause || [])
-          .filter(c => c.code === "item.attribute.missing_conditional_required")
-          .flatMap(c => (c.message.match(/\[([A-Z_,\s]+)\]/g) || []).flatMap(m => m.replace(/[\[\]]/g, "").split(/,\s*/)));
-        // Remove os atributos que estão causando problema e tenta de novo
-        const attrsSemProblema = atributosLimpos.filter(a => !attrsObrigatorios.includes(a.id));
         createRes = await fetch("https://api.mercadolibre.com/items", {
           method: "POST",
           headers: { Authorization: `Bearer ${tokenDestino}`, "Content-Type": "application/json" },
-          body: JSON.stringify(buildBody(attrsSemProblema)),
+          body: JSON.stringify(buildBody([])),
         });
         created = await createRes.json();
       }
