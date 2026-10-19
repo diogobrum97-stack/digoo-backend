@@ -1388,8 +1388,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
                 const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}`, { headers: blingH });
                 if (detResp.ok) {
                   const detData = (await detResp.json()).data || {};
-                  const ean = detData.gtin || detData.ean || detData.codigoBarras;
-                  if (ean && String(ean).trim() && String(ean).trim() !== "0") {
+                  // Bling API v3: código de barras fica em detData.gtin (raiz) OU detData.tributacao?.gtin
+                  // dependendo da versão/endpoint; tenta os dois
+                  const ean = detData.gtin || detData.tributacao?.gtin || detData.ean || detData.codigoBarras;
+                  if (ean && String(ean).trim() && String(ean).trim() !== "0" && String(ean).trim() !== "") {
                     atributosLimpos = [
                       ...atributosLimpos.filter(a => a.id !== "GTIN"),
                       { id: "GTIN", value_name: String(ean).trim() },
@@ -1429,15 +1431,15 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       // Se falhar por atributos condicionais obrigatórios ausentes (ex: GTIN não encontrado no Bling),
       // remove somente os atributos com esse problema e tenta novamente sem eles
       if ((created.error || created.cause) && (created.cause || []).some(c => c.code === "item.attribute.missing_conditional_required")) {
-        const attrsProblema = new Set(
-          (created.cause || [])
-            .filter(c => c.code === "item.attribute.missing_conditional_required")
-            .map(c => c.attribute_id || c.code)
-            .filter(Boolean)
-        );
-        // Também remove sempre GTIN se estiver na lista de problemas ou se vier do erro
-        const msgRaw = JSON.stringify(created);
-        if (msgRaw.includes("GTIN")) attrsProblema.add("GTIN");
+        const attrsProblema = new Set();
+        for (const c of (created.cause || []).filter(c => c.code === "item.attribute.missing_conditional_required")) {
+          // attribute_id pode não vir — extrai da mensagem ex: "The attributes [GTIN] are required..."
+          if (c.attribute_id) attrsProblema.add(c.attribute_id);
+          const match = (c.message || "").match(/\[([A-Z0-9_,\s]+)\]/);
+          if (match) {
+            match[1].split(",").map(s => s.trim()).filter(Boolean).forEach(id => attrsProblema.add(id));
+          }
+        }
 
         const attrsSemProblema = atributosLimpos.filter(a => !attrsProblema.has(a.id));
 
