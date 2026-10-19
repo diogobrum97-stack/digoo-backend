@@ -1386,6 +1386,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
                 String(p.codigo || "").trim().toLowerCase() === skuParaBusca.trim().toLowerCase()
               ) || (buscaData.data || [])[0];
 
+              debugGtin.blingResultados = (buscaData.data || []).map(p => p.codigo);
               debugGtin.blingAchou = !!prod?.id;
 
               if (prod?.id) {
