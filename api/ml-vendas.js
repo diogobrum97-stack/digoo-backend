@@ -1366,8 +1366,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
 
       // Se não há GTIN nos atributos, tenta buscar EAN no Bling pelo SKU
       const jaTemGtin = atributosLimpos.some(a => a.id === "GTIN");
+      const debugGtin = { jaTemGtin, skuUsado: null, blingAchou: false, eanEncontrado: null, erro: null };
       if (!jaTemGtin) {
         const skuParaBusca = novoSku || item.seller_custom_field || item.sku;
+        debugGtin.skuUsado = skuParaBusca || null;
         if (skuParaBusca) {
           try {
             const blingTokenSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
@@ -1384,14 +1386,18 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
                 String(p.codigo || "").trim().toLowerCase() === skuParaBusca.trim().toLowerCase()
               ) || (buscaData.data || [])[0];
 
+              debugGtin.blingAchou = !!prod?.id;
+
               if (prod?.id) {
                 const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}`, { headers: blingH });
                 if (detResp.ok) {
                   const detData = (await detResp.json()).data || {};
-                  // Bling API v3: código de barras fica em detData.gtin (raiz) OU detData.tributacao?.gtin
-                  // dependendo da versão/endpoint; tenta os dois
+                  // Bling API v3: código de barras/GTIN fica em gtin na raiz
                   const ean = detData.gtin || detData.tributacao?.gtin || detData.ean || detData.codigoBarras;
-                  if (ean && String(ean).trim() && String(ean).trim() !== "0" && String(ean).trim() !== "") {
+                  debugGtin.eanEncontrado = ean || null;
+                  debugGtin.camposDisponiveis = Object.keys(detData).filter(k => ["gtin","ean","codigoBarras","tributacao","codigo"].includes(k))
+                    .reduce((acc, k) => { acc[k] = typeof detData[k] === "object" ? JSON.stringify(detData[k]).slice(0,100) : detData[k]; return acc; }, {});
+                  if (ean && String(ean).trim() && String(ean).trim() !== "0") {
                     atributosLimpos = [
                       ...atributosLimpos.filter(a => a.id !== "GTIN"),
                       { id: "GTIN", value_name: String(ean).trim() },
@@ -1401,6 +1407,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
               }
             }
           } catch (e) {
+            debugGtin.erro = e.message;
             // Se falhar, continua sem GTIN — o ML pode aceitar dependendo da categoria
           }
         }
@@ -1435,9 +1442,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         for (const c of (created.cause || []).filter(c => c.code === "item.attribute.missing_conditional_required")) {
           // attribute_id pode não vir — extrai da mensagem ex: "The attributes [GTIN] are required..."
           if (c.attribute_id) attrsProblema.add(c.attribute_id);
-          const match = (c.message || "").match(/\[([A-Z0-9_,\s]+)\]/);
-          if (match) {
-            match[1].split(",").map(s => s.trim()).filter(Boolean).forEach(id => attrsProblema.add(id));
+          // Pega só o primeiro [GRUPO] da mensagem (atributos, não categoria tipo MLB2676)
+          const matches = [...(c.message || "").matchAll(/\[([A-Z_][A-Z0-9_,\s]*)\]/g)];
+          if (matches.length > 0) {
+            matches[0][1].split(",").map(s => s.trim()).filter(Boolean).forEach(id => attrsProblema.add(id));
           }
         }
 
@@ -1456,7 +1464,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
 
       if (created.error || created.cause?.some(c => c.type === "error")) {
         const erros = (created.cause || []).filter(c => c.type === "error");
-        return res.status(400).json({ ok: false, error: created.message || "Erro ao criar anúncio", detalhes: erros.length ? erros : created.cause, raw: created });
+        return res.status(400).json({ ok: false, error: created.message || "Erro ao criar anúncio", detalhes: erros.length ? erros : created.cause, raw: created, _debugGtin: debugGtin });
       }
 
       if (item.descricao) {
