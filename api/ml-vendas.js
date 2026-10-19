@@ -1362,7 +1362,47 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
 
       // Atributos não-modificáveis que o ML rejeita se enviados na criação
       const ATTRS_IGNORAR = new Set(["SYI_PYMES_ID", "ITEM_CONDITION", "SELLER_SKU"]);
-      const atributosLimpos = (item.attributes || []).filter(a => !ATTRS_IGNORAR.has(a.id));
+      let atributosLimpos = (item.attributes || []).filter(a => !ATTRS_IGNORAR.has(a.id));
+
+      // Se não há GTIN nos atributos, tenta buscar EAN no Bling pelo SKU
+      const jaTemGtin = atributosLimpos.some(a => a.id === "GTIN");
+      if (!jaTemGtin) {
+        const skuParaBusca = novoSku || item.seller_custom_field || item.sku;
+        if (skuParaBusca) {
+          try {
+            const blingTokenSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+            const blingToken = await blingTokenSnap.json();
+            const blingH = { Authorization: `Bearer ${blingToken?.access_token}`, Accept: "application/json" };
+
+            const buscaResp = await fetch(
+              `https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(skuParaBusca)}&limite=5`,
+              { headers: blingH }
+            );
+            if (buscaResp.ok) {
+              const buscaData = await buscaResp.json();
+              const prod = (buscaData.data || []).find(p =>
+                String(p.codigo || "").trim().toLowerCase() === skuParaBusca.trim().toLowerCase()
+              ) || (buscaData.data || [])[0];
+
+              if (prod?.id) {
+                const detResp = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}`, { headers: blingH });
+                if (detResp.ok) {
+                  const detData = (await detResp.json()).data || {};
+                  const ean = detData.gtin || detData.ean || detData.codigoBarras;
+                  if (ean && String(ean).trim() && String(ean).trim() !== "0") {
+                    atributosLimpos = [
+                      ...atributosLimpos.filter(a => a.id !== "GTIN"),
+                      { id: "GTIN", value_name: String(ean).trim() },
+                    ];
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // Se falhar, continua sem GTIN — o ML pode aceitar dependendo da categoria
+          }
+        }
+      }
 
       const buildBody = (attrs) => ({
         family_name: (item.title || "").slice(0, 60),
@@ -1386,15 +1426,30 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       });
       let created = await createRes.json();
 
-      // Se falhar por atributos obrigatórios ausentes (ex: GTIN que não existe no original),
-      // tenta criar sem nenhum atributo — o ML aceita e permite preencher depois pelo painel
+      // Se falhar por atributos condicionais obrigatórios ausentes (ex: GTIN não encontrado no Bling),
+      // remove somente os atributos com esse problema e tenta novamente sem eles
       if ((created.error || created.cause) && (created.cause || []).some(c => c.code === "item.attribute.missing_conditional_required")) {
-        createRes = await fetch("https://api.mercadolibre.com/items", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${tokenDestino}`, "Content-Type": "application/json" },
-          body: JSON.stringify(buildBody([])),
-        });
-        created = await createRes.json();
+        const attrsProblema = new Set(
+          (created.cause || [])
+            .filter(c => c.code === "item.attribute.missing_conditional_required")
+            .map(c => c.attribute_id || c.code)
+            .filter(Boolean)
+        );
+        // Também remove sempre GTIN se estiver na lista de problemas ou se vier do erro
+        const msgRaw = JSON.stringify(created);
+        if (msgRaw.includes("GTIN")) attrsProblema.add("GTIN");
+
+        const attrsSemProblema = atributosLimpos.filter(a => !attrsProblema.has(a.id));
+
+        // Só tenta se removeu algum atributo (para não repetir o mesmo body)
+        if (attrsSemProblema.length < atributosLimpos.length) {
+          createRes = await fetch("https://api.mercadolibre.com/items", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${tokenDestino}`, "Content-Type": "application/json" },
+            body: JSON.stringify(buildBody(attrsSemProblema)),
+          });
+          created = await createRes.json();
+        }
       }
 
       if (created.error || created.cause?.some(c => c.type === "error")) {
