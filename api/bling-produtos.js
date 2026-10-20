@@ -783,6 +783,40 @@ export default async function handler(req, res) {
       });
     }
 
+    // ── Busca pedido + NF-e pelo numeroLoja (order_id ML) ─────────────────────
+    if (req.query.action === "pedido") {
+      const { numeroLoja } = req.query;
+      if (!numeroLoja) return res.status(400).json({ ok: false, error: "numeroLoja obrigatório" });
+      try {
+        const rPedido = await fetch(
+          `https://www.bling.com.br/Api/v3/pedidos/vendas?numeroLoja=${numeroLoja}&limite=5`,
+          { headers }
+        );
+        const dPedido = await rPedido.json();
+        if (!rPedido.ok || !dPedido.data?.length) {
+          return res.json({ ok: false, error: "Pedido não encontrado no Bling", raw: dPedido });
+        }
+        const pedido = dPedido.data[0];
+
+        let nfe = null;
+        const rNfe = await fetch(
+          `https://www.bling.com.br/Api/v3/nfe?idPedidoVenda=${pedido.id}&limite=5`,
+          { headers }
+        );
+        const dNfe = await rNfe.json();
+        if (dNfe.data?.length) {
+          const n = dNfe.data[0];
+          nfe = { id: n.id, numero: n.numero, serie: n.serie, chave: n.chaveAcesso, situacao: n.situacao };
+        }
+
+        return res.json({
+          ok: true,
+          pedido: { id: pedido.id, numero: pedido.numero, numeroLoja, situacao: pedido.situacao },
+          nfe,
+        });
+      } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
+    }
+
     // ── Estoque por depósito (para conciliação Bling x ML) ──────────────────────
     if (req.query.action === 'estoques-filial') {
       try {
@@ -1403,48 +1437,6 @@ export default async function handler(req, res) {
       };
       return res.json({ ok: true, resultado });
     } catch(e) { return res.status(500).json({ erro: e.message }); }
-  }
-
-  // ── Busca pedido + NF-e pelo numeroLoja (order_id ML) ─────────────────────
-  if (req.query.action === "pedido") {
-    const { numeroLoja } = req.query;
-    if (!numeroLoja) return res.status(400).json({ ok: false, error: "numeroLoja obrigatório" });
-    try {
-      const tokenResp = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
-      const tokenData = await tokenResp.json();
-      const accessToken = tokenData?.access_token;
-      if (!accessToken) return res.status(500).json({ ok: false, error: "Token Bling não disponível" });
-      const headers = { Authorization: `Bearer ${accessToken}`, Accept: "application/json" };
-
-      // 1. Pedido pelo número da loja
-      const rPedido = await fetch(
-        `https://www.bling.com.br/Api/v3/pedidos/vendas?numeroLoja=${numeroLoja}&limite=5`,
-        { headers }
-      );
-      const dPedido = await rPedido.json();
-      if (!rPedido.ok || !dPedido.data?.length) {
-        return res.json({ ok: false, error: "Pedido não encontrado no Bling", raw: dPedido });
-      }
-      const pedido = dPedido.data[0];
-
-      // 2. NF-e vinculada
-      let nfe = null;
-      const rNfe = await fetch(
-        `https://www.bling.com.br/Api/v3/nfe?idPedidoVenda=${pedido.id}&limite=5`,
-        { headers }
-      );
-      const dNfe = await rNfe.json();
-      if (dNfe.data?.length) {
-        const n = dNfe.data[0];
-        nfe = { id: n.id, numero: n.numero, serie: n.serie, chave: n.chaveAcesso, situacao: n.situacao };
-      }
-
-      return res.json({
-        ok: true,
-        pedido: { id: pedido.id, numero: pedido.numero, numeroLoja, situacao: pedido.situacao },
-        nfe,
-      });
-    } catch(e) { return res.status(500).json({ ok: false, error: e.message }); }
   }
 
     return res.status(500).json({ error: e.message });
