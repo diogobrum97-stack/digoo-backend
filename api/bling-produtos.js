@@ -789,7 +789,7 @@ export default async function handler(req, res) {
       if (!numeroLoja) return res.status(400).json({ ok: false, error: "numeroLoja obrigatório" });
       try {
         const rPedido = await fetch(
-          `https://www.bling.com.br/Api/v3/pedidos/vendas?numeroLoja=${numeroLoja}&limite=5`,
+          `https://api.bling.com.br/Api/v3/pedidos/vendas?numeroLoja=${numeroLoja}&limite=5`,
           { headers }
         );
         const dPedido = await rPedido.json();
@@ -800,7 +800,7 @@ export default async function handler(req, res) {
 
         let nfe = null;
         const rNfe = await fetch(
-          `https://www.bling.com.br/Api/v3/nfe?idPedidoVenda=${pedido.id}&limite=5`,
+          `https://api.bling.com.br/Api/v3/nfe?idPedidoVenda=${pedido.id}&limite=5`,
           { headers }
         );
         const dNfe = await rNfe.json();
