@@ -250,7 +250,7 @@ module.exports = async function handler(req, res) {
       // ML limita a 50 por página — busca até 3 páginas (150 pedidos, mais que suficiente)
       let pedidos = [];
       for (let offset = 0; offset < 150; offset += 50) {
-        const mlUrl = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&limit=50&offset=${offset}`;
+        const mlUrl = `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${encodeURIComponent(dataDe)}&sort=date_desc&limit=50&offset=${offset}`;
         const ordersRes = await fetch(mlUrl, { headers: { Authorization: `Bearer ${tokenPk}` } });
         const ordersData = await ordersRes.json();
         const pagina = ordersData.results || [];
