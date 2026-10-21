@@ -69,6 +69,107 @@ export default async function handler(req, res) {
     } catch(e) { return res.status(500).json({ erro:e.message }); }
   }
 
+  // ── Webhook Bling — pedidos de vendas e NF-e ─────────────────────────────
+  // O Bling envia POST com header X-Bling-Signature-256: sha256=<hmac>
+  // O payload tem: { eventId, date, event, companyId, data: { ... } }
+  // Para pedidos de vendas: data.id, data.numero, data.numeroLoja (= order_id ML), data.situacao
+  // Para NF-e: data.id, data.numero, data.chaveAcesso, data.situacao, data.idPedidoVenda
+  if (req.query.action === "bling-webhook" && req.method === "POST") {
+    try {
+      const FIREBASE_URL = process.env.FIREBASE_URL;
+      const CLIENT_SECRET = process.env.BLING_CLIENT_SECRET;
+
+      // Validar assinatura HMAC
+      const sig = req.headers["x-bling-signature-256"] || "";
+      if (CLIENT_SECRET && sig) {
+        const { createHmac } = await import("crypto");
+        const rawBody = JSON.stringify(req.body);
+        const expected = "sha256=" + createHmac("sha256", CLIENT_SECRET).update(rawBody, "utf8").digest("hex");
+        if (sig !== expected) {
+          return res.status(401).json({ ok: false, error: "Assinatura inválida" });
+        }
+      }
+
+      const payload = req.body;
+      const event = payload?.event || "";
+      const data = payload?.data;
+
+      if (!data) return res.json({ ok: true, ignorado: "sem data" });
+
+      // ── Pedido de venda criado/atualizado ──────────────────────────────────
+      if (event === "pedidosVendas.created" || event === "pedidosVendas.updated") {
+        const numeroLoja = data.numeroLoja || data.numero_loja || "";
+        const blingId = data.id;
+        if (numeroLoja && blingId) {
+          // Salva vínculo ML order_id → Bling pedido
+          await fetch(`${FIREBASE_URL}/bling_pedidos/${numeroLoja}.json`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              bling_id: blingId,
+              numero: data.numero || null,
+              situacao: data.situacao?.id || data.situacao || null,
+              atualizado_em: Date.now(),
+            }),
+          });
+        }
+        return res.json({ ok: true, event, numeroLoja, blingId });
+      }
+
+      // ── NF-e criada/atualizada ─────────────────────────────────────────────
+      if (event === "notasfiscais.created" || event === "notasfiscais.updated") {
+        const blingPedidoId = data.idPedidoVenda || data.pedidoVenda?.id || null;
+        const nfeId = data.id;
+
+        // Precisamos do numeroLoja para achar o order_id do ML.
+        // O webhook da NF traz idPedidoVenda — buscamos o vínculo já salvo.
+        let orderIdML = null;
+        if (blingPedidoId) {
+          // Varre /bling_pedidos buscando pelo bling_id
+          const snapR = await fetch(`${FIREBASE_URL}/bling_pedidos.json?orderBy="bling_id"&equalTo=${blingPedidoId}&limitToFirst=1`);
+          const snap = await snapR.json();
+          if (snap && typeof snap === "object") {
+            const keys = Object.keys(snap);
+            if (keys.length > 0) orderIdML = keys[0]; // a chave é o order_id do ML
+          }
+        }
+
+        const nfeData = {
+          nfe_id: nfeId,
+          numero: data.numero || null,
+          serie: data.serie || null,
+          chave: data.chaveAcesso || null,
+          situacao: data.situacao?.id || data.situacao || null,
+          bling_pedido_id: blingPedidoId,
+          atualizado_em: Date.now(),
+        };
+
+        // Salva indexado pelo nfe_id sempre
+        await fetch(`${FIREBASE_URL}/bling_nfe_by_id/${nfeId}.json`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...nfeData, order_id_ml: orderIdML }),
+        });
+
+        // Se achou o order_id do ML, salva também indexado por ele (acesso direto no picking)
+        if (orderIdML) {
+          await fetch(`${FIREBASE_URL}/bling_nfe/${orderIdML}.json`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(nfeData),
+          });
+        }
+
+        return res.json({ ok: true, event, nfeId, orderIdML });
+      }
+
+      // Evento não tratado — retorna 200 pra Bling não reenviar
+      return res.json({ ok: true, ignorado: event });
+    } catch(e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   if (req.query.action === "importar-nfse") {
     try {
       const { token } = getFDConfig();
