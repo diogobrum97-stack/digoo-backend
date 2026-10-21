@@ -163,7 +163,15 @@ export default async function handler(req, res) {
         return res.json({ ok: true, event, nfeId, orderIdML });
       }
 
-      // Evento não tratado — retorna 200 pra Bling não reenviar
+      // Evento não tratado — salva no Firebase para debug e retorna 200
+      if (FIREBASE_URL && event) {
+        const logKey = Date.now();
+        await fetch(`${FIREBASE_URL}/bling_webhook_log/${logKey}.json`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event, data: data || null, ts: logKey }),
+        }).catch(() => {});
+      }
       return res.json({ ok: true, ignorado: event });
     } catch(e) {
       return res.status(500).json({ ok: false, error: e.message });
