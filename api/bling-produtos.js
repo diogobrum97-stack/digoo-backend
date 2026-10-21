@@ -97,7 +97,7 @@ export default async function handler(req, res) {
       if (!data) return res.json({ ok: true, ignorado: "sem data" });
 
       // ── Pedido de venda criado/atualizado ──────────────────────────────────
-      if (event === "pedidosVendas.created" || event === "pedidosVendas.updated") {
+      if (event === "order.created" || event === "order.updated") {
         const numeroLoja = data.numeroLoja || data.numero_loja || "";
         const blingId = data.id;
         if (numeroLoja && blingId) {
@@ -117,7 +117,7 @@ export default async function handler(req, res) {
       }
 
       // ── NF-e criada/atualizada ─────────────────────────────────────────────
-      if (event === "notasfiscais.created" || event === "notasfiscais.updated") {
+      if (event === "nfe.created" || event === "nfe.updated" || event === "invoice.created" || event === "invoice.updated") {
         const blingPedidoId = data.idPedidoVenda || data.pedidoVenda?.id || null;
         const nfeId = data.id;
 
