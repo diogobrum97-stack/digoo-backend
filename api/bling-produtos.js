@@ -142,6 +142,7 @@ export default async function handler(req, res) {
           situacao: data.situacao?.id || data.situacao || null,
           bling_pedido_id: blingPedidoId,
           atualizado_em: Date.now(),
+          _raw: data, // debug temporário — ver o que o Bling envia
         };
 
         // Salva indexado pelo nfe_id sempre
