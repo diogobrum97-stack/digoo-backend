@@ -1,0 +1,12 @@
+{
+  "name": "digoo-print-server",
+  "version": "2.0.0",
+  "description": "Servidor de impressão automática via Firebase — Digoo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "firebase": "^10.12.2"
+  }
+}
