@@ -4,23 +4,17 @@
  * Quando chega um item com status "aguardando", imprime via SumatraPDF
  * e atualiza o status para "impresso" ou "erro".
  * Envia heartbeat a /print_server_status a cada 5 segundos.
- *
- * Instalar dependências (uma vez):
- *   cd C:\digoo-print-server
- *   npm install firebase node-fetch
- *
- * Iniciar / reiniciar com PM2:
- *   pm2 delete digoo-print-server
- *   pm2 start server.js --name digoo-print-server
- *   pm2 save
  */
 
-const { initializeApp } = require("firebase/app");
-const { getDatabase, ref, onChildAdded, onChildChanged, update, set, get } = require("firebase/database");
-const { execFile } = require("child_process");
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, onChildAdded, onChildChanged, update, set } from "firebase/database";
+import { execFile } from "child_process";
+import fs from "fs";
+import path from "path";
+import os from "os";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Configuração ──────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -33,10 +27,10 @@ const FIREBASE_CONFIG = {
   appId: "1:246513516738:web:4ddb07b2a5c4a9e7b86123",
 };
 
-const VERSION   = "2.0.0";
-const PRINTER   = "A82pro";
-const SUMATRA   = path.join(__dirname, "SumatraPDF.exe");
-const TEMP_DIR  = os.tmpdir();
+const VERSION  = "2.0.0";
+const PRINTER  = "A82pro";
+const SUMATRA  = path.join(__dirname, "SumatraPDF.exe");
+const TEMP_DIR = os.tmpdir();
 
 // ── Firebase ──────────────────────────────────────────────────────────────────
 const app = initializeApp(FIREBASE_CONFIG);
@@ -53,8 +47,7 @@ if (!fs.existsSync(SUMATRA)) {
 }
 
 // ── Heartbeat ─────────────────────────────────────────────────────────────────
-// Atualiza /print_server_status a cada 5 segundos com hora, impressora e versão
-let queueSize = 0; // atualizado durante o processamento
+let queueSize = 0;
 
 async function sendHeartbeat() {
   try {
@@ -76,10 +69,7 @@ setInterval(sendHeartbeat, 5000);
 // ── Impressão ─────────────────────────────────────────────────────────────────
 async function imprimirPDF(pdf_base64, order_id) {
   const pdfPath = path.join(TEMP_DIR, `etiqueta_${order_id}_${Date.now()}.pdf`);
-
-  // Salva o PDF em arquivo temporário
-  const buf = Buffer.from(pdf_base64, "base64");
-  fs.writeFileSync(pdfPath, buf);
+  fs.writeFileSync(pdfPath, Buffer.from(pdf_base64, "base64"));
 
   return new Promise((resolve, reject) => {
     execFile(
@@ -87,47 +77,33 @@ async function imprimirPDF(pdf_base64, order_id) {
       ["-print-to", PRINTER, "-print-settings", "fit", "-silent", pdfPath],
       { timeout: 30000 },
       (err, stdout, stderr) => {
-        // Limpa o arquivo temporário
         try { fs.unlinkSync(pdfPath); } catch {}
-
-        if (err) {
-          reject(new Error(stderr || err.message));
-        } else {
-          resolve();
-        }
+        if (err) reject(new Error(stderr || err.message));
+        else resolve();
       }
     );
   });
 }
 
 // ── Processar item da fila ────────────────────────────────────────────────────
-const processando = new Set(); // evita processar o mesmo pedido duas vezes
+const processando = new Set();
 
 async function processarItem(order_id, data) {
   if (data.status !== "aguardando") return;
   if (processando.has(order_id)) return;
   processando.add(order_id);
-
   queueSize++;
+
   console.log(`[fila] Processando pedido ${order_id} (operador: ${data.operador || "—"})`);
 
   try {
     if (!data.pdf_base64) throw new Error("pdf_base64 ausente no payload");
     await imprimirPDF(data.pdf_base64, order_id);
-
-    // Marca como impresso
-    await update(ref(db, `/fila_impressao/${order_id}`), {
-      status: "impresso",
-      impresso_em: Date.now(),
-    });
+    await update(ref(db, `/fila_impressao/${order_id}`), { status: "impresso", impresso_em: Date.now() });
     console.log(`[fila] ✓ Pedido ${order_id} impresso com sucesso`);
   } catch (e) {
     console.error(`[fila] ✗ Erro ao imprimir pedido ${order_id}:`, e.message);
-    await update(ref(db, `/fila_impressao/${order_id}`), {
-      status: "erro",
-      erro_msg: e.message,
-      erro_em: Date.now(),
-    }).catch(() => {});
+    await update(ref(db, `/fila_impressao/${order_id}`), { status: "erro", erro_msg: e.message, erro_em: Date.now() }).catch(() => {});
   } finally {
     queueSize = Math.max(0, queueSize - 1);
     processando.delete(order_id);
@@ -135,16 +111,8 @@ async function processarItem(order_id, data) {
 }
 
 // ── Ouvir a fila em tempo real ────────────────────────────────────────────────
-// onChildAdded: dispara para cada filho existente + novos que chegarem
-// onChildChanged: dispara quando um filho muda (ex: status volta para "aguardando")
 const filaRef = ref(db, "/fila_impressao");
-
-onChildAdded(filaRef, (snap) => {
-  processarItem(snap.key, snap.val());
-});
-
-onChildChanged(filaRef, (snap) => {
-  processarItem(snap.key, snap.val());
-});
+onChildAdded(filaRef, (snap) => processarItem(snap.key, snap.val()));
+onChildChanged(filaRef, (snap) => processarItem(snap.key, snap.val()));
 
 console.log("[digoo-print-server] Ouvindo /fila_impressao… (Ctrl+C para sair)");
