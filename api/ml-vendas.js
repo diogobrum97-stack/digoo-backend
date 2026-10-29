@@ -802,8 +802,9 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   // ── Perguntas: enviar resposta ──
   if (req.query.action === "responder-pergunta" && req.method === "POST") {
     try {
-      const { question_id, texto, token: tokenR } = req.body || {};
-      if (!question_id || !texto || !tokenR) return res.status(400).json({ ok: false, error: "question_id, texto e token obrigatórios" });
+      const { question_id, token: tokenR } = req.body || {};
+      const texto = req.body?.text || req.body?.texto; // aceita ambos os campos
+      if (!question_id || !texto || !tokenR) return res.status(400).json({ ok: false, error: "question_id, texto/text e token obrigatórios" });
 
       const r = await fetch("https://api.mercadolibre.com/answers", {
         method: "POST",
