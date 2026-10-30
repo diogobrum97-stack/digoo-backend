@@ -12,22 +12,41 @@ async function processarNfse(nfse, FIREBASE_URL) {
   const chave = (nfse.chaveAcesso||nfse.chave_acesso||nfse.numero||"").replace(/[\.#$[\]\/]/g,"_");
   const competencia = nfse.competencia||nfse.dataCompetencia?.slice(0,7)||nfse.dataEmissao?.slice(0,7)||new Date().toISOString().slice(0,7);
   const mesPath = competencia.replace("-","/");
-  const existeR = await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chave}.json`);
-  const existe = await existeR.json();
-  if (existe && existe.fornecedor) return;
   const fornecedor = nfse.prestador?.razaoSocial||nfse.prestador?.nome||"";
   const cnpj = (nfse.prestador?.cnpj||"").replace(/\D/g,"");
   const valor = Number(nfse.valorServicos||nfse.valor||0);
   const discriminacao = nfse.discriminacao||nfse.descricaoServico||"";
   const numero = nfse.numero||nfse.numeroNfse||"";
+  const dataEmissao = nfse.dataEmissao?.slice(0,10)||"";
+  const chaveId = chave||"fd_"+Date.now();
+
+  // Salva em nfse_tomadas (sempre — para o card "Documentos hoje" e histórico)
+  // Campos nomeados para compatibilidade com o card frontend:
+  // prestadorRazaoSocial, valorServicos, numero, dataEmissao, linkNfse
+  const nfseTomada = {
+    chave: chaveId, numero,
+    prestadorRazaoSocial: fornecedor, cnpj,
+    valorServicos: valor,
+    dataEmissao, competencia,
+    discriminacao, linkNfse: nfse.linkNfse||nfse.link||"",
+    origem:"fiscal-defender", criadoEm:Date.now(),
+  };
+  await fetch(`${FIREBASE_URL}/nfse_tomadas/${mesPath}/${chaveId}.json`, {
+    method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(nfseTomada)
+  });
+
+  // Salva em contas_pagar como rascunho (só se ainda não existe)
+  const existeR = await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chaveId}.json`);
+  const existe = await existeR.json();
+  if (existe && existe.fornecedor) return;
   const entrada = {
     fornecedor, cnpj, numeroDoc:numero, valor,
-    competencia, vencimento: nfse.dataEmissao?.slice(0,10)||"",
+    competencia, vencimento: dataEmissao,
     historico:discriminacao, categoriaId:"", categoriaLabel:"",
     situacao:"rascunho", origem:"fiscal-defender",
     criadoEm:Date.now(),
   };
-  await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chave||"fd_"+Date.now()}.json`, {
+  await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chaveId}.json`, {
     method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(entrada)
   });
 }
