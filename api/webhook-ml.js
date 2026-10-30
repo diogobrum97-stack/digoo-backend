@@ -41,9 +41,10 @@ export default async function handler(req, res) {
     const evento = { topic, resource, userId, attempts, receivedAt: timestamp };
 
     // Salva no Firebase no nó correspondente ao tópico
+    // Nota: o ML usa "questions" para perguntas (não "messages")
     let firebasePath;
-    if (topic === "messages") {
-      firebasePath = "webhooks/messages";
+    if (topic === "questions" || topic === "messages") {
+      firebasePath = "webhooks/messages"; // frontend escuta este nó
     } else if (topic === "orders_v2" || topic === "orders") {
       firebasePath = "webhooks/orders";
     } else if (topic === "shipments") {
