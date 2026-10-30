@@ -948,6 +948,72 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── Sincronizar composições de kits via API ──────────────────────────────
+    if (req.query.action === 'kits-composicoes') {
+      try {
+        // Busca apenas kits ativos (tipo=K) — filtro suportado pela API v3 do Bling
+        // Se não houver resultados, faz fallback sem filtro de tipo e filtra localmente
+        const buscarPaginas = async (url) => {
+          const lista = [];
+          let pg = 1;
+          while (pg <= 50) {
+            const r = await fetch(`${url}&pagina=${pg}&limite=100`, { headers });
+            if (!r.ok) break;
+            const d = await r.json();
+            const it = d.data || [];
+            if (!it.length) break;
+            lista.push(...it);
+            if (it.length < 100) break;
+            pg++;
+            await sleep(350);
+          }
+          return lista;
+        };
+
+        let todos = await buscarPaginas(`https://api.bling.com.br/Api/v3/produtos?situacao=A&tipo=K`);
+
+        // Para cada kit, busca o detalhe para pegar os componentes
+        const composicoes = {};
+        for (const prod of todos) {
+          await sleep(200);
+          const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${prod.id}`, { headers });
+          if (!detResp.ok) continue;
+          const det = (await detResp.json()).data || {};
+          const componentes = det.estrutura?.componentes || [];
+          if (!componentes.length) continue;
+
+          // Para cada componente, resolve o SKU (pode vir só com id)
+          const compsResolvidos = [];
+          for (const c of componentes) {
+            const compId = c.produto?.id || c.produtoId || c.id;
+            const qtd = Number(c.quantidade) || 1;
+            // Se o SKU já veio direto
+            if (c.produto?.codigo || c.codigo) {
+              compsResolvidos.push({ sku: c.produto?.codigo || c.codigo, qtd });
+              continue;
+            }
+            // Busca detalhe do componente para pegar o SKU
+            if (compId) {
+              await sleep(150);
+              const cResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
+              if (cResp.ok) {
+                const cDet = (await cResp.json()).data || {};
+                if (cDet.codigo) compsResolvidos.push({ sku: cDet.codigo, qtd });
+              }
+            }
+          }
+          if (compsResolvidos.length > 0) {
+            composicoes[prod.codigo || det.codigo] = compsResolvidos;
+          }
+        }
+
+        const total = Object.keys(composicoes).length;
+        return res.json({ ok: true, composicoes, total });
+      } catch (e) {
+        return res.status(500).json({ erro: e.message });
+      }
+    }
+
     // ── Modo padrão: lista de produtos com custo (comportamento original) ──
     const produtos = [];
     let pagina = 1;
