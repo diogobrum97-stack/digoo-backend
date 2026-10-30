@@ -2,55 +2,6 @@ export const config = {
   maxDuration: 60,
 };
 
-// ── Fiscal Defender ──────────────────────────────────────────────────────────
-const FD_BASE = "https://fiscaldefender.com.br/api/v1";
-function getFDConfig() {
-  try { const c = JSON.parse(process.env.FISCAL_DEFENDER||"{}"); return {token:c.t||"",secret:c.w||""}; }
-  catch(e) { return {token:"",secret:""}; }
-}
-async function processarNfse(nfse, FIREBASE_URL) {
-  const chave = (nfse.chaveAcesso||nfse.chave_acesso||nfse.numero||"").replace(/[\.#$[\]\/]/g,"_");
-  const competencia = nfse.competencia||nfse.dataCompetencia?.slice(0,7)||nfse.dataEmissao?.slice(0,7)||new Date().toISOString().slice(0,7);
-  const mesPath = competencia.replace("-","/");
-  const fornecedor = nfse.prestador?.razaoSocial||nfse.prestador?.nome||"";
-  const cnpj = (nfse.prestador?.cnpj||"").replace(/\D/g,"");
-  const valor = Number(nfse.valorServicos||nfse.valor||0);
-  const discriminacao = nfse.discriminacao||nfse.descricaoServico||"";
-  const numero = nfse.numero||nfse.numeroNfse||"";
-  const dataEmissao = nfse.dataEmissao?.slice(0,10)||"";
-  const chaveId = chave||"fd_"+Date.now();
-
-  // Salva em nfse_tomadas (sempre — para o card "Documentos hoje" e histórico)
-  // Campos nomeados para compatibilidade com o card frontend:
-  // prestadorRazaoSocial, valorServicos, numero, dataEmissao, linkNfse
-  const nfseTomada = {
-    chave: chaveId, numero,
-    prestadorRazaoSocial: fornecedor, cnpj,
-    valorServicos: valor,
-    dataEmissao, competencia,
-    discriminacao, linkNfse: nfse.linkNfse||nfse.link||"",
-    origem:"fiscal-defender", criadoEm:Date.now(),
-  };
-  await fetch(`${FIREBASE_URL}/nfse_tomadas/${mesPath}/${chaveId}.json`, {
-    method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(nfseTomada)
-  });
-
-  // Salva em contas_pagar como rascunho (só se ainda não existe)
-  const existeR = await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chaveId}.json`);
-  const existe = await existeR.json();
-  if (existe && existe.fornecedor) return;
-  const entrada = {
-    fornecedor, cnpj, numeroDoc:numero, valor,
-    competencia, vencimento: dataEmissao,
-    historico:discriminacao, categoriaId:"", categoriaLabel:"",
-    situacao:"rascunho", origem:"fiscal-defender",
-    criadoEm:Date.now(),
-  };
-  await fetch(`${FIREBASE_URL}/contas_pagar/${mesPath}/${chaveId}.json`, {
-    method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(entrada)
-  });
-}
-
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -76,17 +27,6 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-bling-token");
   if (req.method === "OPTIONS") return res.status(200).end();
-
-  // ── Fiscal Defender — sem token Bling ────────────────────────────────────
-  if (req.query.action === "webhook-nfse" && req.method === "POST") {
-    try {
-      const body = req.body;
-      if (body?.event !== "nfse.created") return res.json({ ok:true, ignorado:body?.event });
-      if (!body?.data) return res.status(400).json({ erro:"Sem dados" });
-      await processarNfse(body.data, process.env.FIREBASE_URL);
-      return res.json({ ok:true });
-    } catch(e) { return res.status(500).json({ erro:e.message }); }
-  }
 
   // ── Webhook Bling — pedidos de vendas e NF-e ─────────────────────────────
   // O Bling envia POST com header X-Bling-Signature-256: sha256=<hmac>
@@ -196,27 +136,6 @@ export default async function handler(req, res) {
     } catch(e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
-  }
-
-  if (req.query.action === "importar-nfse") {
-    try {
-      const { token } = getFDConfig();
-      const competencia = req.query.competencia || new Date().toISOString().slice(0,7);
-      const pagina = parseInt(req.query.pagina||"1");
-      // Monta URL com parâmetros corretos do Fiscal Defender
-      const startDate = competencia ? `${competencia}-01` : "";
-      const endDate = competencia ? `${competencia}-31` : "";
-      let url = `${FD_BASE}/nfse?page=${pagina}&limit=50&situacao=NORMAL`;
-      if (startDate) url += `&startDate=${startDate}&endDate=${endDate}`;
-      const r = await fetch(url, { headers:{ Authorization:`Bearer ${token}` } });
-      const rawText = await r.text();
-      let data;
-      try { data = JSON.parse(rawText); } catch(e) { return res.status(502).json({ erro:"FD retornou não-JSON", status:r.status, url, raw:rawText.slice(0,300) }); }
-      if (!r.ok) return res.status(502).json({ erro:"FD erro", status:r.status, url, data });
-      const notas = data?.data || data?.nfses || data?.items || [];
-      for (const nfse of notas) await processarNfse(nfse, process.env.FIREBASE_URL);
-      return res.json({ ok:true, importadas:notas.length, rawKeys:Object.keys(data||{}), status:r.status });
-    } catch(e) { return res.status(500).json({ erro:e.message }); }
   }
 
   try {
