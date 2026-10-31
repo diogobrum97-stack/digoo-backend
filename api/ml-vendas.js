@@ -816,7 +816,14 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       });
       const data = await r.json();
       if (!r.ok || data.error || data.cause) {
-        return res.status(400).json({ ok: false, error: data.message || data.error || "Erro ao enviar resposta", status: r.status, raw: data });
+        const msg = data.message || data.error || "Erro ao enviar resposta";
+        // Traduz erros comuns do ML para português
+        const msgTrad = msg.includes("is not unanswered")
+          ? "Essa pergunta já foi respondida (no app do ML ou no painel). Recarregue as perguntas."
+          : msg.includes("not found")
+          ? "Pergunta não encontrada no ML."
+          : msg;
+        return res.status(400).json({ ok: false, error: msgTrad, status: r.status, raw: data });
       }
 
       // Salvar como conhecimento fixo DESSE produto — com limite de tempo, pra nunca segurar a resposta ao usuário
