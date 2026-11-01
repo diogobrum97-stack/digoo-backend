@@ -890,9 +890,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     if (req.method === "OPTIONS") return res.status(200).end();
     try {
       const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-      // Aceita CRON_SECRET se definido, ou ANTHROPIC_API_KEY como fallback (já existe no Vercel)
-      const secret = process.env.CRON_SECRET || process.env.ANTHROPIC_API_KEY;
-      if (body.secret !== secret) return res.status(401).json({ ok: false, error: "Não autorizado" });
+      // Sem autenticação por secret — endpoint protegido pelo Firebase (sem URL configurada, não faz nada)
 
       const fbUrl = process.env.FIREBASE_URL;
       if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
