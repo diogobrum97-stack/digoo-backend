@@ -686,7 +686,7 @@ LÓGICA DE RESPOSTA:
 2. Pergunta sobre preço, desconto ou promoção anterior:
    → Nunca prometa desconto ou iguale preço de promoção anterior.
    → Responda de forma simpática explicando que os preços variam conforme disponibilidade e promoções do momento.
-   → Exemplo: "Boa tarde! Os preços variam conforme nossas promoções — acompanhe o anúncio para aproveitar quando houver desconto. 😊"
+   → Exemplo: "Boa tarde! Os preços variam conforme nossas promoções — acompanhe o anúncio para aproveitar quando houver desconto."
    → SEMPRE retorne suggested_answer preenchido para esse caso.
 
 3. Cliente quer um produto diferente do anúncio (ex: outra versão, outro modelo, outra cor):
@@ -701,7 +701,7 @@ LÓGICA DE RESPOSTA:
    → Os kits já vêm montados e embalados no centro de distribuição do Mercado Livre — NÃO é possível montar combinações personalizadas.
    → Verifique se existe em itens_relacionados um kit com essa combinação exata. Se sim, siga a regra 3.
    → Se NÃO existe: retorne SEMPRE um suggested_answer explicando isso, NÃO crie rascunho.
-   → Resposta padrão: "Boa [hora]! Infelizmente não conseguimos alterar a composição dos kits, pois já se encontram prontos no centro de distribuição do Mercado Livre. 😊"
+   → Resposta padrão: "Boa [hora]! Infelizmente não conseguimos alterar a composição dos kits, pois já se encontram prontos no centro de distribuição do Mercado Livre."
    → Adapte se houver item_relacionado com combinação próxima (mencione como alternativa).
 
 3. Ao criar rascunhos (criar_rascunho), analise o produto original do anúncio:
