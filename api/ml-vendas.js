@@ -884,6 +884,147 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     }
   }
 
+  // ── Auto-resposta: busca perguntas e responde quando tem certeza ──
+  // Chamado pelo cron da VPS: node -e "require('node-fetch')('https://digoo-backend.vercel.app/api/ml-vendas?action=auto-responder', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({secret: process.env.CRON_SECRET})})"
+  if (req.query.action === "auto-responder") {
+    if (req.method === "OPTIONS") return res.status(200).end();
+    try {
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+      if (body.secret !== process.env.CRON_SECRET) return res.status(401).json({ ok: false, error: "Não autorizado" });
+
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+
+      // Ler config de auto-resposta do Firebase
+      const cfgR = await fetch(`${fbUrl}/config_auto_resposta.json`);
+      const cfg = await cfgR.json() || {};
+      // cfg = { matriz: true/false, filial: true/false }
+      if (!cfg.matriz && !cfg.filial) return res.json({ ok: true, msg: "Auto-resposta desligada", respondidas: 0 });
+
+      // Pegar tokens do Firebase
+      const [tkMatrizR, tkFilialR] = await Promise.all([
+        fetch(`${fbUrl}/ml_token.json`),
+        fetch(`${fbUrl}/ml_token_filial.json`),
+      ]);
+      const tkMatriz = cfg.matriz ? await tkMatrizR.json() : null;
+      const tkFilial = cfg.filial ? await tkFilialR.json() : null;
+
+      const contas = [];
+      if (tkMatriz?.access_token) contas.push({ token: tkMatriz.access_token, label: "Matriz RS", ativo: cfg.matriz });
+      if (tkFilial?.access_token) contas.push({ token: tkFilial.access_token, label: "Filial SP", ativo: cfg.filial });
+
+      let totalRespondidas = 0;
+      const log = [];
+
+      for (const conta of contas) {
+        if (!conta.ativo) continue;
+        try {
+          // Buscar perguntas via endpoint existente
+          const url = `${process.env.VERCEL_URL || "https://digoo-backend.vercel.app"}/api/ml-vendas?action=buscar-perguntas&token=${conta.token}`;
+          const pergR = await fetch(url);
+          if (!pergR.ok) continue;
+          const pergData = await pergR.json();
+          const lista = pergData.lista || [];
+
+          for (const p of lista) {
+            const sugestao = (p.suggested_answer || "").trim();
+            if (!sugestao) continue;
+            if (p.requires_attention) continue;
+            // Só responde se tem conhecimento salvo (treinado) OU se a confiança é alta (has_knowledge)
+            if (!p.has_knowledge) continue;
+
+            // Enviar resposta no ML
+            const rResp = await fetch(`https://api.mercadolibre.com/answers`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${conta.token}` },
+              body: JSON.stringify({ question_id: Number(p.question_id), text: sugestao }),
+            });
+            const dResp = await rResp.json();
+            const ok = rResp.ok || rResp.status === 201;
+
+            if (ok) {
+              totalRespondidas++;
+              const reg = {
+                question_id: String(p.question_id),
+                item_id: p.item_id,
+                produto: p.produto || "",
+                pergunta: p.pergunta || p.text || "",
+                resposta: sugestao,
+                conta: conta.label,
+                data: new Date().toISOString(),
+                ts: Date.now(),
+              };
+              log.push(reg);
+              // Salvar no histórico do Firebase
+              await fetch(`${fbUrl}/historico_auto_resposta/${p.question_id}.json`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(reg),
+              });
+              // Também salvar como treinamento
+              await fetch(`${fbUrl}/perguntas_treinamento/${p.item_id}/${p.question_id}.json`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pergunta: reg.pergunta, resposta: sugestao, produto: reg.produto, data: reg.data, auto: true }),
+              });
+            } else {
+              const errMsg = dResp?.message || dResp?.error || JSON.stringify(dResp);
+              if (!errMsg.includes("is not unanswered")) {
+                log.push({ question_id: String(p.question_id), erro: errMsg, conta: conta.label, data: new Date().toISOString() });
+              }
+            }
+          }
+        } catch (e) {
+          log.push({ conta: conta.label, erro: e.message, data: new Date().toISOString() });
+        }
+      }
+
+      return res.json({ ok: true, respondidas: totalRespondidas, log });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Auto-resposta: config (ligar/desligar por conta) ──
+  if (req.query.action === "config-auto-resposta") {
+    if (req.method === "OPTIONS") return res.status(200).end();
+    const fbUrl = process.env.FIREBASE_URL;
+    if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+
+    if (req.method === "GET") {
+      const r = await fetch(`${fbUrl}/config_auto_resposta.json`);
+      const cfg = await r.json();
+      return res.json({ ok: true, config: cfg || { matriz: false, filial: false } });
+    }
+    if (req.method === "POST") {
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+      const { matriz, filial } = body;
+      await fetch(`${fbUrl}/config_auto_resposta.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ matriz: !!matriz, filial: !!filial }),
+      });
+      return res.json({ ok: true, config: { matriz: !!matriz, filial: !!filial } });
+    }
+    return res.status(405).end();
+  }
+
+  // ── Auto-resposta: histórico ──
+  if (req.query.action === "historico-auto" && req.method === "GET") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+      const r = await fetch(`${fbUrl}/historico_auto_resposta.json?orderBy="ts"&limitToLast=100`);
+      const raw = await r.json();
+      const lista = raw && typeof raw === "object"
+        ? Object.values(raw).sort((a, b) => (b.ts || 0) - (a.ts || 0))
+        : [];
+      return res.json({ ok: true, lista });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Perguntas: excluir pergunta ──
   if (req.query.action === "excluir-pergunta" && req.method === "GET" && req.query.debug === "1") {
     return res.json({ ok: true, msg: "endpoint excluir-pergunta ativo", v: "2026-10-12" });
