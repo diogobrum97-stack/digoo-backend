@@ -2354,6 +2354,192 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
   }
 
 
+  // ── Reclamações: sincronizar claims abertas do ML → Firebase ──
+  if (req.query.action === "sincronizar-reclamacoes" && req.method === "POST") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+
+      // Buscar tokens das duas contas
+      const [tkMR, tkFR] = await Promise.all([
+        fetch(`${fbUrl}/ml_token.json`),
+        fetch(`${fbUrl}/ml_token_filial.json`),
+      ]);
+      const tkM = await tkMR.json().catch(() => null);
+      const tkF = await tkFR.json().catch(() => null);
+      const contas = [];
+      if (tkM?.access_token) contas.push({ token: tkM.access_token, label: "Matriz RS" });
+      if (tkF?.access_token) contas.push({ token: tkF.access_token, label: "Filial SP" });
+      if (!contas.length) return res.status(400).json({ ok: false, error: "Nenhum token disponível" });
+
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      let totalSalvas = 0;
+      const erros = [];
+
+      for (const conta of contas) {
+        try {
+          // Buscar user_id desta conta
+          const meR = await fetch("https://api.mercadolibre.com/users/me", {
+            headers: { Authorization: `Bearer ${conta.token}` }
+          });
+          const me = await meR.json();
+          const sellerId = me.id;
+          if (!sellerId) continue;
+
+          // Buscar claims abertas desta conta
+          const claimsR = await fetch(
+            `https://api.mercadolibre.com/post-purchase/v1/claims/search?seller_id=${sellerId}&status=opened&limit=50`,
+            { headers: { Authorization: `Bearer ${conta.token}` } }
+          );
+          if (!claimsR.ok) {
+            // Tenta endpoint alternativo
+            const claimsR2 = await fetch(
+              `https://api.mercadolibre.com/post-purchase/v1/claims?role=seller&status=opened&limit=50`,
+              { headers: { Authorization: `Bearer ${conta.token}` } }
+            );
+            if (!claimsR2.ok) { erros.push(`${conta.label}: HTTP ${claimsR.status}`); continue; }
+            var claimsData = await claimsR2.json();
+          } else {
+            var claimsData = await claimsR.json();
+          }
+
+          const claims = claimsData?.data || claimsData?.results || claimsData || [];
+          if (!Array.isArray(claims)) { erros.push(`${conta.label}: resposta inesperada`); continue; }
+
+          for (const claim of claims) {
+            const claimId = String(claim.id || claim.claim_id || "");
+            if (!claimId) continue;
+
+            // Verificar se já existe no Firebase
+            const existeR = await fetch(`${fbUrl}/reclamacoes_pendentes/${claimId}.json`);
+            const existe = await existeR.json();
+            if (existe && !existe.respondida) continue; // já processada e não respondida, pula
+
+            // Buscar detalhes completos se só temos o summary
+            let claimDetail = claim;
+            if (!claim.order_id) {
+              const detR = await fetch(
+                `https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}`,
+                { headers: { Authorization: `Bearer ${conta.token}` } }
+              );
+              if (detR.ok) claimDetail = await detR.json();
+            }
+
+            // Buscar mensagens
+            let mensagens = [];
+            try {
+              const msgR = await fetch(
+                `https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/messages`,
+                { headers: { Authorization: `Bearer ${conta.token}` } }
+              );
+              if (msgR.ok) {
+                const md = await msgR.json();
+                mensagens = (md.messages || md || []).slice(0, 10);
+              }
+            } catch(e) {}
+
+            // Buscar info do pedido/produto
+            let infoItem = {};
+            try {
+              const orderId = claimDetail.order_id;
+              if (orderId) {
+                const orderR = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, {
+                  headers: { Authorization: `Bearer ${conta.token}` }
+                });
+                if (orderR.ok) {
+                  const order = await orderR.json();
+                  const firstItem = (order.order_items || [])[0];
+                  if (firstItem?.item) {
+                    infoItem = {
+                      titulo: firstItem.item.title || "",
+                      item_id: firstItem.item.id || "",
+                      sku: firstItem.item.seller_sku || "",
+                      quantidade: firstItem.quantity || 1,
+                    };
+                  }
+                }
+              }
+            } catch(e) {}
+
+            // Buscar treinamento por tipo
+            const tipoClaim = claimDetail.reason_id || claimDetail.type || "geral";
+            let treinamento = [];
+            try {
+              const trR = await fetch(`${fbUrl}/reclamacoes_treinamento/${tipoClaim}.json`);
+              const trData = await trR.json();
+              if (trData && typeof trData === "object") {
+                treinamento = Object.values(trData).filter(e => e?.situacao && e?.resposta).slice(0, 5);
+              }
+            } catch(e) {}
+
+            // Hora BR para saudação
+            const horaBR = new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false });
+            const h = parseInt(horaBR, 10);
+            const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
+
+            // Chamar Claude para analisar
+            let sugestao = { tipo_reclamacao: "outro", resumo: "", requires_attention: true, suggested_answer: "", acao_sugerida: "outro" };
+            if (anthropicKey) {
+              try {
+                const sistemaClaude = `Você é atendente especializado em pós-venda da Digoo Brasil no Mercado Livre.
+Analise a reclamação e retorne APENAS JSON válido:
+{"tipo_reclamacao":"item_nao_recebido|item_diferente|item_defeituoso|item_incompleto|arrependimento|outro","resumo":"Uma frase resumindo o problema","requires_attention":true/false,"suggested_answer":"Resposta sugerida (vazia se requires_attention=true)","acao_sugerida":"reembolso|reenvio|troca|explicacao|aguardar_transportadora|outro"}
+REGRAS: Comece com "${saudacao}!". Seja empático e objetivo.
+Respostas de treinamento anteriores: ${JSON.stringify(treinamento)}`;
+                const contexto = {
+                  claim_id: claimId,
+                  tipo_claim: tipoClaim,
+                  status: claimDetail.status,
+                  produto: infoItem,
+                  descricao: claimDetail.reason?.description || claimDetail.player_role_details?.description || "",
+                  mensagens: mensagens.map(m => ({ de: m.from?.role || m.sender_role || "cliente", texto: (m.message || m.text || "").slice(0, 300) })),
+                };
+                const claudeR = await fetch("https://api.anthropic.com/v1/messages", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
+                  body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 600, system: sistemaClaude, messages: [{ role: "user", content: JSON.stringify(contexto) }] }),
+                });
+                const cd = await claudeR.json();
+                const raw = ((cd.content || []).find(b => b.type === "text")?.text || "{}").trim().replace(/```json\s*|\s*```/g, "");
+                sugestao = JSON.parse(raw);
+              } catch(e) {}
+            }
+
+            // Salvar no Firebase
+            const registro = {
+              claim_id: claimId,
+              order_id: claimDetail.order_id || "",
+              status: claimDetail.status || "opened",
+              tipo_reclamacao: sugestao.tipo_reclamacao || "outro",
+              resumo: sugestao.resumo || "",
+              acao_sugerida: sugestao.acao_sugerida || "outro",
+              requires_attention: !!sugestao.requires_attention,
+              suggested_answer: sugestao.suggested_answer || "",
+              produto: infoItem,
+              conta: conta.label,
+              receivedAt: Date.now(),
+              data: new Date().toISOString(),
+              respondida: false,
+              mensagens_count: mensagens.length,
+            };
+            await fetch(`${fbUrl}/reclamacoes_pendentes/${claimId}.json`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(registro),
+            });
+            totalSalvas++;
+          }
+        } catch(e) {
+          erros.push(`${conta.label}: ${e.message}`);
+        }
+      }
+
+      return res.json({ ok: true, sincronizadas: totalSalvas, erros });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Reclamações: endpoints que NÃO precisam de token ML (usam Firebase diretamente) ──
   if (req.query.action === "buscar-reclamacoes" && req.method === "GET") {
     try {
