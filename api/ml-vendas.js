@@ -697,6 +697,13 @@ LÓGICA DE RESPOSTA:
    → NUNCA sugira um produto diferente do que o cliente pediu como "alternativa". Se pediu Forward e só tem Reverse, NÃO indique a Reverse — crie rascunho de anúncio Forward.
    → NUNCA invente que "a linha é somente X" — você não sabe o catálogo completo, só o que está em itens_relacionados.
 
+4. Cliente pede uma composição/montagem customizada de kit (ex: "5 reversas e 5 noramis", "6 forward e 4 reverse", quantidades específicas de modelos misturados):
+   → Os kits já vêm montados e embalados no centro de distribuição do Mercado Livre — NÃO é possível montar combinações personalizadas.
+   → Verifique se existe em itens_relacionados um kit com essa combinação exata. Se sim, siga a regra 3.
+   → Se NÃO existe: retorne SEMPRE um suggested_answer explicando isso, NÃO crie rascunho.
+   → Resposta padrão: "Boa [hora]! Infelizmente não conseguimos alterar a composição dos kits, pois já se encontram prontos no centro de distribuição do Mercado Livre. 😊"
+   → Adapte se houver item_relacionado com combinação próxima (mencione como alternativa).
+
 3. Ao criar rascunhos (criar_rascunho), analise o produto original do anúncio:
    → Se o produto original já inclui controladora/hub/controle, NÃO inclua controladora nos rascunhos complementares.
    → Pense no que o cliente realmente precisa: se ele já tem o produto original, o complementar deve ser só o que falta.
@@ -848,6 +855,30 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       }
 
       return res.json({ ok: true, raw: data });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Treinamento: salvar exemplo manualmente ──
+  if (req.query.action === "salvar-treinamento") {
+    if (req.method === "OPTIONS") return res.status(200).end();
+    try {
+      let body = req.body || {};
+      if (typeof body === "string") { try { body = JSON.parse(body); } catch(e) { body = {}; } }
+      const { item_id, question_id: qidTreino, pergunta, resposta, produto } = body;
+      if (!item_id || !pergunta || !resposta) {
+        return res.status(400).json({ ok: false, error: "item_id, pergunta e resposta são obrigatórios" });
+      }
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+      const chave = qidTreino || `manual_${Date.now()}`;
+      await fetch(`${fbUrl}/perguntas_treinamento/${item_id}/${chave}.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pergunta, resposta, produto: produto || "", data: new Date().toISOString(), manual: true }),
+      });
+      return res.json({ ok: true, salvo: { item_id, chave } });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
