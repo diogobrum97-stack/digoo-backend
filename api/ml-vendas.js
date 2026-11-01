@@ -3276,6 +3276,237 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     }
   }
 
+  // ── Reclamações: buscar pendentes do Firebase ──
+  if (req.query.action === "buscar-reclamacoes" && req.method === "GET") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+      const r = await fetch(`${fbUrl}/reclamacoes_pendentes.json`);
+      const raw = await r.json();
+      const lista = raw && typeof raw === "object"
+        ? Object.values(raw)
+            .filter(c => !c.respondida)
+            .sort((a, b) => (b.receivedAt || 0) - (a.receivedAt || 0))
+        : [];
+      return res.json({ ok: true, lista });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Reclamações: enviar resposta ao comprador ──
+  if (req.query.action === "responder-reclamacao" && req.method === "POST") {
+    try {
+      let body = req.body || {};
+      if (typeof body === "string") { try { body = JSON.parse(body); } catch(e) { body = {}; } }
+      const { claim_id, texto, token: tokenR } = body;
+      if (!claim_id || !texto || !tokenR) {
+        return res.status(400).json({ ok: false, error: "claim_id, texto e token obrigatórios" });
+      }
+
+      // Enviar mensagem na reclamação via ML
+      const r = await fetch(`https://api.mercadolibre.com/post-purchase/v1/claims/${claim_id}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ message: texto }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok && r.status !== 201) {
+        return res.status(r.status).json({ ok: false, error: data?.message || data?.error || "Erro ao enviar mensagem", raw: data });
+      }
+
+      // Marcar como respondida no Firebase
+      const fbUrl = process.env.FIREBASE_URL;
+      if (fbUrl) {
+        const treinamento = body.salvar_treinamento;
+        await fetch(`${fbUrl}/reclamacoes_pendentes/${claim_id}.json`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ respondida: true, data_resposta: new Date().toISOString(), resposta_enviada: texto }),
+        });
+        // Salvar como treinamento se pedido
+        if (treinamento) {
+          const tipo = body.tipo_reclamacao || "geral";
+          await fetch(`${fbUrl}/reclamacoes_treinamento/${tipo}/${claim_id}.json`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              situacao: body.resumo || "",
+              resposta: texto,
+              tipo: tipo,
+              produto: body.produto || "",
+              data: new Date().toISOString(),
+              manual: true,
+            }),
+          });
+        }
+      }
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Reclamações: salvar treinamento manualmente ──
+  if (req.query.action === "salvar-treinamento-reclamacao" && req.method === "POST") {
+    try {
+      let body = req.body || {};
+      if (typeof body === "string") { try { body = JSON.parse(body); } catch(e) { body = {}; } }
+      const { claim_id, tipo, situacao, resposta, produto } = body;
+      if (!tipo || !situacao || !resposta) {
+        return res.status(400).json({ ok: false, error: "tipo, situacao e resposta obrigatórios" });
+      }
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+      const chave = claim_id || `manual_${Date.now()}`;
+      await fetch(`${fbUrl}/reclamacoes_treinamento/${tipo}/${chave}.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ situacao, resposta, tipo, produto: produto || "", data: new Date().toISOString(), manual: true }),
+      });
+      return res.json({ ok: true, salvo: { tipo, chave } });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Reclamações: config auto-resposta ──
+  if (req.query.action === "config-auto-reclamacao") {
+    if (req.method === "OPTIONS") return res.status(200).end();
+    const fbUrl = process.env.FIREBASE_URL;
+    if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+    if (req.method === "GET") {
+      const r = await fetch(`${fbUrl}/config_auto_reclamacao.json`);
+      const cfg = await r.json();
+      return res.json({ ok: true, config: cfg || { ativo: false } });
+    }
+    if (req.method === "POST") {
+      const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+      const { ativo } = body;
+      await fetch(`${fbUrl}/config_auto_reclamacao.json`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ativo: !!ativo }),
+      });
+      return res.json({ ok: true, config: { ativo: !!ativo } });
+    }
+    return res.status(405).end();
+  }
+
+  // ── Reclamações: histórico de auto-respostas ──
+  if (req.query.action === "historico-auto-reclamacao" && req.method === "GET") {
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+      const r = await fetch(`${fbUrl}/historico_auto_reclamacao.json?orderBy="ts"&limitToLast=100`);
+      const raw = await r.json();
+      const lista = raw && typeof raw === "object"
+        ? Object.values(raw).sort((a, b) => (b.ts || 0) - (a.ts || 0))
+        : [];
+      return res.json({ ok: true, lista });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Reclamações: processar auto-respostas (cron) ──
+  if (req.query.action === "auto-responder-reclamacoes") {
+    if (req.method === "OPTIONS") return res.status(200).end();
+    try {
+      const fbUrl = process.env.FIREBASE_URL;
+      if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
+
+      // Verificar se auto-resposta está ativa
+      const cfgR = await fetch(`${fbUrl}/config_auto_reclamacao.json`);
+      const cfg = await cfgR.json() || {};
+      if (!cfg.ativo) return res.json({ ok: true, msg: "Auto-resposta de reclamações desligada", respondidas: 0 });
+
+      // Buscar reclamações pendentes não respondidas
+      const recR = await fetch(`${fbUrl}/reclamacoes_pendentes.json`);
+      const recRaw = await recR.json() || {};
+      const pendentes = Object.values(recRaw).filter(c => !c.respondida && !c.requires_attention && c.suggested_answer);
+
+      // Buscar token Matriz (pega tokens do Firebase)
+      const [tkMR, tkFR] = await Promise.all([
+        fetch(`${fbUrl}/ml_token.json`),
+        fetch(`${fbUrl}/ml_token_filial.json`),
+      ]);
+      const tkM = await tkMR.json().catch(() => null);
+      const tkF = await tkFR.json().catch(() => null);
+      const tokensMap = { "Matriz RS": tkM?.access_token, "Filial SP": tkF?.access_token };
+
+      let totalRespondidas = 0;
+      const log = [];
+
+      for (const rec of pendentes) {
+        const token = tokensMap[rec.conta];
+        if (!token) continue;
+        const sugestao = (rec.suggested_answer || "").trim();
+        if (!sugestao) continue;
+
+        try {
+          const rResp = await fetch(
+            `https://api.mercadolibre.com/post-purchase/v1/claims/${rec.claim_id}/messages`,
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ message: sugestao }),
+            }
+          );
+          const ok = rResp.ok || rResp.status === 201;
+          if (ok) {
+            totalRespondidas++;
+            const reg = {
+              claim_id: rec.claim_id,
+              order_id: rec.order_id || "",
+              tipo: rec.tipo_reclamacao || "",
+              produto: rec.produto?.titulo || "",
+              resposta: sugestao,
+              conta: rec.conta,
+              data: new Date().toISOString(),
+              ts: Date.now(),
+            };
+            log.push(reg);
+            // Marcar como respondida
+            await fetch(`${fbUrl}/reclamacoes_pendentes/${rec.claim_id}.json`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ respondida: true, data_resposta: reg.data, resposta_enviada: sugestao }),
+            });
+            // Salvar no histórico
+            await fetch(`${fbUrl}/historico_auto_reclamacao/${rec.claim_id}.json`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(reg),
+            });
+            // Salvar como treinamento
+            await fetch(`${fbUrl}/reclamacoes_treinamento/${rec.tipo_reclamacao || "geral"}/${rec.claim_id}.json`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                situacao: rec.resumo || "",
+                resposta: sugestao,
+                tipo: rec.tipo_reclamacao || "geral",
+                produto: rec.produto?.titulo || "",
+                data: reg.data,
+                auto: true,
+              }),
+            });
+          } else {
+            const errData = await rResp.json().catch(() => ({}));
+            log.push({ claim_id: rec.claim_id, erro: errData?.message || "Erro", conta: rec.conta, data: new Date().toISOString() });
+          }
+        } catch (e) {
+          log.push({ claim_id: rec.claim_id, erro: e.message, conta: rec.conta, data: new Date().toISOString() });
+        }
+      }
+
+      return res.json({ ok: true, respondidas: totalRespondidas, log });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   } catch (e) {
     console.error("ml-vendas error:", e.message);
     return res.status(500).json({ error: e.message });
