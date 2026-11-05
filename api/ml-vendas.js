@@ -919,19 +919,106 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       for (const conta of contas) {
         if (!conta.ativo) continue;
         try {
-          // Buscar perguntas via endpoint existente
-          const url = `${process.env.VERCEL_URL || "https://digoo-backend.vercel.app"}/api/ml-vendas?action=buscar-perguntas&token=${conta.token}`;
-          const pergR = await fetch(url);
-          if (!pergR.ok) continue;
-          const pergData = await pergR.json();
-          const lista = pergData.lista || [];
+          // Buscar perguntas diretamente via ML (sem auto-chamada HTTP)
+          const meRes = await fetch("https://api.mercadolibre.com/users/me", {
+            headers: { Authorization: `Bearer ${conta.token}` },
+          });
+          const me = await meRes.json();
+          if (!me.id) { log.push({ conta: conta.label, erro: "Não identificou seller_id" }); continue; }
+
+          const qRes = await fetch(
+            `https://api.mercadolibre.com/questions/search?seller_id=${me.id}&status=UNANSWERED&sort_fields=date_created&sort_types=DESC&limit=10`,
+            { headers: { Authorization: `Bearer ${conta.token}` } }
+          );
+          const qData = await qRes.json();
+          const perguntas = (qData.questions || []).slice(0, 10);
+          if (!perguntas.length) continue;
+
+          // Buscar títulos dos anúncios
+          const itemIds = [...new Set(perguntas.map(p => p.item_id))];
+          const itemsInfo = {};
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/items?ids=${itemIds.join(",")}&attributes=id,title,thumbnail`, {
+              headers: { Authorization: `Bearer ${conta.token}` },
+            });
+            const arr = await r.json();
+            arr.forEach(entry => { if (entry.code === 200 && entry.body) itemsInfo[entry.body.id] = entry.body; });
+          } catch(e) {}
+
+          // Buscar treinamento existente por item
+          const conhecimentoPorItem = {};
+          if (fbUrl) {
+            await Promise.all(itemIds.map(async iid => {
+              try {
+                const r = await fetch(`${fbUrl}/perguntas_treinamento/${iid}.json`);
+                const d = await r.json();
+                if (d && typeof d === "object") {
+                  conhecimentoPorItem[iid] = Object.values(d).filter(e => e && e.pergunta && e.resposta);
+                }
+              } catch(e) {}
+            }));
+          }
+
+          // Montar prompt para o Claude gerar sugestões
+          const horaBR = new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false });
+          const h = parseInt(horaBR, 10);
+          const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
+
+          const itensList = perguntas.map((p, i) => {
+            const titulo = itemsInfo[p.item_id]?.title || "Produto";
+            const treino = (conhecimentoPorItem[p.item_id] || []).slice(0, 3);
+            return `[${i}] Produto: ${titulo}\nPergunta: ${p.text}\n${treino.length ? "Respostas anteriores:\n" + treino.map(t => `  P: ${t.pergunta}\n  R: ${t.resposta}`).join("\n") : ""}`;
+          }).join("\n\n");
+
+          const claudePrompt = `Você é um especialista em atendimento ao cliente para loja de periféricos gamer no Mercado Livre.
+Responda cada pergunta abaixo de forma clara, profissional e concisa. Use a saudação "${saudacao}" quando adequado.
+Se a pergunta não puder ser respondida com certeza (ex: prazo de entrega específico por CEP, disponibilidade futura), marque requires_attention=true.
+Para perguntas simples (compatibilidade, voltagem, cor, medidas, etc.) que podem ser respondidas com base no produto, responda diretamente.
+
+Perguntas:
+${itensList}
+
+Responda APENAS com JSON array:
+[{"idx":0,"suggested_answer":"...","requires_attention":false},...]`;
+
+          const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": process.env.ANTHROPIC_API_KEY,
+              "anthropic-version": "2023-06-01",
+            },
+            body: JSON.stringify({
+              model: "claude-haiku-4-5",
+              max_tokens: 1500,
+              messages: [{ role: "user", content: claudePrompt }],
+            }),
+          });
+          const claudeData = await claudeRes.json();
+          const rawText = claudeData.content?.[0]?.text || "[]";
+          let sugestoes = [];
+          try {
+            const match = rawText.match(/\[[\s\S]*\]/);
+            sugestoes = match ? JSON.parse(match[0]) : [];
+          } catch(e) {}
+
+          const lista = perguntas.map((p, i) => {
+            const sug = sugestoes.find(s => s.idx === i) || {};
+            return {
+              question_id: p.id,
+              item_id: p.item_id,
+              produto: itemsInfo[p.item_id]?.title || "Produto",
+              pergunta: p.text,
+              requires_attention: !!sug.requires_attention,
+              suggested_answer: sug.suggested_answer || "",
+            };
+          });
 
           for (const p of lista) {
             const sugestao = (p.suggested_answer || "").trim();
             if (!sugestao) continue;
             if (p.requires_attention) continue;
-            // Só responde se tem conhecimento salvo (treinado) OU se a confiança é alta (has_knowledge)
-            if (!p.has_knowledge) continue;
+            // suggested_answer presente + requires_attention=false já é o critério de confiança do Claude
 
             // Enviar resposta no ML
             const rResp = await fetch(`https://api.mercadolibre.com/answers`, {
