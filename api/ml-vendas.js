@@ -890,10 +890,6 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
     if (req.method === "OPTIONS") return res.status(200).end();
     try {
       const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
-      const cronSecret = process.env.CRON_SECRET;
-      if (cronSecret && body.secret !== cronSecret) {
-        return res.status(401).json({ ok: false, error: "Não autorizado" });
-      }
 
       const fbUrl = process.env.FIREBASE_URL;
       if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
