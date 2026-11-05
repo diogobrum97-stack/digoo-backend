@@ -1101,7 +1101,7 @@ Responda APENAS com JSON array:
     try {
       const fbUrl = process.env.FIREBASE_URL;
       if (!fbUrl) return res.status(500).json({ ok: false, error: "Firebase não configurado" });
-      const r = await fetch(`${fbUrl}/historico_auto_resposta.json?orderBy="ts"&limitToLast=100`);
+      const r = await fetch(`${fbUrl}/historico_auto_resposta.json`);
       const raw = await r.json();
       const lista = raw && typeof raw === "object"
         ? Object.values(raw).sort((a, b) => (b.ts || 0) - (a.ts || 0))
