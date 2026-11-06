@@ -288,22 +288,41 @@ module.exports = async function handler(req, res) {
         shipment.logistic_type !== "fulfillment"
       );
 
-      const resultado = filaFinal.map(({ order, shipment }) => ({
-        order_id: order.id,
-        pack_id: order.pack_id || null,
-        shipment_id: shipment.id,
-        comprador: order.buyer?.nickname || order.buyer?.first_name || "",
-        itens: (order.order_items || []).map(it => ({
+      // Agrupa pedidos com o mesmo pack_id (ML "2 pacotes" = mesmo envio, 2 order_ids)
+      // Sem pack_id: cada order_id vira um item independente (chave = order_id)
+      // Com pack_id: todos os order_ids do mesmo pack viram 1 item (chave = pack_id)
+      //   order_id = o menor do grupo (mais antigo), order_ids = todos do grupo
+      const grupos = {};
+      for (const { order, shipment } of filaFinal) {
+        const chave = order.pack_id ? `pack_${order.pack_id}` : `order_${order.id}`;
+        if (!grupos[chave]) {
+          grupos[chave] = { order, shipment, ordens: [order] };
+        } else {
+          grupos[chave].ordens.push(order);
+        }
+      }
+
+      const resultado = Object.values(grupos).map(({ order, shipment, ordens }) => {
+        // Junta todos os itens de todos os pedidos do grupo
+        const todosItens = ordens.flatMap(o => (o.order_items || []).map(it => ({
           item_id: it.item?.id || "",
           titulo: it.item?.title || "",
           sku: it.item?.seller_sku || "",
           quantidade: it.quantity || 1,
           thumbnail: it.item?.thumbnail || "",
-        })),
-        logistic_type: shipment.logistic_type || "",
-        substatus: shipment.substatus || "",
-        data: order.date_created,
-      }));
+        })));
+        return {
+          order_id: order.id,
+          order_ids: ordens.map(o => o.id),
+          pack_id: order.pack_id || null,
+          shipment_id: shipment.id,
+          comprador: order.buyer?.nickname || order.buyer?.first_name || "",
+          itens: todosItens,
+          logistic_type: shipment.logistic_type || "",
+          substatus: shipment.substatus || "",
+          data: order.date_created,
+        };
+      });
 
       return res.json({
         ok: true,
