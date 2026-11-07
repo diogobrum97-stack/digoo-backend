@@ -8,16 +8,47 @@
  *   3. O frontend escuta o Firebase em tempo real e reage
  *
  * URL a registrar no ML: https://digoo-backend.vercel.app/api/webhook-ml
+ *
+ * Usa Firebase Admin SDK — bypassa as regras de segurança do banco.
+ * Variável obrigatória no Vercel: FIREBASE_SERVICE_ACCOUNT (JSON do serviceAccount)
  */
 
-const FIREBASE_URL = process.env.FIREBASE_URL; // ex: https://xxx.firebaseio.com
+import { getDb } from "../lib/firebase-admin.js";
+
+/**
+ * Lê um nó do Firebase via Admin SDK.
+ * Retorna o valor ou null se não existir.
+ */
+async function fbGet(path) {
+  const db = getDb();
+  const snap = await db.ref(path).once("value");
+  return snap.val();
+}
+
+/**
+ * Salva (PUT/set) um valor no Firebase via Admin SDK.
+ */
+async function fbSet(path, value) {
+  const db = getDb();
+  await db.ref(path).set(value);
+}
+
+/**
+ * Faz push (POST — gera chave automática) no Firebase via Admin SDK.
+ * Retorna a chave gerada.
+ */
+async function fbPush(path, value) {
+  const db = getDb();
+  const ref = await db.ref(path).push(value);
+  return ref.key;
+}
 
 /**
  * Processa uma notificação de reclamação (post_purchase) em background.
  * Busca detalhes da claim no ML, chama Claude para analisar e salva no Firebase.
  * resource = "/post-purchase/v1/claims/CLAIM_ID"
  */
-async function processarReclamacao(resource, userId, fbUrl) {
+async function processarReclamacao(resource, userId) {
   // Extrair claim_id do resource (ex: /post-purchase/v1/claims/12345678)
   const matchClaim = resource.match(/\/claims\/(\d+)/);
   if (!matchClaim) {
@@ -26,41 +57,38 @@ async function processarReclamacao(resource, userId, fbUrl) {
   }
   const claimId = matchClaim[1];
 
-  // Buscar token do Firebase (tenta Matriz e Filial; usa o que pertence ao userId)
-  const [tkMatrizR, tkFilialR] = await Promise.all([
-    fetch(`${fbUrl}/ml_token.json`),
-    fetch(`${fbUrl}/ml_token_filial.json`),
+  // Buscar tokens do Firebase via Admin SDK
+  const [tkMatriz, tkFilial] = await Promise.all([
+    fbGet("ml_token"),
+    fbGet("ml_token_filial"),
   ]);
-  const tkMatriz = await tkMatrizR.json().catch(() => null);
-  const tkFilial = await tkFilialR.json().catch(() => null);
 
   // Escolher o token certo baseado no userId da notificação
   let token = null;
   let contaLabel = "";
   if (tkMatriz?.access_token) {
-    // Verifica se o userId corresponde à conta Matriz
     try {
       const meR = await fetch("https://api.mercadolibre.com/users/me", {
-        headers: { Authorization: `Bearer ${tkMatriz.access_token}` }
+        headers: { Authorization: `Bearer ${tkMatriz.access_token}` },
       });
       const me = await meR.json();
       if (String(me.id) === String(userId)) {
         token = tkMatriz.access_token;
         contaLabel = "Matriz RS";
       }
-    } catch(e) {}
+    } catch (e) {}
   }
   if (!token && tkFilial?.access_token) {
     try {
       const meR = await fetch("https://api.mercadolibre.com/users/me", {
-        headers: { Authorization: `Bearer ${tkFilial.access_token}` }
+        headers: { Authorization: `Bearer ${tkFilial.access_token}` },
       });
       const me = await meR.json();
       if (String(me.id) === String(userId)) {
         token = tkFilial.access_token;
         contaLabel = "Filial SP";
       }
-    } catch(e) {}
+    } catch (e) {}
   }
   // Fallback: usar qualquer token disponível
   if (!token) {
@@ -78,7 +106,9 @@ async function processarReclamacao(resource, userId, fbUrl) {
     { headers: { Authorization: `Bearer ${token}` } }
   );
   if (!claimRes.ok) {
-    console.log(`[reclamacao] Erro ao buscar claim ${claimId}: HTTP ${claimRes.status}`);
+    console.log(
+      `[reclamacao] Erro ao buscar claim ${claimId}: HTTP ${claimRes.status}`
+    );
     return;
   }
   const claim = await claimRes.json();
@@ -101,29 +131,29 @@ async function processarReclamacao(resource, userId, fbUrl) {
       const msgData = await msgRes.json();
       mensagens = (msgData.messages || msgData || []).slice(0, 10);
     }
-  } catch(e) {}
+  } catch (e) {}
 
-  // Buscar treinamento de reclamações do Firebase
+  // Buscar treinamento de reclamações do Firebase via Admin SDK
   let treinamentoPorTipo = {};
   try {
     const tipoClaim = claim.reason_id || claim.type || "geral";
-    const treinoR = await fetch(`${fbUrl}/reclamacoes_treinamento/${tipoClaim}.json`);
-    const treinoData = await treinoR.json();
+    const treinoData = await fbGet(`reclamacoes_treinamento/${tipoClaim}`);
     if (treinoData && typeof treinoData === "object") {
       treinamentoPorTipo = Object.values(treinoData)
-        .filter(e => e && e.situacao && e.resposta)
+        .filter((e) => e && e.situacao && e.resposta)
         .slice(0, 5);
     }
-  } catch(e) {}
+  } catch (e) {}
 
   // Buscar detalhes do pedido/item
   let infoItem = {};
   try {
     const orderId = claim.order_id;
     if (orderId) {
-      const orderR = await fetch(`https://api.mercadolibre.com/orders/${orderId}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const orderR = await fetch(
+        `https://api.mercadolibre.com/orders/${orderId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       const order = await orderR.json();
       const firstItem = (order.order_items || [])[0];
       if (firstItem?.item) {
@@ -135,10 +165,14 @@ async function processarReclamacao(resource, userId, fbUrl) {
         };
       }
     }
-  } catch(e) {}
+  } catch (e) {}
 
   // Hora BR para saudação
-  const horaBR = new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false });
+  const horaBR = new Date().toLocaleString("en-US", {
+    timeZone: "America/Sao_Paulo",
+    hour: "numeric",
+    hour12: false,
+  });
   const h = parseInt(horaBR, 10);
   const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 
@@ -170,15 +204,24 @@ REGRAS:
     tipo_claim: claim.reason_id || claim.type || "",
     status: claim.status,
     produto: infoItem,
-    descricao_problema: claim.reason?.description || claim.player_role_details?.description || "",
-    mensagens: mensagens.map(m => ({
+    descricao_problema:
+      claim.reason?.description ||
+      claim.player_role_details?.description ||
+      "",
+    mensagens: mensagens.map((m) => ({
       de: m.from?.role || m.sender_role || "cliente",
       texto: (m.message || m.text || "").slice(0, 300),
       data: m.date_created || m.date,
     })),
   };
 
-  let sugestao = { tipo_reclamacao: "outro", resumo: "", requires_attention: true, suggested_answer: "", acao_sugerida: "outro" };
+  let sugestao = {
+    tipo_reclamacao: "outro",
+    resumo: "",
+    requires_attention: true,
+    suggested_answer: "",
+    acao_sugerida: "outro",
+  };
   try {
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
     if (anthropicKey) {
@@ -197,14 +240,18 @@ REGRAS:
         }),
       });
       const cd = await claudeR.json();
-      const raw = ((cd.content || []).find(b => b.type === "text")?.text || "{}").trim().replace(/```json\s*|\s*```/g, "");
+      const raw = (
+        (cd.content || []).find((b) => b.type === "text")?.text || "{}"
+      )
+        .trim()
+        .replace(/```json\s*|\s*```/g, "");
       sugestao = JSON.parse(raw);
     }
-  } catch(e) {
+  } catch (e) {
     console.error("[reclamacao] Erro Claude:", e.message);
   }
 
-  // Salvar no Firebase
+  // Salvar no Firebase via Admin SDK
   const registro = {
     claim_id: claimId,
     order_id: claim.order_id || "",
@@ -222,13 +269,11 @@ REGRAS:
     mensagens_count: mensagens.length,
   };
 
-  await fetch(`${fbUrl}/reclamacoes_pendentes/${claimId}.json`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(registro),
-  });
+  await fbSet(`reclamacoes_pendentes/${claimId}`, registro);
 
-  console.log(`[reclamacao] claim ${claimId} processada → tipo=${registro.tipo_reclamacao} attention=${registro.requires_attention}`);
+  console.log(
+    `[reclamacao] claim ${claimId} processada → tipo=${registro.tipo_reclamacao} attention=${registro.requires_attention}`
+  );
 }
 
 export default async function handler(req, res) {
@@ -246,9 +291,9 @@ export default async function handler(req, res) {
 
     // Estrutura do payload do ML:
     // { resource: "/messages/packs/...", user_id: 123, topic: "messages", ... }
-    const topic    = body?.topic;
+    const topic = body?.topic;
     const resource = body?.resource;
-    const userId   = body?.user_id;
+    const userId = body?.user_id;
     const attempts = body?.attempts;
 
     if (!topic || !resource) {
@@ -259,11 +304,10 @@ export default async function handler(req, res) {
     const timestamp = Date.now();
     const evento = { topic, resource, userId, attempts, receivedAt: timestamp };
 
-    // Salva no Firebase no nó correspondente ao tópico
-    // Nota: o ML usa "questions" para perguntas (não "messages")
+    // Determina o nó do Firebase
     let firebasePath;
     if (topic === "questions" || topic === "messages") {
-      firebasePath = "webhooks/messages"; // frontend escuta este nó
+      firebasePath = "webhooks/messages";
     } else if (topic === "orders_v2" || topic === "orders") {
       firebasePath = "webhooks/orders";
     } else if (topic === "shipments") {
@@ -274,36 +318,21 @@ export default async function handler(req, res) {
       firebasePath = `webhooks/outros/${topic}`;
     }
 
-    // Usa POST no Firebase para gerar chave única automática (push)
-    const fbRes = await fetch(`${FIREBASE_URL}/${firebasePath}.json`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(evento),
-    });
-
-    if (!fbRes.ok) {
-      const fbErr = await fbRes.text();
-      console.error("[webhook-ml] Erro ao salvar no Firebase:", fbErr);
-      // Retorna 500 para o ML retentar mais tarde
-      return res.status(500).json({ error: "Firebase write failed" });
-    }
-
-    const fbData = await fbRes.json();
-    console.log(`[webhook-ml] ${topic} → Firebase ${firebasePath} key=${fbData?.name}`);
+    // Salva no Firebase via Admin SDK (push gera chave única)
+    const key = await fbPush(firebasePath, evento);
+    console.log(`[webhook-ml] ${topic} → Firebase ${firebasePath} key=${key}`);
 
     // Para post_purchase (reclamações), processa em background sem bloquear resposta
-    if (topic === "post_purchase" && resource && FIREBASE_URL) {
-      processarReclamacao(resource, userId, FIREBASE_URL).catch(e =>
+    if (topic === "post_purchase" && resource) {
+      processarReclamacao(resource, userId).catch((e) =>
         console.error("[webhook-ml] Erro ao processar reclamação:", e.message)
       );
     }
 
     // ML espera 200 em até 500ms — responde imediatamente
-    return res.status(200).json({ ok: true, key: fbData?.name });
-
+    return res.status(200).json({ ok: true, key });
   } catch (err) {
     console.error("[webhook-ml] Erro:", err.message);
-    // Retorna 500 para o ML retentar
     return res.status(500).json({ error: err.message });
   }
 }
