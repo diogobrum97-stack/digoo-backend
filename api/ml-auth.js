@@ -1,3 +1,14 @@
+import { getDb } from "../lib/firebase-admin.js";
+
+async function fbGet(path) {
+  const snap = await getDb().ref(path).once("value");
+  return snap.val();
+}
+
+async function fbSet(path, value) {
+  await getDb().ref(path).set(value);
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -20,11 +31,10 @@ export default async function handler(req, res) {
 
   // ── Refresh: renova token salvo no Firebase ────────────────────────────────
   if (req.query.action === "refresh") {
-    const conta      = req.query.conta === "filial" ? "filial" : "matriz";
+    const conta        = req.query.conta === "filial" ? "filial" : "matriz";
     const firebasePath = conta === "filial" ? "ml_token_filial" : "ml_token";
     try {
-      const r = await fetch(`${process.env.FIREBASE_URL}/${firebasePath}.json`);
-      const token = await r.json();
+      const token = await fbGet(firebasePath);
       if (!token?.refresh_token) throw new Error("Sem refresh_token salvo");
       const tokenRes = await fetch("https://api.mercadolibre.com/oauth/token", {
         method: "POST",
@@ -39,10 +49,12 @@ export default async function handler(req, res) {
       const data = await tokenRes.json();
       if (data.error) throw new Error(data.error);
       const expires_at = Date.now() + data.expires_in * 1000;
-      await fetch(`${process.env.FIREBASE_URL}/${firebasePath}.json`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ access_token: data.access_token, refresh_token: data.refresh_token, expires_at, user_id: data.user_id, nickname: token.nickname || null }),
+      await fbSet(firebasePath, {
+        access_token:  data.access_token,
+        refresh_token: data.refresh_token,
+        expires_at,
+        user_id:  data.user_id,
+        nickname: token.nickname || null,
       });
       return res.json({ ok: true, expires_at });
     } catch(e) { return res.status(500).json({ error: e.message }); }
@@ -97,10 +109,12 @@ export default async function handler(req, res) {
     }
 
     const expires_at = Date.now() + tokenData.expires_in * 1000;
-    await fetch(`${process.env.FIREBASE_URL}/${firebasePath}.json`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ access_token: tokenData.access_token, refresh_token: tokenData.refresh_token, expires_at, user_id: tokenData.user_id, nickname: me.nickname || null }),
+    await fbSet(firebasePath, {
+      access_token:  tokenData.access_token,
+      refresh_token: tokenData.refresh_token,
+      expires_at,
+      user_id:  tokenData.user_id,
+      nickname: me.nickname || null,
     });
     return res.redirect(`${process.env.PANEL_URL}?ml_connected=1&conta=${contaAlvo}`);
   } catch(e) {
