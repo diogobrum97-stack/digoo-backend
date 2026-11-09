@@ -956,92 +956,74 @@ export default async function handler(req, res) {
     // ── Kit Full Planner — kits possíveis com estoque atual da Matriz ──────────
     // Retorna: { kits: [{ sku, nome, maxKits, limitante, componentes: [{ sku, nome, qtdPorKit, estoque }] }] }
     if (req.query.action === 'kit-full-planner') {
+      // Bling GET com retry em 429
+      const blingGet = async (url) => {
+        for (let t = 0; t < 4; t++) {
+          const r = await fetch(url, { headers });
+          if (r.status !== 429) return r;
+          await sleep(700 * (t + 1));
+        }
+        return fetch(url, { headers });
+      };
+      const step = req.query.step || 'lista';
       try {
-        // 1) Busca todos os kits ativos (tipo=K)
-        const kitsRaw = [];
-        let pg = 1;
-        while (pg <= 20) {
-          await sleep(200);
-          const r = await fetch(`https://api.bling.com.br/Api/v3/produtos?situacao=A&tipo=K&pagina=${pg}&limite=100`, { headers });
-          if (!r.ok) break;
-          const d = await r.json();
-          const it = d.data || [];
-          if (!it.length) break;
-          kitsRaw.push(...it);
-          if (it.length < 100) break;
-          pg++;
+        // 1) Lista de kits ativos (tipo=K)
+        if (step === 'lista') {
+          const kits = [];
+          for (let pg = 1; pg <= 20; pg++) {
+            const r = await blingGet(`https://api.bling.com.br/Api/v3/produtos?situacao=A&tipo=K&pagina=${pg}&limite=100`);
+            if (!r.ok) { if (pg === 1) return res.status(r.status).json({ erro: `Bling ${r.status}` }); break; }
+            const it = (await r.json()).data || [];
+            kits.push(...it.map(p => ({ id: p.id, sku: p.codigo || '', nome: p.nome || '' })));
+            if (it.length < 100) break;
+          }
+          return res.json({ ok: true, kits });
         }
 
-        if (!kitsRaw.length) return res.json({ ok: true, kits: [], total: 0 });
-
-        // 2) Para cada kit, busca detalhe (estrutura de componentes) + estoque
-        const kits = [];
-        for (const prod of kitsRaw) {
-          await sleep(220);
-          const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${prod.id}`, { headers });
-          if (!detResp.ok) continue;
-          const det = (await detResp.json()).data || {};
-          const compsBrutos = det.estrutura?.componentes || [];
-          if (!compsBrutos.length) continue;
-
-          // 3) Resolve SKU + estoque de cada componente
-          const componentes = [];
-          for (const c of compsBrutos) {
-            const compId = c.produto?.id || c.produtoId || c.id;
-            const qtdPorKit = Number(c.quantidade) || 1;
-            let sku = c.produto?.codigo || c.codigo || '';
-            let nome = c.produto?.nome || c.nome || c.descricao || '';
-            let estoque = 0;
-
-            // Busca detalhe do componente se SKU ainda não veio
-            if (compId && (!sku || !nome)) {
-              await sleep(150);
-              const cResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
-              if (cResp.ok) {
-                const cDet = (await cResp.json()).data || {};
-                sku = sku || cDet.codigo || '';
-                nome = nome || cDet.nome || '';
-                compId && (estoque = Number(cDet.estoque?.saldoVirtualTotal ?? cDet.estoque?.saldoFisicoTotal ?? 0));
-              }
-            } else if (compId) {
-              // Já temos SKU/nome, mas ainda precisamos do estoque
-              await sleep(150);
-              const cResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
-              if (cResp.ok) {
-                const cDet = (await cResp.json()).data || {};
-                estoque = Number(cDet.estoque?.saldoVirtualTotal ?? cDet.estoque?.saldoFisicoTotal ?? 0);
-              }
-            }
-
-            if (sku) componentes.push({ sku, nome, qtdPorKit, estoque });
+        // 2) Estrutura de alguns kits (POST { ids: [...] }, até ~6 por chamada)
+        if (step === 'detalhes') {
+          const ids = (req.body?.ids || []).slice(0, 10);
+          const out = [];
+          for (let i = 0; i < ids.length; i += 3) {
+            const parte = await Promise.all(ids.slice(i, i + 3).map(async id => {
+              const r = await blingGet(`https://api.bling.com.br/Api/v3/produtos/${id}`);
+              if (!r.ok) return { id, erro: `Bling ${r.status}`, componentes: [] };
+              const det = (await r.json()).data || {};
+              const comps = (det.estrutura?.componentes || []).map(c => ({
+                compId: c.produto?.id || c.produtoId || c.id || null,
+                sku: c.produto?.codigo || c.codigo || '',
+                nome: c.produto?.nome || c.nome || c.descricao || '',
+                qtdPorKit: Number(c.quantidade) || 1,
+              }));
+              return { id, sku: det.codigo || '', nome: det.nome || '', componentes: comps };
+            }));
+            out.push(...parte);
+            if (i + 3 < ids.length) await sleep(350);
           }
-
-          if (!componentes.length) continue;
-
-          // 4) Calcula quantos kits dá pra montar
-          let maxKits = Infinity;
-          let limitante = '';
-          for (const c of componentes) {
-            const possiveis = Math.floor(c.estoque / c.qtdPorKit);
-            if (possiveis < maxKits) {
-              maxKits = possiveis;
-              limitante = c.sku;
-            }
-          }
-          if (maxKits === Infinity) maxKits = 0;
-
-          kits.push({
-            sku: det.codigo || prod.codigo || '',
-            nome: det.nome || prod.nome || '',
-            maxKits,
-            limitante,
-            componentes,
-          });
+          return res.json({ ok: true, kits: out });
         }
 
-        // Ordena: mais possíveis primeiro
-        kits.sort((a, b) => b.maxKits - a.maxKits);
-        return res.json({ ok: true, kits, total: kits.length });
+        // 3) Saldos de estoque + SKU/nome dos componentes (POST { ids: [...] })
+        if (step === 'saldos') {
+          const ids = [...new Set((req.body?.ids || []).filter(Boolean))];
+          const saldos = {};
+          for (let i = 0; i < ids.length; i += 50) {
+            const qs = ids.slice(i, i + 50).map(id => `idsProdutos[]=${id}`).join('&');
+            const r = await blingGet(`https://api.bling.com.br/Api/v3/estoques/saldos?${qs}`);
+            if (!r.ok) return res.status(r.status).json({ erro: `Saldos Bling ${r.status}` });
+            for (const s of ((await r.json()).data || [])) {
+              const pid = s.produto?.id;
+              if (pid) saldos[pid] = {
+                estoque: Number(s.saldoVirtualTotal ?? s.saldoFisicoTotal ?? 0),
+                sku: s.produto?.codigo || '',
+              };
+            }
+            if (i + 50 < ids.length) await sleep(350);
+          }
+          return res.json({ ok: true, saldos });
+        }
+
+        return res.status(400).json({ erro: 'step inválido' });
       } catch (e) {
         return res.status(500).json({ erro: e.message });
       }
