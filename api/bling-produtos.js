@@ -1227,7 +1227,7 @@ export default async function handler(req, res) {
         const ncm = String(prod.classificacaoFiscal || '').replace(/\D/g, '');
 
         if (!estrutura.length) {
-          return [{ sku, descricao: prod.nome || prod.descricao || descricao, quantidade, custo, ncm, tipo: 'simples' }];
+          return [{ sku, descricao: prod.nome || prod.descricao || descricao, quantidade, custo, ncm, tipo: 'simples', kitOrigem: sku }];
         }
 
         // Kit — desmembra componentes em paralelo
@@ -1256,11 +1256,13 @@ export default async function handler(req, res) {
       for (const r of resultado) {
         const key = r.sku;
         if (!key) continue;
+        const orig = r.kitOrigem ? { kit: r.kitOrigem, qtd: r.quantidade } : null;
         if (agrupado[key]) {
           agrupado[key].quantidade += r.quantidade;
           if (r.kitOrigem) agrupado[key].kitsOrigem.push(r.kitOrigem);
+          if (orig) agrupado[key].origens.push(orig);
         } else {
-          agrupado[key] = { ...r, kitsOrigem: r.kitOrigem ? [r.kitOrigem] : [] };
+          agrupado[key] = { ...r, kitsOrigem: r.kitOrigem ? [r.kitOrigem] : [], origens: orig ? [orig] : [] };
         }
       }
 
