@@ -1199,112 +1199,58 @@ export default async function handler(req, res) {
       const { itens } = req.body; // [{ sku, descricao, quantidade }]
       if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
 
-      const resultado = [];
-
-      for (const item of itens) {
-        const { sku, descricao, quantidade } = item;
-        await sleep(150); // evitar rate limit
-
-        // Busca produto pelo SKU no Bling
+      // Processa todos os itens em paralelo para caber no timeout da Vercel
+      const resultadoLists = await Promise.all(itens.map(async ({ sku, descricao, quantidade }) => {
         const buscaResp = await fetch(
           `https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`,
           { headers }
         );
-        if (!buscaResp.ok) {
-          resultado.push({ sku, descricao, quantidade, tipo: 'erro', motivo: `Bling ${buscaResp.status}` });
-          continue;
-        }
+        if (!buscaResp.ok) return [{ sku, descricao, quantidade, tipo: 'erro', motivo: `Bling ${buscaResp.status}` }];
         const buscaData = await buscaResp.json();
         const encontrado = (buscaData.data || []).find(p => String(p.codigo || '').trim() === sku.trim()) || (buscaData.data || [])[0];
+        if (!encontrado) return [{ sku, descricao, quantidade, tipo: 'nao_encontrado' }];
 
-        if (!encontrado) {
-          resultado.push({ sku, descricao, quantidade, tipo: 'nao_encontrado' });
-          continue;
-        }
-
-        // Busca detalhe completo (estrutura de kit fica aqui)
-        await sleep(150);
         const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
-        if (!detResp.ok) {
-          resultado.push({ sku, descricao, quantidade, tipo: 'erro', motivo: `Detalhe ${detResp.status}` });
-          continue;
-        }
-        const detData = await detResp.json();
-        const prod = detData.data || {};
-        const estrutura = prod.estrutura || prod.componentes || prod.kit || [];
+        if (!detResp.ok) return [{ sku, descricao, quantidade, tipo: 'erro', motivo: `Detalhe ${detResp.status}` }];
+        const prod = (await detResp.json()).data || {};
+        // estrutura pode ser objeto { componentes: [...] } ou array direto
+        const estrutura = Array.isArray(prod.estrutura)
+          ? prod.estrutura
+          : (prod.estrutura?.componentes || prod.componentes || []);
         const custo = Number(prod.preco || prod.precoCusto || 0);
         const ncm = String(prod.classificacaoFiscal || '').replace(/\D/g, '');
 
-        if (estrutura && estrutura.length > 0) {
-          // É um kit — desmembra os componentes
-          for (const comp of estrutura) {
-            await sleep(100);
-            const compSku = comp.codigo || comp.produto?.codigo || '';
-            const compQtd = Number(comp.quantidade || 1) * quantidade;
-            const compDescricao = comp.descricao || comp.produto?.descricao || compSku;
-            const compCusto = Number(comp.preco || comp.produto?.preco || 0);
-            const compNcm = String(comp.classificacaoFiscal || comp.produto?.classificacaoFiscal || '').replace(/\D/g, '');
-
-            // Busca NCM e custo do componente se não veio
-            let compNcmFinal = compNcm;
-            let compCustoFinal = compCusto;
-            if (!compNcmFinal || !compCustoFinal) {
-              try {
-                await sleep(150);
-                const compBusca = await fetch(
-                  `https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(compSku)}&limite=3`,
-                  { headers }
-                );
-                if (compBusca.ok) {
-                  const compBuscaData = await compBusca.json();
-                  const compEnc = (compBuscaData.data || []).find(p => String(p.codigo||'').trim() === compSku.trim()) || (compBuscaData.data||[])[0];
-                  if (compEnc) {
-                    await sleep(100);
-                    const compDet = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compEnc.id}`, { headers });
-                    if (compDet.ok) {
-                      const compDetData = await compDet.json();
-                      const cp = compDetData.data || {};
-                      compNcmFinal = compNcmFinal || String(cp.classificacaoFiscal || '').replace(/\D/g, '');
-                      compCustoFinal = compCustoFinal || Number(cp.preco || cp.precoCusto || 0);
-                    }
-                  }
-                }
-              } catch(e) {}
-            }
-
-            resultado.push({
-              sku: compSku,
-              descricao: compDescricao,
-              quantidade: compQtd,
-              custo: compCustoFinal,
-              ncm: compNcmFinal,
-              tipo: 'componente',
-              kitOrigem: sku,
-              kitDescricao: descricao,
-            });
-          }
-        } else {
-          // Produto simples — vai direto
-          resultado.push({
-            sku,
-            descricao: prod.descricao || descricao,
-            quantidade,
-            custo,
-            ncm,
-            tipo: 'simples',
-          });
+        if (!estrutura.length) {
+          return [{ sku, descricao: prod.nome || prod.descricao || descricao, quantidade, custo, ncm, tipo: 'simples' }];
         }
-      }
 
-      // Agrupa componentes iguais (mesmo SKU pode vir de kits diferentes)
+        // Kit — desmembra componentes em paralelo
+        const comps = await Promise.all(estrutura.map(async comp => {
+          const compId   = comp.produto?.id;
+          const compSku  = comp.produto?.codigo || comp.codigo || '';
+          const compNome = comp.produto?.nome || comp.descricao || compSku;
+          const compQtd  = Number(comp.quantidade || 1) * quantidade;
+          // Se não tiver SKU, busca pelo ID
+          if (!compSku && compId) {
+            const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
+            const d = r.ok ? ((await r.json()).data || {}) : {};
+            return { sku: d.codigo || `id:${compId}`, descricao: d.nome || `id:${compId}`, quantidade: compQtd, custo: 0, ncm: '', tipo: 'componente', kitOrigem: sku, kitDescricao: descricao };
+          }
+          return { sku: compSku, descricao: compNome, quantidade: compQtd, custo: 0, ncm: '', tipo: 'componente', kitOrigem: sku, kitDescricao: descricao };
+        }));
+        return comps;
+      }));
+
+      const resultado = resultadoLists.flat();
+
+      // Agrupa componentes iguais
       const agrupado = {};
       for (const r of resultado) {
         const key = r.sku;
         if (!key) continue;
         if (agrupado[key]) {
           agrupado[key].quantidade += r.quantidade;
-          if (!agrupado[key].kitsOrigem) agrupado[key].kitsOrigem = [];
-          if (r.kitOrigem) agrupado[key].kitsOrigem.push(`${r.kitOrigem} ×${r.quantidade/agrupado[key].quantidade * r.quantidade}`);
+          if (r.kitOrigem) agrupado[key].kitsOrigem.push(r.kitOrigem);
         } else {
           agrupado[key] = { ...r, kitsOrigem: r.kitOrigem ? [r.kitOrigem] : [] };
         }
