@@ -1330,8 +1330,13 @@ export default async function handler(req, res) {
 
       const detR = await fetch(`https://api.bling.com.br/Api/v3/produtos/${enc.id}`, { headers });
       if (!detR.ok) return res.status(detR.status).json({ erro: `Detalhe ${detR.status}` });
-      const prod = (await detR.json()).data || {};
-      const estruturaComps = prod.estrutura?.componentes || [];
+      const prodRaw = await detR.json();
+      const prod = prodRaw.data || {};
+      // A estrutura pode vir em prod.estrutura.componentes ou prod.componentes
+      // Retorna raw para debug se query debug=1
+      if (req.query.debug) return res.json({ ok: true, sku, keys: Object.keys(prod), estrutura: prod.estrutura, componentes: prod.componentes, raw: prod });
+
+      const estruturaComps = prod.estrutura?.componentes || prod.componentes || [];
 
       if (estruturaComps.length === 0) {
         // Produto simples — retorna ele mesmo como componente
@@ -1339,19 +1344,28 @@ export default async function handler(req, res) {
       }
 
       // Busca SKU e nome de cada componente em paralelo
+      // comp pode ter: comp.produto.id, comp.produto.codigo, comp.produto.nome, comp.quantidade
       const compsDetalhados = await Promise.all(
-        estruturaComps.filter(c => c.produto?.id).map(async comp => {
-          const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${comp.produto.id}`, { headers });
-          const d = r.ok ? ((await r.json()).data || {}) : {};
-          return {
-            sku: d.codigo || `id:${comp.produto.id}`,
-            nome: d.nome || d.codigo || `id:${comp.produto.id}`,
-            qtdPorKit: Number(comp.quantidade || 1),
-          };
+        estruturaComps.map(async comp => {
+          const compId   = comp.produto?.id;
+          const compSku  = comp.produto?.codigo || comp.codigo || '';
+          const compNome = comp.produto?.nome || comp.nome || compSku;
+          const compQtd  = Number(comp.quantidade || 1);
+          // Se já veio o SKU no componente, não precisa buscar novamente
+          if (compSku) {
+            return { sku: compSku, nome: compNome, qtdPorKit: compQtd };
+          }
+          // Se só tem ID, busca detalhe
+          if (compId) {
+            const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
+            const d = r.ok ? ((await r.json()).data || {}) : {};
+            return { sku: d.codigo || `id:${compId}`, nome: d.nome || d.codigo || `id:${compId}`, qtdPorKit: compQtd };
+          }
+          return null;
         })
       );
 
-      return res.json({ ok: true, sku, tipo: 'kit', componentes: compsDetalhados });
+      return res.json({ ok: true, sku, tipo: 'kit', componentes: compsDetalhados.filter(Boolean) });
     } catch (e) {
       return res.status(500).json({ erro: e.message });
     }
