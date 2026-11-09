@@ -982,7 +982,24 @@ export default async function handler(req, res) {
 
         // 2) Estrutura de alguns kits (POST { ids: [...] }, até ~6 por chamada)
         if (step === 'detalhes') {
-          const ids = (req.body?.ids || []).slice(0, 10);
+          // aceita { ids: [...] } ou { skus: [...] } (busca o id pelo código)
+          const skus = (req.body?.skus || []).slice(0, 10);
+          let ids = (req.body?.ids || []).slice(0, 10);
+          const naoEncontrados = [];
+          if (skus.length) {
+            ids = [];
+            for (let i = 0; i < skus.length; i += 3) {
+              const achados = await Promise.all(skus.slice(i, i + 3).map(async sku => {
+                const r = await blingGet(`https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`);
+                if (!r.ok) return null;
+                const lista = (await r.json()).data || [];
+                const p = lista.find(x => String(x.codigo || '').trim().toUpperCase() === sku.trim().toUpperCase());
+                return p ? p.id : null;
+              }));
+              achados.forEach((id, j) => id ? ids.push(id) : naoEncontrados.push(skus[i + j]));
+              await sleep(350);
+            }
+          }
           const out = [];
           for (let i = 0; i < ids.length; i += 3) {
             const parte = await Promise.all(ids.slice(i, i + 3).map(async id => {
@@ -1000,7 +1017,7 @@ export default async function handler(req, res) {
             out.push(...parte);
             if (i + 3 < ids.length) await sleep(350);
           }
-          return res.json({ ok: true, kits: out });
+          return res.json({ ok: true, kits: out, naoEncontrados });
         }
 
         // 3) Saldos de estoque + SKU/nome dos componentes (POST { ids: [...] })
