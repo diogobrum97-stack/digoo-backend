@@ -1023,6 +1023,12 @@ export default async function handler(req, res) {
         // 3) Saldos de estoque + SKU/nome dos componentes (POST { ids: [...] })
         if (step === 'saldos') {
           const ids = [...new Set((req.body?.ids || []).filter(Boolean))];
+          // Só o depósito Matriz RS
+          const depR = await blingGet('https://api.bling.com.br/Api/v3/depositos?situacao=A&pagina=1&limite=50');
+          if (!depR.ok) return res.status(depR.status).json({ erro: `Depósitos Bling ${depR.status}` });
+          const depositos = (await depR.json()).data || [];
+          const matriz = depositos.find(d => /matriz/i.test(d.descricao || ''));
+          if (!matriz) return res.status(400).json({ erro: `Depósito Matriz não encontrado. Depósitos: ${depositos.map(d => d.descricao).join(', ')}` });
           const saldos = {};
           for (let i = 0; i < ids.length; i += 50) {
             const qs = ids.slice(i, i + 50).map(id => `idsProdutos[]=${id}`).join('&');
@@ -1030,14 +1036,15 @@ export default async function handler(req, res) {
             if (!r.ok) return res.status(r.status).json({ erro: `Saldos Bling ${r.status}` });
             for (const s of ((await r.json()).data || [])) {
               const pid = s.produto?.id;
+              const dep = (s.depositos || []).find(d => String(d.id) === String(matriz.id));
               if (pid) saldos[pid] = {
-                estoque: Number(s.saldoVirtualTotal ?? s.saldoFisicoTotal ?? 0),
+                estoque: Number(dep ? (dep.saldoFisico ?? dep.saldoVirtual ?? 0) : 0),
                 sku: s.produto?.codigo || '',
               };
             }
             if (i + 50 < ids.length) await sleep(350);
           }
-          return res.json({ ok: true, saldos });
+          return res.json({ ok: true, saldos, deposito: matriz.descricao });
         }
 
         return res.status(400).json({ erro: 'step inválido' });
