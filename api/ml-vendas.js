@@ -3691,13 +3691,13 @@ Respostas de treinamento anteriores: ${JSON.stringify(treinamento)}`;
       const blingToken = await blingSnap.json();
       const blingH = { Authorization: `Bearer ${blingToken?.access_token}`, Accept: "application/json" };
 
-      // Busca todos os pedidos pagos no período
-      const dateFrom = encodeURIComponent(`${dataInicio}T00:00:00.000-03:00`);
-      const dateTo = encodeURIComponent(`${dataFim}T23:59:59.000-03:00`);
+      // Busca todos os pedidos pagos a partir da data de início
+      // Usa só date_from (igual lista-compras que funciona) — ML rejeita date_to com timezone
+      const dateFrom = encodeURIComponent(new Date(`${dataInicio}T00:00:00-03:00`).toISOString());
       let pedidos = [];
       for (let offset = 0; offset < 5000; offset += 50) {
         const r = await fetch(
-          `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${dateFrom}&order.date_created.to=${dateTo}&sort=date_desc&limit=50&offset=${offset}`,
+          `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${dateFrom}&sort=date_desc&limit=50&offset=${offset}`,
           { headers: { Authorization: `Bearer ${tokenML}` } }
         );
         const d = await r.json();
