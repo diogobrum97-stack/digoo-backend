@@ -1316,85 +1316,42 @@ export default async function handler(req, res) {
     }
   }
 
-  // ── Ajuste Filial: desmembrar kits vendidos em componentes ──────────────
-  if (req.query.action === 'desmembrar-kits' && req.method === 'POST') {
+  // ── Ajuste Filial: busca estrutura de um kit no Bling (1 kit por chamada) ─
+  // Frontend chama N vezes em paralelo, evitando timeout da Vercel
+  if (req.query.action === 'estrutura-kit' && req.query.sku) {
     try {
-      const { kits } = req.body; // [{ sku, qtd }]
-      if (!kits?.length) return res.status(400).json({ erro: 'kits obrigatório' });
+      const sku = req.query.sku.trim();
+      // Busca produto
+      const buscaR = await fetch(`https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`, { headers });
+      if (!buscaR.ok) return res.status(buscaR.status).json({ erro: `Bling ${buscaR.status}` });
+      const buscaD = await buscaR.json();
+      const enc = (buscaD.data || []).find(p => String(p.codigo || '').trim() === sku) || (buscaD.data || [])[0];
+      if (!enc) return res.json({ ok: true, sku, tipo: 'nao_encontrado', componentes: [] });
 
-      // Para cada kit, busca estrutura no Bling e desmembra
-      const componentesRaw = []; // { componenteSku, componenteNome, qtdTotal, kitSku }
+      const detR = await fetch(`https://api.bling.com.br/Api/v3/produtos/${enc.id}`, { headers });
+      if (!detR.ok) return res.status(detR.status).json({ erro: `Detalhe ${detR.status}` });
+      const prod = (await detR.json()).data || {};
+      const estruturaComps = prod.estrutura?.componentes || [];
 
-      for (const kit of kits) {
-        const { sku, qtd } = kit;
-        await sleep(200);
-        // Busca produto pelo SKU
-        const buscaResp = await fetch(
-          `https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`,
-          { headers }
-        );
-        if (!buscaResp.ok) {
-          componentesRaw.push({ componenteSku: sku, componenteNome: sku, qtdTotal: qtd, kitSku: sku, erro: `Bling ${buscaResp.status}` });
-          continue;
-        }
-        const buscaData = await buscaResp.json();
-        const encontrado = (buscaData.data || []).find(p => String(p.codigo || '').trim() === sku.trim()) || (buscaData.data || [])[0];
-        if (!encontrado) {
-          // SKU simples (sem kit), vai direto como saída
-          componentesRaw.push({ componenteSku: sku, componenteNome: sku, qtdTotal: qtd, kitSku: sku, tipo: 'simples' });
-          continue;
-        }
-
-        await sleep(200);
-        const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${encontrado.id}`, { headers });
-        if (!detResp.ok) {
-          componentesRaw.push({ componenteSku: sku, componenteNome: sku, qtdTotal: qtd, kitSku: sku, erro: `Detalhe ${detResp.status}` });
-          continue;
-        }
-        const prod = (await detResp.json()).data || {};
-        const componentes = prod.estrutura?.componentes || [];
-
-        if (componentes.length > 0) {
-          // É kit — desmembra
-          for (const comp of componentes) {
-            const compId = comp.produto?.id;
-            const compQtdUnit = Number(comp.quantidade || 1);
-            const compQtdTotal = compQtdUnit * qtd;
-            if (!compId) continue;
-
-            await sleep(150);
-            const compResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
-            const compData = compResp.ok ? ((await compResp.json()).data || {}) : {};
-            const compSkuFinal  = compData.codigo || `id:${compId}`;
-            const compNomeFinal = compData.nome || compSkuFinal;
-
-            componentesRaw.push({ componenteSku: compSkuFinal, componenteNome: compNomeFinal, qtdTotal: compQtdTotal, kitSku: sku, tipo: 'componente' });
-          }
-        } else {
-          // Produto simples — saída direta
-          componentesRaw.push({ componenteSku: prod.codigo || sku, componenteNome: prod.nome || sku, qtdTotal: qtd, kitSku: sku, tipo: 'simples' });
-        }
+      if (estruturaComps.length === 0) {
+        // Produto simples — retorna ele mesmo como componente
+        return res.json({ ok: true, sku, tipo: 'simples', componentes: [{ sku: prod.codigo || sku, nome: prod.nome || sku, qtdPorKit: 1 }] });
       }
 
-      // Agrupa por SKU de componente
-      const agrupado = {};
-      for (const c of componentesRaw) {
-        const key = c.componenteSku.trim().toUpperCase();
-        if (!key) continue;
-        if (agrupado[key]) {
-          agrupado[key].qtdTotal += c.qtdTotal;
-          agrupado[key].origem.push({ kitSku: c.kitSku, qtd: c.qtdTotal });
-        } else {
-          agrupado[key] = {
-            sku: c.componenteSku,
-            nome: c.componenteNome,
-            qtdTotal: c.qtdTotal,
-            origem: [{ kitSku: c.kitSku, qtd: c.qtdTotal }],
+      // Busca SKU e nome de cada componente em paralelo
+      const compsDetalhados = await Promise.all(
+        estruturaComps.filter(c => c.produto?.id).map(async comp => {
+          const r = await fetch(`https://api.bling.com.br/Api/v3/produtos/${comp.produto.id}`, { headers });
+          const d = r.ok ? ((await r.json()).data || {}) : {};
+          return {
+            sku: d.codigo || `id:${comp.produto.id}`,
+            nome: d.nome || d.codigo || `id:${comp.produto.id}`,
+            qtdPorKit: Number(comp.quantidade || 1),
           };
-        }
-      }
+        })
+      );
 
-      return res.json({ ok: true, componentes: Object.values(agrupado).sort((a,b) => b.qtdTotal - a.qtdTotal) });
+      return res.json({ ok: true, sku, tipo: 'kit', componentes: compsDetalhados });
     } catch (e) {
       return res.status(500).json({ erro: e.message });
     }
