@@ -1199,8 +1199,13 @@ export default async function handler(req, res) {
       const { itens } = req.body; // [{ sku, descricao, quantidade }]
       if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
 
-      // Processa todos os itens em paralelo para caber no timeout da Vercel
-      const resultadoLists = await Promise.all(itens.map(async ({ sku, descricao, quantidade }) => {
+      // Processa em lotes de 4 para evitar rate limiting do Bling
+      // Com 18 kits × ~2 req cada = ~36 req; em lotes de 4 = 5 lotes sequenciais
+      const LOTE = 4;
+      const resultadoLists = [];
+      for (let i = 0; i < itens.length; i += LOTE) {
+        const lote = itens.slice(i, i + LOTE);
+        const loteResults = await Promise.all(lote.map(async ({ sku, descricao, quantidade }) => {
         const buscaResp = await fetch(
           `https://api.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=5`,
           { headers }
@@ -1239,7 +1244,9 @@ export default async function handler(req, res) {
           return { sku: compSku, descricao: compNome, quantidade: compQtd, custo: 0, ncm: '', tipo: 'componente', kitOrigem: sku, kitDescricao: descricao };
         }));
         return comps;
-      }));
+        })); // fim Promise.all do lote
+        resultadoLists.push(...loteResults);
+      } // fim for lotes
 
       const resultado = resultadoLists.flat();
 
@@ -1258,7 +1265,7 @@ export default async function handler(req, res) {
 
       return res.json({ ok: true, itens: Object.values(agrupado) });
     } catch (e) {
-      return res.status(500).json({ erro: e.message });
+      return res.status(500).json({ erro: e.message, stack: e.stack?.slice(0, 500) });
     }
   }
 
