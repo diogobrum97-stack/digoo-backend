@@ -952,6 +952,100 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── Kit Full Planner — kits possíveis com estoque atual da Matriz ──────────
+    // Retorna: { kits: [{ sku, nome, maxKits, limitante, componentes: [{ sku, nome, qtdPorKit, estoque }] }] }
+    if (req.query.action === 'kit-full-planner') {
+      try {
+        // 1) Busca todos os kits ativos (tipo=K)
+        const kitsRaw = [];
+        let pg = 1;
+        while (pg <= 20) {
+          await sleep(200);
+          const r = await fetch(`https://api.bling.com.br/Api/v3/produtos?situacao=A&tipo=K&pagina=${pg}&limite=100`, { headers });
+          if (!r.ok) break;
+          const d = await r.json();
+          const it = d.data || [];
+          if (!it.length) break;
+          kitsRaw.push(...it);
+          if (it.length < 100) break;
+          pg++;
+        }
+
+        if (!kitsRaw.length) return res.json({ ok: true, kits: [], total: 0 });
+
+        // 2) Para cada kit, busca detalhe (estrutura de componentes) + estoque
+        const kits = [];
+        for (const prod of kitsRaw) {
+          await sleep(220);
+          const detResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${prod.id}`, { headers });
+          if (!detResp.ok) continue;
+          const det = (await detResp.json()).data || {};
+          const compsBrutos = det.estrutura?.componentes || [];
+          if (!compsBrutos.length) continue;
+
+          // 3) Resolve SKU + estoque de cada componente
+          const componentes = [];
+          for (const c of compsBrutos) {
+            const compId = c.produto?.id || c.produtoId || c.id;
+            const qtdPorKit = Number(c.quantidade) || 1;
+            let sku = c.produto?.codigo || c.codigo || '';
+            let nome = c.produto?.nome || c.nome || c.descricao || '';
+            let estoque = 0;
+
+            // Busca detalhe do componente se SKU ainda não veio
+            if (compId && (!sku || !nome)) {
+              await sleep(150);
+              const cResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
+              if (cResp.ok) {
+                const cDet = (await cResp.json()).data || {};
+                sku = sku || cDet.codigo || '';
+                nome = nome || cDet.nome || '';
+                compId && (estoque = Number(cDet.estoque?.saldoVirtualTotal ?? cDet.estoque?.saldoFisicoTotal ?? 0));
+              }
+            } else if (compId) {
+              // Já temos SKU/nome, mas ainda precisamos do estoque
+              await sleep(150);
+              const cResp = await fetch(`https://api.bling.com.br/Api/v3/produtos/${compId}`, { headers });
+              if (cResp.ok) {
+                const cDet = (await cResp.json()).data || {};
+                estoque = Number(cDet.estoque?.saldoVirtualTotal ?? cDet.estoque?.saldoFisicoTotal ?? 0);
+              }
+            }
+
+            if (sku) componentes.push({ sku, nome, qtdPorKit, estoque });
+          }
+
+          if (!componentes.length) continue;
+
+          // 4) Calcula quantos kits dá pra montar
+          let maxKits = Infinity;
+          let limitante = '';
+          for (const c of componentes) {
+            const possiveis = Math.floor(c.estoque / c.qtdPorKit);
+            if (possiveis < maxKits) {
+              maxKits = possiveis;
+              limitante = c.sku;
+            }
+          }
+          if (maxKits === Infinity) maxKits = 0;
+
+          kits.push({
+            sku: det.codigo || prod.codigo || '',
+            nome: det.nome || prod.nome || '',
+            maxKits,
+            limitante,
+            componentes,
+          });
+        }
+
+        // Ordena: mais possíveis primeiro
+        kits.sort((a, b) => b.maxKits - a.maxKits);
+        return res.json({ ok: true, kits, total: kits.length });
+      } catch (e) {
+        return res.status(500).json({ erro: e.message });
+      }
+    }
+
     // ── Modo padrão: lista de produtos com custo (comportamento original) ──
     const produtos = [];
     let pagina = 1;
