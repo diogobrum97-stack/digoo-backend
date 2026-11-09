@@ -3676,6 +3676,99 @@ Respostas de treinamento anteriores: ${JSON.stringify(treinamento)}`;
     }
   }
 
+  // ── Saídas NF Filial — desmembra vendas do período para ajuste de estoque ──
+  if (req.query.action === "saidas-nf-filial") {
+    try {
+      const tokenML = req.query.token || "";
+      const dataInicio = req.query.de || "2026-10-23"; // data da NF 021011
+      const dataFim = req.query.ate || new Date().toISOString().slice(0, 10);
+
+      const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenML}` } });
+      const me = await meRes.json();
+      if (!me.id) return res.status(401).json({ ok: false, erro: "Token ML inválido" });
+
+      const blingSnap = await fetch(`${process.env.FIREBASE_URL}/bling_token.json`);
+      const blingToken = await blingSnap.json();
+      const blingH = { Authorization: `Bearer ${blingToken?.access_token}`, Accept: "application/json" };
+
+      // Busca todos os pedidos pagos no período
+      const dateFrom = encodeURIComponent(`${dataInicio}T00:00:00.000-03:00`);
+      const dateTo = encodeURIComponent(`${dataFim}T23:59:59.000-03:00`);
+      let pedidos = [];
+      for (let offset = 0; offset < 5000; offset += 50) {
+        const r = await fetch(
+          `https://api.mercadolibre.com/orders/search?seller=${me.id}&order.status=paid&order.date_created.from=${dateFrom}&order.date_created.to=${dateTo}&sort=date_desc&limit=50&offset=${offset}`,
+          { headers: { Authorization: `Bearer ${tokenML}` } }
+        );
+        const d = await r.json();
+        const pg = d.results || [];
+        pedidos.push(...pg);
+        if (pg.length < 50) break;
+      }
+
+      // Agrega vendas por SKU (kits ainda não desmembrados)
+      const vendasBruto = {};
+      for (const pedido of pedidos) {
+        for (const item of (pedido.order_items || [])) {
+          const sku = item.item?.seller_sku || "";
+          if (!sku) continue;
+          vendasBruto[sku] = (vendasBruto[sku] || 0) + (item.quantity || 1);
+        }
+      }
+
+      // Desmembra kits via Bling estrutura
+      const vendasUnit = {};
+      const cache = {};
+      const getComps = async (sku) => {
+        if (cache[sku] !== undefined) return cache[sku];
+        try {
+          const r1 = await fetch(`https://www.bling.com.br/Api/v3/produtos?codigo=${encodeURIComponent(sku)}&limite=1`, { headers: blingH });
+          const d1 = await r1.json();
+          const prod = d1.data?.[0];
+          if (!prod) { cache[sku] = null; return null; }
+          await new Promise(r => setTimeout(r, 200));
+          const r2 = await fetch(`https://www.bling.com.br/Api/v3/produtos/${prod.id}`, { headers: blingH });
+          const d2 = await r2.json();
+          const comps = d2.data?.estrutura?.componentes || [];
+          cache[sku] = comps.length > 0 ? comps : null;
+          return cache[sku];
+        } catch(e) { cache[sku] = null; return null; }
+      };
+
+      const skus = Object.keys(vendasBruto);
+      for (let i = 0; i < skus.length; i += 3) {
+        await Promise.all(skus.slice(i, i + 3).map(async (sku) => {
+          const comps = await getComps(sku);
+          if (comps) {
+            for (const comp of comps) {
+              const cSku = comp.produto?.codigo || comp.codigo || "";
+              const cQtd = Number(comp.quantidade || 1);
+              if (!cSku) continue;
+              vendasUnit[cSku] = (vendasUnit[cSku] || 0) + (vendasBruto[sku] * cQtd);
+            }
+          } else {
+            vendasUnit[sku] = (vendasUnit[sku] || 0) + vendasBruto[sku];
+          }
+        }));
+        await new Promise(r => setTimeout(r, 150));
+      }
+
+      const resultado = Object.entries(vendasUnit)
+        .map(([sku, qtd]) => ({ sku, saida: Math.round(qtd) }))
+        .sort((a, b) => b.saida - a.saida);
+
+      return res.json({
+        ok: true,
+        resultado,
+        totalPedidos: pedidos.length,
+        totalSkusKit: skus.length,
+        periodo: { de: dataInicio, ate: dataFim },
+      });
+    } catch(e) {
+      return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
+
   // ── Teste de sugestão com pergunta manual ──────────────────────────────
   if (req.query.action === 'testar-sugestao' && req.method === 'POST') {
     try {
