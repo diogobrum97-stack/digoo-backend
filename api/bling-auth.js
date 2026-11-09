@@ -1,3 +1,4 @@
+import { fetch } from "../lib/fb-fetch.js";
 const CLIENT_ID     = process.env.BLING_CLIENT_ID;
 const CLIENT_SECRET = process.env.BLING_CLIENT_SECRET;
 const FIREBASE_URL  = process.env.FIREBASE_URL;

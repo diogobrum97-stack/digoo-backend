@@ -1,3 +1,4 @@
+import { fetch } from "../lib/fb-fetch.js";
 export const config = { maxDuration: 30, api: { bodyParser: { sizeLimit: '10mb' } } };
 
 const FIREBASE_URL  = process.env.FIREBASE_URL;

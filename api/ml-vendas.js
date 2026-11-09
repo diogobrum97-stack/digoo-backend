@@ -1,3 +1,4 @@
+import { fetch } from "../lib/fb-fetch.js";
 
 async function atualizarCatalogoBackground(token, uid, fbUrl) {
   const ids = [];

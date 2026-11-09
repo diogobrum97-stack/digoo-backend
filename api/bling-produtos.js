@@ -1,3 +1,4 @@
+import { fetch } from "../lib/fb-fetch.js";
 export const config = {
   maxDuration: 60,
 };
