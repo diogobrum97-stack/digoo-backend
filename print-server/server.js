@@ -28,7 +28,7 @@ const FIREBASE_CONFIG = {
   appId: "1:152821168439:web:6712b7821b1de4517782b2",
 };
 
-const VERSION  = "2.2.0";
+const VERSION  = "2.3.0";
 const PRINTER  = "A82pro";
 const SUMATRA  = path.join(__dirname, "SumatraPDF.exe");
 const TEMP_DIR = os.tmpdir();
@@ -37,6 +37,12 @@ const MAX_IDADE_MS = 3 * 60 * 60 * 1000; // 3h
 // ── Firebase ──────────────────────────────────────────────────────────────────
 const app = initializeApp(FIREBASE_CONFIG);
 const db  = getDatabase(app);
+
+// Não deixa o processo morrer por erro inesperado — registra e segue
+process.on("uncaughtException", e => console.error("[ERRO NÃO TRATADO]", e && e.stack || e));
+process.on("unhandledRejection", e => console.error("[PROMISE REJEITADA]", e && e.stack || e));
+process.on("SIGINT", () => console.warn("[aviso] Recebeu Ctrl+C/SIGINT — ignorado. Feche a janela para parar."));
+process.on("exit", code => console.error(`[saída] Processo encerrando com código ${code}`));
 
 console.log(`[digoo-print-server ${VERSION}] Iniciando…`);
 console.log(`  Impressora : ${PRINTER}`);
@@ -81,12 +87,13 @@ setInterval(sendHeartbeat, 5000);
 async function imprimirPDF(pdf_base64, order_id) {
   const pdfPath = path.join(TEMP_DIR, `etiqueta_${order_id}_${Date.now()}.pdf`);
   fs.writeFileSync(pdfPath, Buffer.from(pdf_base64, "base64"));
+  console.log(`[print] Enviando ${path.basename(pdfPath)} para ${PRINTER}…`);
 
   return new Promise((resolve, reject) => {
     execFile(
       SUMATRA,
       ["-print-to", PRINTER, "-print-settings", "fit", "-silent", pdfPath],
-      { timeout: 30000 },
+      { timeout: 60000, windowsHide: true },
       (err, stdout, stderr) => {
         try { fs.unlinkSync(pdfPath); } catch {}
         if (err) reject(new Error(stderr || err.message));
