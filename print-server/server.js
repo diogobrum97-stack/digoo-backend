@@ -28,10 +28,11 @@ const FIREBASE_CONFIG = {
   appId: "1:152821168439:web:6712b7821b1de4517782b2",
 };
 
-const VERSION  = "2.1.1";
+const VERSION  = "2.2.0";
 const PRINTER  = "A82pro";
 const SUMATRA  = path.join(__dirname, "SumatraPDF.exe");
 const TEMP_DIR = os.tmpdir();
+const MAX_IDADE_MS = 3 * 60 * 60 * 1000; // 3h
 
 // ── Firebase ──────────────────────────────────────────────────────────────────
 const app = initializeApp(FIREBASE_CONFIG);
@@ -101,6 +102,12 @@ const processando = new Set();
 async function processarItem(order_id, data) {
   if (data.status !== "aguardando") return;
   if (processando.has(order_id)) return;
+  // Não imprime etiqueta antiga presa na fila (ex.: servidor ficou fora do ar)
+  if (data.ts && Date.now() - data.ts > MAX_IDADE_MS) {
+    console.log(`[fila] Ignorado ${order_id} — enviado há ${Math.round((Date.now() - data.ts) / 3600000)}h (reenvie pelo Picking se precisar)`);
+    await update(ref(db, `/fila_impressao/${order_id}`), { status: "expirado", expirado_em: Date.now() }).catch(() => {});
+    return;
+  }
   processando.add(order_id);
   queueSize++;
 
