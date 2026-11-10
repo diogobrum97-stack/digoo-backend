@@ -19,16 +19,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ── Configuração ──────────────────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyDnZXDmxrsBYIHSR8vqbX5hRVS1B_k0glY",
+  apiKey: "AIzaSyBbaxrk7TXl9BiAZJzHwnJ6vI_LA5g-zzk",
   authDomain: "digoo-equipe.firebaseapp.com",
   databaseURL: "https://digoo-equipe-default-rtdb.firebaseio.com",
   projectId: "digoo-equipe",
-  storageBucket: "digoo-equipe.appspot.com",
-  messagingSenderId: "246513516738",
-  appId: "1:246513516738:web:4ddb07b2a5c4a9e7b86123",
+  storageBucket: "digoo-equipe.firebasestorage.app",
+  messagingSenderId: "152821168439",
+  appId: "1:152821168439:web:6712b7821b1de4517782b2",
 };
 
-const VERSION  = "2.1.0";
+const VERSION  = "2.1.1";
 const PRINTER  = "A82pro";
 const SUMATRA  = path.join(__dirname, "SumatraPDF.exe");
 const TEMP_DIR = os.tmpdir();
