@@ -8,6 +8,7 @@
 
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, onChildAdded, onChildChanged, update, set } from "firebase/database";
+import { getAuth, signInAnonymously } from "firebase/auth";
 import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
@@ -27,7 +28,7 @@ const FIREBASE_CONFIG = {
   appId: "1:246513516738:web:4ddb07b2a5c4a9e7b86123",
 };
 
-const VERSION  = "2.0.0";
+const VERSION  = "2.1.0";
 const PRINTER  = "A82pro";
 const SUMATRA  = path.join(__dirname, "SumatraPDF.exe");
 const TEMP_DIR = os.tmpdir();
@@ -61,6 +62,15 @@ async function sendHeartbeat() {
   } catch (e) {
     console.warn("[heartbeat] Erro:", e.message);
   }
+}
+
+// Regras do Firebase exigem auth != null — entra anônimo antes de tudo
+try {
+  await signInAnonymously(getAuth(app));
+  console.log("[auth] Login anônimo OK");
+} catch (e) {
+  console.error("[auth] Falha no login anônimo:", e.message);
+  process.exit(1);
 }
 
 sendHeartbeat();
