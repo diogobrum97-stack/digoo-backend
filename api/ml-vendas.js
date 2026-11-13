@@ -325,6 +325,25 @@ module.exports = async function handler(req, res) {
         };
       });
 
+      // Fotos dos anúncios: a API de pedidos não traz imagem, só o ID do item.
+      // Busca em lote (20 por chamada) e preenche o thumbnail de cada item.
+      try {
+        const ids = [...new Set(resultado.flatMap(p => p.itens.map(it => it.item_id)).filter(Boolean))];
+        const fotos = {};
+        for (let i = 0; i < ids.length; i += 20) {
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${ids.slice(i, i + 20).join(",")}&attributes=id,thumbnail,pictures`, {
+            headers: { Authorization: `Bearer ${tokenPk}` },
+          });
+          if (!r.ok) continue;
+          for (const x of (await r.json()) || []) {
+            const b = x?.body; if (!b?.id) continue;
+            const pic = (b.pictures || [])[0];
+            fotos[b.id] = (pic?.secure_url || pic?.url || b.thumbnail || "").replace(/^http:/, "https:");
+          }
+        }
+        resultado.forEach(p => p.itens.forEach(it => { if (!it.thumbnail && fotos[it.item_id]) it.thumbnail = fotos[it.item_id]; }));
+      } catch (e) { console.warn("[picking-fila] fotos:", e.message); }
+
       return res.json({
         ok: true,
         fila: resultado,
