@@ -38,8 +38,6 @@ export default async function handler(req, res) {
         const r = await fetch(`${FB}${path}.json${shallow ? "?shallow=true" : ""}`);
         return r.ok ? r.json() : { __erro: r.status };
       };
-      const raiz = await ler("/", true);
-      const chavesFiscais = Object.keys(raiz || {}).filter(k => /nfs|nfe|cte|fiscal|tomad|captur|nsu|sync/i.test(k));
       const resumo = {};
       for (const base of ["nfse_tomadas", "nfe_tomadas", "cte_tomadas"]) {
         const anos = Object.keys((await ler(`/${base}`, true)) || {}).filter(k => /^\d{4}$/.test(k)).sort();
@@ -66,12 +64,7 @@ export default async function handler(req, res) {
         for (const k of Object.keys((await ler(`/${base}`, true)) || {}).filter(k => !/^\d{4}$/.test(k))) meta[k] = await ler(`/${base}/${k}`);
         resumo[base] = { anos, ultimosMeses: out, outrasChaves: meta };
       }
-      const extras = {};
-      for (const k of chavesFiscais.filter(k => !["nfse_tomadas", "nfe_tomadas", "cte_tomadas"].includes(k))) {
-        const v = await ler(`/${k}`, true);
-        extras[k] = v && typeof v === "object" ? Object.keys(v).slice(-10) : v;
-      }
-      return res.json({ ok: true, agora: new Date().toISOString(), chavesFiscais, resumo, extras });
+      return res.json({ ok: true, agora: new Date().toISOString(), resumo });
     } catch (e) {
       return res.status(500).json({ ok: false, erro: e.message });
     }
