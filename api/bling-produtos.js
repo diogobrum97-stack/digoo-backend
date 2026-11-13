@@ -29,6 +29,54 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-bling-token");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ── Diagnóstico do capturador de NFS-e/NF-e (só leitura, só resumo) ──────
+  // GET /api/bling-produtos?action=diag-fiscal
+  if (req.query.action === "diag-fiscal") {
+    try {
+      const FB = process.env.FIREBASE_URL;
+      const ler = async (path, shallow) => {
+        const r = await fetch(`${FB}${path}.json${shallow ? "?shallow=true" : ""}`);
+        return r.ok ? r.json() : { __erro: r.status };
+      };
+      const raiz = await ler("/", true);
+      const chavesFiscais = Object.keys(raiz || {}).filter(k => /nfs|nfe|cte|fiscal|tomad|captur|nsu|sync/i.test(k));
+      const resumo = {};
+      for (const base of ["nfse_tomadas", "nfe_tomadas", "cte_tomadas"]) {
+        const anos = Object.keys((await ler(`/${base}`, true)) || {}).filter(k => /^\d{4}$/.test(k)).sort();
+        const meses = [];
+        for (const ano of anos.slice(-2)) {
+          for (const mes of Object.keys((await ler(`/${base}/${ano}`, true)) || {}).sort()) meses.push(`${ano}/${mes}`);
+        }
+        const out = [];
+        for (const m of meses.slice(-4)) {
+          const dados = (await ler(`/${base}/${m}`)) || {};
+          const notas = Object.values(dados).filter(n => n && typeof n === "object");
+          const campoData = n => n.dataEmissao || n.emissao || "";
+          const campoCaptura = n => n.capturadoEm || n.capturado_em || n.criadoEm || n.createdAt || n.ts || n.importadoEm || null;
+          const ult = notas.slice().sort((a, b) => String(campoData(b)).localeCompare(String(campoData(a))))[0];
+          const capt = notas.map(campoCaptura).filter(Boolean).map(v => typeof v === "number" ? v : Date.parse(v)).filter(Boolean);
+          out.push({
+            mes: m, qtd: notas.length,
+            ultimaEmissao: ult ? String(campoData(ult)).slice(0, 19) : null,
+            ultimaCaptura: capt.length ? new Date(Math.max(...capt)).toISOString() : null,
+            campos: ult ? Object.keys(ult).slice(0, 25) : [],
+          });
+        }
+        const meta = {};
+        for (const k of Object.keys((await ler(`/${base}`, true)) || {}).filter(k => !/^\d{4}$/.test(k))) meta[k] = await ler(`/${base}/${k}`);
+        resumo[base] = { anos, ultimosMeses: out, outrasChaves: meta };
+      }
+      const extras = {};
+      for (const k of chavesFiscais.filter(k => !["nfse_tomadas", "nfe_tomadas", "cte_tomadas"].includes(k))) {
+        const v = await ler(`/${k}`, true);
+        extras[k] = v && typeof v === "object" ? Object.keys(v).slice(-10) : v;
+      }
+      return res.json({ ok: true, agora: new Date().toISOString(), chavesFiscais, resumo, extras });
+    } catch (e) {
+      return res.status(500).json({ ok: false, erro: e.message });
+    }
+  }
+
   // ── Webhook Bling — pedidos de vendas e NF-e ─────────────────────────────
   // O Bling envia POST com header X-Bling-Signature-256: sha256=<hmac>
   // O payload tem: { eventId, date, event, companyId, data: { ... } }
