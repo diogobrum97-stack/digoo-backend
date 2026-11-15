@@ -1,135 +1,8 @@
 import { fetch } from "../lib/fb-fetch.js";
 import { getDb } from "../lib/firebase-admin.js";
 
-// ════════════════════════════════════════════════════════════════════════════
-// Ofertas do ML — busca confiável + cache no Firebase (/ofertas_ml_cache/{conta})
-// ════════════════════════════════════════════════════════════════════════════
-const esperar = ms => new Promise(r => setTimeout(r, ms));
-
-// Chamada ao ML com nova tentativa em 429 (muitas requisições) e erros 5xx/rede.
-async function mlFetch(url, token, opts = {}, tentativas = 4) {
-  let ultimoErro = null;
-  for (let t = 0; t < tentativas; t++) {
-    try {
-      const r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) } });
-      if (r.status !== 429 && r.status < 500) return r;
-      const ra = Number(r.headers.get("retry-after"));
-      ultimoErro = new Error(`HTTP ${r.status}`);
-      await esperar(ra > 0 ? ra * 1000 : 800 * 2 ** t);
-    } catch (e) {
-      ultimoErro = e;
-      await esperar(800 * 2 ** t);
-    }
-  }
-  throw ultimoErro || new Error("falha ao consultar o ML");
-}
-
-// Roda fn em cada item com no máximo `limite` chamadas ao mesmo tempo.
-async function emParalelo(lista, limite, fn) {
-  let i = 0;
-  const trabalhadores = Array.from({ length: Math.min(limite, lista.length) }, async () => {
-    while (i < lista.length) { const idx = i++; await fn(lista[idx], idx); }
-  });
-  await Promise.all(trabalhadores);
-}
-
-function dadosDoItem(it) {
-  const skuAttr = (it.attributes || []).find(a => a.id === "SELLER_SKU");
-  const pic = (it.pictures || [])[0];
-  return {
-    titulo: it.title || null,
-    sku: it.seller_custom_field || skuAttr?.value_name || "",
-    foto: (pic?.secure_url || it.thumbnail || "").replace(/^http:/, "https:"),
-    preco: it.price ?? null,
-    estoque: it.available_quantity ?? null,
-    permalink: it.permalink || "",
-    catalogo: it.catalog_listing === true,
-  };
-}
-
-async function montarOfertasML(token) {
-  const inicio = Date.now();
-  const me = await (await mlFetch("https://api.mercadolibre.com/users/me", token)).json();
-  if (!me.id) throw new Error("Token inválido ou expirado");
-
-  // 1) IDs dos anúncios ativos
-  const ids = [];
-  for (let off = 0; off < 2000; off += 50) {
-    const d = await (await mlFetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${off}`, token)).json();
-    const b = Array.isArray(d.results) ? d.results : [];
-    ids.push(...b);
-    if (b.length < 50) break;
-  }
-
-  // 2) Dados dos anúncios PRIMEIRO (lotes de 20), depois um a um os que faltarem
-  const ATR = "id,title,price,seller_custom_field,attributes,thumbnail,pictures,permalink,available_quantity,catalog_listing";
-  const info = {};
-  for (let i = 0; i < ids.length; i += 20) {
-    const lote = ids.slice(i, i + 20);
-    try {
-      const d = await (await mlFetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=${ATR}`, token)).json();
-      (Array.isArray(d) ? d : []).forEach(e => { if (e?.code === 200 && e.body?.id) info[e.body.id] = dadosDoItem(e.body); });
-    } catch (e) { /* os que faltarem vão pro passo individual */ }
-  }
-  const semDados = ids.filter(id => !info[id]);
-  await emParalelo(semDados, 3, async id => {
-    try {
-      const r = await mlFetch(`https://api.mercadolibre.com/items/${id}?attributes=${ATR}`, token);
-      if (r.ok) info[id] = dadosDoItem(await r.json());
-    } catch (e) {}
-  });
-
-  // 3) Promoções de cada anúncio, 5 por vez
-  const ofertasPorItem = {};
-  const falhaPromo = [];
-  await emParalelo(ids, 5, async itemId => {
-    try {
-      const r = await mlFetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, token);
-      if (r.status === 404) return;
-      if (!r.ok) { falhaPromo.push(itemId); return; }
-      const arr = await r.json();
-      const lista = (Array.isArray(arr) ? arr : []).filter(p => ["candidate", "started", "pending"].includes(p.status));
-      if (!lista.length) return;
-      ofertasPorItem[itemId] = lista.map(p => ({
-        promotion_id: p.id || null,
-        tipo: p.type || "",
-        nome: p.name || "",
-        status: p.status,
-        preco: p.price ?? p.suggested_discounted_price ?? null,
-        preco_original: p.original_price ?? null,
-        preco_sugerido: p.suggested_discounted_price ?? null,
-        preco_min: p.min_discounted_price ?? null,
-        preco_max: p.max_discounted_price ?? null,
-        meli_pct: Number(p.meli_percentage ?? p.benefits?.meli_percent ?? 0) || 0,
-        seller_pct: Number(p.seller_percentage ?? p.benefits?.seller_percent ?? 0) || 0,
-        offer_id: p.offer_id || p.ref_id || null,
-        inicio: p.start_date || null,
-        fim: p.finish_date || p.end_date || null,
-        estoque_min: p.stock?.min ?? null,
-        estoque_max: p.stock?.max ?? null,
-      }));
-    } catch (e) { falhaPromo.push(itemId); }
-  });
-
-  const comOferta = Object.keys(ofertasPorItem);
-  const itens = comOferta.map(id => {
-    const d = info[id];
-    return d
-      ? { item_id: id, ...d, ofertas: ofertasPorItem[id] }
-      : { item_id: id, sem_dados: true, titulo: null, sku: "", foto: "", preco: null, estoque: null,
-          permalink: `https://produto.mercadolivre.com.br/${id.replace(/^MLB/, "MLB-")}`, catalogo: false, ofertas: ofertasPorItem[id] };
-  });
-  // Firebase não aceita undefined
-  return JSON.parse(JSON.stringify({
-    ok: true,
-    seller_id: me.id,
-    gerado_em: Date.now(),
-    duracao_ms: Date.now() - inicio,
-    total_anuncios: ids.length,
-    itens,
-    falhas: { dados: comOferta.filter(id => !info[id]), promocoes: falhaPromo },
-  }));
-}
+// Ofertas do ML: núcleo em lib/ofertas-ml-core.mjs (o mesmo arquivo roda na VPS)
+import { esperar, mlFetch, emParalelo, dadosDoItem, ofertasDoItem, montarOfertasML, gravarOfertas } from "../lib/ofertas-ml-core.mjs";
 
 // Token do ML salvo no Firebase, renovado se estiver perto de vencer
 async function tokenMLDaConta(conta) {
@@ -1526,21 +1399,50 @@ Responda APENAS com JSON array:
     }
   }
 
-  // ── Ofertas do ML com cache no Firebase (usado pela tela e pelo cron do VPS) ──
-  // GET ?action=ofertas-ml-cache&conta=filial|matriz[&forcar=1]
+  // ── Ofertas do ML: varredura completa gravada no Firebase ──
+  // Quem mantém /ofertas_ml_cache/{conta} atualizado é o sincronizador da VPS (a cada ~1-2 min).
+  // Esta action é o plano B: o OPS chama quando os dados passam de 10 min (VPS parada).
+  // GET ?action=ofertas-ml-cache&conta=filial|matriz
   if (req.query.action === "ofertas-ml-cache" && req.method === "GET") {
     const conta = req.query.conta === "matriz" ? "matriz" : "filial";
     const ref = getDb().ref(`/ofertas_ml_cache/${conta}`);
     try {
-      if (req.query.forcar !== "1") {
-        const atual = (await ref.once("value")).val();
-        if (atual?.gerado_em && Date.now() - atual.gerado_em < 10 * 60 * 1000) return res.json({ ...atual, do_cache: true });
-      }
+      const anterior = (await ref.child("itens").once("value")).val() || {};
       const dados = await montarOfertasML(await tokenMLDaConta(conta));
-      await ref.set(dados);
-      return res.json(dados);
+      const mudaram = await gravarOfertas(ref, dados, anterior, "backend");
+      return res.json({ ok: true, meta: dados.meta, mudaram });
     } catch (e) {
-      try { await getDb().ref(`/ofertas_ml_cache/${conta}/ultimo_erro`).set({ msg: e.message, em: Date.now() }); } catch (_) {}
+      try { await ref.child("ultimo_erro").set({ msg: e.message, em: Date.now() }); } catch (_) {}
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Promoções de UM anúncio, direto do ML (o OPS confere antes de Participar) ──
+  // GET ?action=oferta-item-atual&conta=filial|matriz&item_id=MLB...
+  if (req.query.action === "oferta-item-atual" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      const itemId = String(req.query.item_id || "").trim();
+      if (!/^MLB\d+$/.test(itemId)) return res.status(400).json({ ok: false, error: "item_id inválido" });
+      const ofertas = await ofertasDoItem(itemId, await tokenMLDaConta(conta));
+      // já atualiza o Firebase pra todo mundo ver o valor novo
+      const ref = getDb().ref(`/ofertas_ml_cache/${conta}/itens/${itemId}/ofertas`);
+      if ((await ref.parent.child("item_id").once("value")).exists()) await ref.set(JSON.parse(JSON.stringify(ofertas)));
+      return res.json({ ok: true, item_id: itemId, ofertas, em: Date.now() });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Renova o token do ML de uma conta (usado pelo sincronizador da VPS) ──
+  // Não devolve o token: só renova e grava no Firebase. GET ?action=renovar-token-ml&conta=filial|matriz
+  if (req.query.action === "renovar-token-ml" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      await tokenMLDaConta(conta);
+      const tk = (await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val();
+      return res.json({ ok: true, expires_at: tk?.expires_at || null });
+    } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
   }
@@ -1597,7 +1499,8 @@ Responda APENAS com JSON array:
       if (promotion_id) body.promotion_id = promotion_id;
       if (offer_id) body.offer_id = offer_id;
       if (["DEAL", "SELLER_CAMPAIGN", "LIGHTNING", "DOD"].includes(tipo) && preco) body.deal_price = Number(preco);
-      if (tipo === "LIGHTNING" && estoque) body.stock = Number(estoque);
+      // Relâmpago (comum e com redução de tarifa) exige o estoque reservado pra oferta
+      if (["LIGHTNING", "SMART_LIGHTNING"].includes(tipo) && estoque) body.stock = Number(estoque);
       const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
         method: "POST",
         headers: { Authorization: `Bearer ${tk}`, "Content-Type": "application/json" },
