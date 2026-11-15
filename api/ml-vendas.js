@@ -1545,6 +1545,28 @@ Responda APENAS com JSON array:
     }
   }
 
+  // ── Diagnóstico (só leitura): resposta bruta do ML sobre as promoções de um anúncio ──
+  // GET ?action=diag-oferta-item&item_id=MLB...&conta=filial|matriz
+  if (req.query.action === "diag-oferta-item" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      const itemId = String(req.query.item_id || "").trim();
+      if (!/^MLB\d+$/.test(itemId)) return res.status(400).json({ ok: false, error: "item_id inválido (ex.: MLB4435381053)" });
+      const tk = await tokenMLDaConta(conta);
+      const ler = async url => { const r = await mlFetch(url, tk); const t = await r.text(); try { return { status: r.status, body: JSON.parse(t) }; } catch (e) { return { status: r.status, body: t.slice(0, 500) }; } };
+      const promos = await ler(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`);
+      const item = await ler(`https://api.mercadolibre.com/items/${itemId}?attributes=id,title,price,original_price,listing_type_id,catalog_listing,status`);
+      const detalhes = {};
+      for (const p of (Array.isArray(promos.body) ? promos.body : [])) {
+        if (!p.id || detalhes[p.id]) continue;
+        detalhes[p.id] = await ler(`https://api.mercadolibre.com/seller-promotions/promotions/${p.id}?promotion_type=${encodeURIComponent(p.type || "")}&app_version=v2`);
+      }
+      return res.json({ ok: true, conta, item, promocoes_do_item: promos, detalhes_das_campanhas: detalhes });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Participar de uma oferta do ML ──
   if (req.query.action === "participar-oferta" && req.method === "POST") {
     try {
