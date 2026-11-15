@@ -1561,7 +1561,28 @@ Responda APENAS com JSON array:
         if (!p.id || detalhes[p.id]) continue;
         detalhes[p.id] = await ler(`https://api.mercadolibre.com/seller-promotions/promotions/${p.id}?promotion_type=${encodeURIComponent(p.type || "")}&app_version=v2`);
       }
-      return res.json({ ok: true, conta, item, promocoes_do_item: promos, detalhes_das_campanhas: detalhes });
+      // Itens de cada campanha (onde a doc diz que vêm boosted_offer / discount_meli_boost_amount / total_price_for_boosted_offer)
+      const nasCampanhas = {};
+      for (const p of (Array.isArray(promos.body) ? promos.body : [])) {
+        if (!p.id || !p.type || nasCampanhas[p.id]) continue;
+        const achado = { paginas_lidas: 0, total: null, item: null, erro: null };
+        for (const st of [p.status === "candidate" ? "candidate" : null, null]) {
+          for (let off = 0; off < 2000 && !achado.item; off += 50) {
+            const qs = new URLSearchParams({ promotion_type: p.type, app_version: "v2", limit: "50", offset: String(off) });
+            if (st) qs.set("status", st);
+            const r = await ler(`https://api.mercadolibre.com/seller-promotions/promotions/${p.id}/items?${qs}`);
+            achado.paginas_lidas++;
+            if (r.status !== 200) { achado.erro = r; break; }
+            const lista = r.body?.results || [];
+            achado.total = r.body?.paging?.total ?? achado.total;
+            achado.item = lista.find(x => x.id === itemId) || null;
+            if (lista.length < 50) break;
+          }
+          if (achado.item) break;
+        }
+        nasCampanhas[p.id] = achado;
+      }
+      return res.json({ ok: true, conta, item, promocoes_do_item: promos, itens_nas_campanhas: nasCampanhas, detalhes_das_campanhas: detalhes });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
