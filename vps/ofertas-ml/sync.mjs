@@ -4,7 +4,7 @@
 // Firebase só o que mudou. O OPS escuta o Firebase e troca os números na hora.
 //
 // Instalação (pasta /opt/digoo-ofertas-ml):
-//   sync.mjs + ofertas-ml-core.mjs (cópia de lib/ofertas-ml-core.mjs)
+//   sync.mjs + ofertas-ml-core.mjs (cópia de lib/ofertas-ml-core.js)
 //   pm2 start /opt/digoo-ofertas-ml/sync.mjs --name ofertas-ml
 // Usa o firebase-admin e a chave do digoo-picking-sync (nenhum segredo neste arquivo).
 // ════════════════════════════════════════════════════════════════════════════

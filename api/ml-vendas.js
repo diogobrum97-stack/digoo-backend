@@ -1,8 +1,8 @@
 import { fetch } from "../lib/fb-fetch.js";
 import { getDb } from "../lib/firebase-admin.js";
 
-// Ofertas do ML: núcleo em lib/ofertas-ml-core.mjs (o mesmo arquivo roda na VPS)
-import { esperar, mlFetch, emParalelo, dadosDoItem, ofertasDoItem, montarOfertasML, gravarOfertas } from "../lib/ofertas-ml-core.mjs";
+// Ofertas do ML: núcleo em lib/ofertas-ml-core.js (o mesmo arquivo roda na VPS)
+import { esperar, mlFetch, emParalelo, dadosDoItem, ofertasDoItem, montarOfertasML, gravarOfertas } from "../lib/ofertas-ml-core.js";
 
 // Token do ML salvo no Firebase, renovado se estiver perto de vencer
 async function tokenMLDaConta(conta) {
