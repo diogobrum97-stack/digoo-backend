@@ -1300,7 +1300,7 @@ Responda APENAS com JSON array:
       for (let i = 0; i < itemIds.length; i += 20) lotes.push(itemIds.slice(i, i + 20));
       await Promise.all(lotes.map(async lote => {
         try {
-          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_sku,thumbnail,permalink,catalog_listing`, { headers: { Authorization: `Bearer ${tokenP}` } });
+          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_custom_field,attributes,thumbnail,permalink,catalog_listing`, { headers: { Authorization: `Bearer ${tokenP}` } });
           const d = await r.json();
           (Array.isArray(d) ? d : []).forEach(entry => {
             const item = entry?.body || entry;
@@ -1313,6 +1313,8 @@ Responda APENAS com JSON array:
       const resultadoBruto = itemIds.map(itemId => {
         const p = itemMap[itemId];
         const item = itemsData[itemId] || {};
+        // SKU: mesmo caminho da action ofertas-ml (seller_custom_field ou atributo SELLER_SKU)
+        const skuItem = item.seller_custom_field || (item.attributes || []).find(a => a.id === "SELLER_SKU")?.value_name || "";
         const precoOriginal = p.preco_original || item.original_price || item.price || 0;
         const precoDesconto = p.preco_desconto || item.price || 0;
         const desconto = precoOriginal > 0 ? Math.round((1 - precoDesconto / precoOriginal) * 100) : 0;
@@ -1320,7 +1322,7 @@ Responda APENAS com JSON array:
         return {
           item_id: itemId,
           titulo: item.title || itemId,
-          sku: item.seller_sku || "",
+          sku: skuItem,
           thumbnail: item.thumbnail || "",
           preco_original: precoOriginal,
           preco_desconto: precoDesconto,
