@@ -1361,6 +1361,133 @@ Responda APENAS com JSON array:
   }
 
 
+  // ── Ofertas do ML: todas as promoções de cada anúncio (ativas, programadas e propostas) ──
+  // Inclui campanhas com co-participação (MARKETPLACE_CAMPAIGN, SMART, PRICE_MATCHING),
+  // onde o ML banca parte do desconto (meli_percentage).
+  if (req.query.action === "ofertas-ml" && req.method === "GET") {
+    try {
+      const tk = req.query.token;
+      if (!tk) return res.status(400).json({ ok: false, error: "token obrigatório" });
+      const H = { Authorization: `Bearer ${tk}` };
+      const me = await (await fetch("https://api.mercadolibre.com/users/me", { headers: H })).json();
+      if (!me.id) return res.status(400).json({ ok: false, error: "Token inválido ou expirado" });
+
+      const ids = [];
+      for (let off = 0; off < 1000; off += 50) {
+        const d = await (await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${off}`, { headers: H })).json().catch(() => ({}));
+        const b = Array.isArray(d.results) ? d.results : [];
+        ids.push(...b);
+        if (b.length < 50) break;
+      }
+
+      const ofertasPorItem = {};
+      for (let i = 0; i < ids.length; i += 10) {
+        await Promise.all(ids.slice(i, i + 10).map(async itemId => {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, { headers: H });
+            if (!r.ok) return;
+            const arr = await r.json();
+            const lista = (Array.isArray(arr) ? arr : []).filter(p => ["candidate", "started", "pending"].includes(p.status));
+            if (!lista.length) return;
+            ofertasPorItem[itemId] = lista.map(p => ({
+              promotion_id: p.id || null,
+              tipo: p.type || "",
+              nome: p.name || "",
+              status: p.status,
+              preco: p.price ?? p.suggested_discounted_price ?? null,
+              preco_original: p.original_price ?? null,
+              preco_sugerido: p.suggested_discounted_price ?? null,
+              preco_min: p.min_discounted_price ?? null,
+              preco_max: p.max_discounted_price ?? null,
+              meli_pct: Number(p.meli_percentage ?? p.benefits?.meli_percent ?? 0) || 0,
+              seller_pct: Number(p.seller_percentage ?? p.benefits?.seller_percent ?? 0) || 0,
+              offer_id: p.offer_id || p.ref_id || null,
+              inicio: p.start_date || null,
+              fim: p.finish_date || p.end_date || null,
+              estoque_min: p.stock?.min ?? null,
+              estoque_max: p.stock?.max ?? null,
+            }));
+          } catch (e) {}
+        }));
+      }
+
+      const comOferta = Object.keys(ofertasPorItem);
+      const info = {};
+      for (let i = 0; i < comOferta.length; i += 20) {
+        const lote = comOferta.slice(i, i + 20);
+        const d = await (await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_custom_field,attributes,thumbnail,pictures,permalink,available_quantity,catalog_listing`, { headers: H })).json().catch(() => []);
+        (Array.isArray(d) ? d : []).forEach(e => { const it = e?.body; if (it?.id) info[it.id] = it; });
+      }
+
+      const itens = comOferta.map(id => {
+        const it = info[id] || {};
+        const skuAttr = (it.attributes || []).find(a => a.id === "SELLER_SKU");
+        const pic = (it.pictures || [])[0];
+        return {
+          item_id: id,
+          titulo: it.title || id,
+          sku: it.seller_custom_field || skuAttr?.value_name || "",
+          foto: (pic?.secure_url || it.thumbnail || "").replace(/^http:/, "https:"),
+          preco: it.price ?? null,
+          estoque: it.available_quantity ?? null,
+          permalink: it.permalink || "",
+          catalogo: it.catalog_listing === true,
+          ofertas: ofertasPorItem[id],
+        };
+      });
+      return res.json({ ok: true, seller_id: me.id, itens, total_anuncios: ids.length });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Participar de uma oferta do ML ──
+  if (req.query.action === "participar-oferta" && req.method === "POST") {
+    try {
+      const { token: tk, item_id, promotion_id, tipo, offer_id, preco, estoque } = req.body || {};
+      if (!tk || !item_id || !tipo) return res.status(400).json({ ok: false, error: "token, item_id e tipo são obrigatórios" });
+      const body = { promotion_type: tipo };
+      if (promotion_id) body.promotion_id = promotion_id;
+      if (offer_id) body.offer_id = offer_id;
+      if (["DEAL", "SELLER_CAMPAIGN", "LIGHTNING", "DOD"].includes(tipo) && preco) body.deal_price = Number(preco);
+      if (tipo === "LIGHTNING" && estoque) body.stock = Number(estoque);
+      const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?app_version=v2`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tk}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const txt = await r.text();
+      let d = {}; try { d = JSON.parse(txt); } catch (e) {}
+      if (!r.ok) {
+        const causa = Array.isArray(d.cause) ? d.cause.map(c => c.message || c.code || c).join("; ") : "";
+        return res.status(r.status).json({ ok: false, error: d.message || d.error || txt.slice(0, 300), causa, enviado: body });
+      }
+      return res.json({ ok: true, resultado: d });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Sair de uma oferta do ML ──
+  if (req.query.action === "sair-oferta" && req.method === "POST") {
+    try {
+      const { token: tk, item_id, promotion_id, tipo, offer_id } = req.body || {};
+      if (!tk || !item_id || !tipo) return res.status(400).json({ ok: false, error: "token, item_id e tipo são obrigatórios" });
+      const qs = new URLSearchParams({ promotion_type: tipo, app_version: "v2" });
+      if (promotion_id) qs.set("promotion_id", promotion_id);
+      if (offer_id) qs.set("offer_id", offer_id);
+      const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${item_id}?${qs}`, { method: "DELETE", headers: { Authorization: `Bearer ${tk}` } });
+      const txt = await r.text();
+      if (!r.ok) {
+        let d = {}; try { d = JSON.parse(txt); } catch (e) {}
+        return res.status(r.status).json({ ok: false, error: d.message || d.error || txt.slice(0, 300) });
+      }
+      return res.json({ ok: true });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Debug: ver raw do seller-promotions/items ──
   if (req.query.action === "debug-promo-item" && req.method === "GET") {
     try {
