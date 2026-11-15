@@ -1,6 +1,11 @@
 {
   "functions": {
-    "api/bling-produtos.js": { "maxDuration": 60 }
+    "api/bling-produtos.js": {
+      "maxDuration": 60
+    },
+    "api/ml-vendas.js": {
+      "maxDuration": 60
+    }
   },
   "headers": [
     {

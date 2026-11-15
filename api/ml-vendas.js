@@ -1,4 +1,154 @@
 import { fetch } from "../lib/fb-fetch.js";
+import { getDb } from "../lib/firebase-admin.js";
+
+// ════════════════════════════════════════════════════════════════════════════
+// Ofertas do ML — busca confiável + cache no Firebase (/ofertas_ml_cache/{conta})
+// ════════════════════════════════════════════════════════════════════════════
+const esperar = ms => new Promise(r => setTimeout(r, ms));
+
+// Chamada ao ML com nova tentativa em 429 (muitas requisições) e erros 5xx/rede.
+async function mlFetch(url, token, opts = {}, tentativas = 4) {
+  let ultimoErro = null;
+  for (let t = 0; t < tentativas; t++) {
+    try {
+      const r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) } });
+      if (r.status !== 429 && r.status < 500) return r;
+      const ra = Number(r.headers.get("retry-after"));
+      ultimoErro = new Error(`HTTP ${r.status}`);
+      await esperar(ra > 0 ? ra * 1000 : 800 * 2 ** t);
+    } catch (e) {
+      ultimoErro = e;
+      await esperar(800 * 2 ** t);
+    }
+  }
+  throw ultimoErro || new Error("falha ao consultar o ML");
+}
+
+// Roda fn em cada item com no máximo `limite` chamadas ao mesmo tempo.
+async function emParalelo(lista, limite, fn) {
+  let i = 0;
+  const trabalhadores = Array.from({ length: Math.min(limite, lista.length) }, async () => {
+    while (i < lista.length) { const idx = i++; await fn(lista[idx], idx); }
+  });
+  await Promise.all(trabalhadores);
+}
+
+function dadosDoItem(it) {
+  const skuAttr = (it.attributes || []).find(a => a.id === "SELLER_SKU");
+  const pic = (it.pictures || [])[0];
+  return {
+    titulo: it.title || null,
+    sku: it.seller_custom_field || skuAttr?.value_name || "",
+    foto: (pic?.secure_url || it.thumbnail || "").replace(/^http:/, "https:"),
+    preco: it.price ?? null,
+    estoque: it.available_quantity ?? null,
+    permalink: it.permalink || "",
+    catalogo: it.catalog_listing === true,
+  };
+}
+
+async function montarOfertasML(token) {
+  const inicio = Date.now();
+  const me = await (await mlFetch("https://api.mercadolibre.com/users/me", token)).json();
+  if (!me.id) throw new Error("Token inválido ou expirado");
+
+  // 1) IDs dos anúncios ativos
+  const ids = [];
+  for (let off = 0; off < 2000; off += 50) {
+    const d = await (await mlFetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${off}`, token)).json();
+    const b = Array.isArray(d.results) ? d.results : [];
+    ids.push(...b);
+    if (b.length < 50) break;
+  }
+
+  // 2) Dados dos anúncios PRIMEIRO (lotes de 20), depois um a um os que faltarem
+  const ATR = "id,title,price,seller_custom_field,attributes,thumbnail,pictures,permalink,available_quantity,catalog_listing";
+  const info = {};
+  for (let i = 0; i < ids.length; i += 20) {
+    const lote = ids.slice(i, i + 20);
+    try {
+      const d = await (await mlFetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=${ATR}`, token)).json();
+      (Array.isArray(d) ? d : []).forEach(e => { if (e?.code === 200 && e.body?.id) info[e.body.id] = dadosDoItem(e.body); });
+    } catch (e) { /* os que faltarem vão pro passo individual */ }
+  }
+  const semDados = ids.filter(id => !info[id]);
+  await emParalelo(semDados, 3, async id => {
+    try {
+      const r = await mlFetch(`https://api.mercadolibre.com/items/${id}?attributes=${ATR}`, token);
+      if (r.ok) info[id] = dadosDoItem(await r.json());
+    } catch (e) {}
+  });
+
+  // 3) Promoções de cada anúncio, 5 por vez
+  const ofertasPorItem = {};
+  const falhaPromo = [];
+  await emParalelo(ids, 5, async itemId => {
+    try {
+      const r = await mlFetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, token);
+      if (r.status === 404) return;
+      if (!r.ok) { falhaPromo.push(itemId); return; }
+      const arr = await r.json();
+      const lista = (Array.isArray(arr) ? arr : []).filter(p => ["candidate", "started", "pending"].includes(p.status));
+      if (!lista.length) return;
+      ofertasPorItem[itemId] = lista.map(p => ({
+        promotion_id: p.id || null,
+        tipo: p.type || "",
+        nome: p.name || "",
+        status: p.status,
+        preco: p.price ?? p.suggested_discounted_price ?? null,
+        preco_original: p.original_price ?? null,
+        preco_sugerido: p.suggested_discounted_price ?? null,
+        preco_min: p.min_discounted_price ?? null,
+        preco_max: p.max_discounted_price ?? null,
+        meli_pct: Number(p.meli_percentage ?? p.benefits?.meli_percent ?? 0) || 0,
+        seller_pct: Number(p.seller_percentage ?? p.benefits?.seller_percent ?? 0) || 0,
+        offer_id: p.offer_id || p.ref_id || null,
+        inicio: p.start_date || null,
+        fim: p.finish_date || p.end_date || null,
+        estoque_min: p.stock?.min ?? null,
+        estoque_max: p.stock?.max ?? null,
+      }));
+    } catch (e) { falhaPromo.push(itemId); }
+  });
+
+  const comOferta = Object.keys(ofertasPorItem);
+  const itens = comOferta.map(id => {
+    const d = info[id];
+    return d
+      ? { item_id: id, ...d, ofertas: ofertasPorItem[id] }
+      : { item_id: id, sem_dados: true, titulo: null, sku: "", foto: "", preco: null, estoque: null,
+          permalink: `https://produto.mercadolivre.com.br/${id.replace(/^MLB/, "MLB-")}`, catalogo: false, ofertas: ofertasPorItem[id] };
+  });
+  // Firebase não aceita undefined
+  return JSON.parse(JSON.stringify({
+    ok: true,
+    seller_id: me.id,
+    gerado_em: Date.now(),
+    duracao_ms: Date.now() - inicio,
+    total_anuncios: ids.length,
+    itens,
+    falhas: { dados: comOferta.filter(id => !info[id]), promocoes: falhaPromo },
+  }));
+}
+
+// Token do ML salvo no Firebase, renovado se estiver perto de vencer
+async function tokenMLDaConta(conta) {
+  const path = conta === "filial" ? "ml_token_filial" : "ml_token";
+  const db = getDb();
+  const tk = (await db.ref(path).once("value")).val();
+  if (!tk?.access_token) throw new Error(`Token ML da ${conta} não encontrado`);
+  if (tk.expires_at && Date.now() < tk.expires_at - 10 * 60 * 1000) return tk.access_token;
+  if (!tk.refresh_token) return tk.access_token;
+  const r = await fetch("https://api.mercadolibre.com/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body: new URLSearchParams({ grant_type: "refresh_token", client_id: process.env.ML_CLIENT_ID, client_secret: process.env.ML_CLIENT_SECRET, refresh_token: tk.refresh_token }),
+  });
+  const d = await r.json();
+  if (d.error || !d.access_token) throw new Error(`Falha ao renovar token ML (${conta}): ${d.error || r.status}`);
+  await db.ref(path).set({ access_token: d.access_token, refresh_token: d.refresh_token || tk.refresh_token, expires_at: Date.now() + d.expires_in * 1000, user_id: d.user_id || tk.user_id || null, nickname: tk.nickname || null });
+  return d.access_token;
+}
 
 async function atualizarCatalogoBackground(token, uid, fbUrl) {
   const ids = [];
@@ -1370,75 +1520,27 @@ Responda APENAS com JSON array:
     try {
       const tk = req.query.token;
       if (!tk) return res.status(400).json({ ok: false, error: "token obrigatório" });
-      const H = { Authorization: `Bearer ${tk}` };
-      const me = await (await fetch("https://api.mercadolibre.com/users/me", { headers: H })).json();
-      if (!me.id) return res.status(400).json({ ok: false, error: "Token inválido ou expirado" });
-
-      const ids = [];
-      for (let off = 0; off < 1000; off += 50) {
-        const d = await (await fetch(`https://api.mercadolibre.com/users/${me.id}/items/search?status=active&limit=50&offset=${off}`, { headers: H })).json().catch(() => ({}));
-        const b = Array.isArray(d.results) ? d.results : [];
-        ids.push(...b);
-        if (b.length < 50) break;
-      }
-
-      const ofertasPorItem = {};
-      for (let i = 0; i < ids.length; i += 10) {
-        await Promise.all(ids.slice(i, i + 10).map(async itemId => {
-          try {
-            const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, { headers: H });
-            if (!r.ok) return;
-            const arr = await r.json();
-            const lista = (Array.isArray(arr) ? arr : []).filter(p => ["candidate", "started", "pending"].includes(p.status));
-            if (!lista.length) return;
-            ofertasPorItem[itemId] = lista.map(p => ({
-              promotion_id: p.id || null,
-              tipo: p.type || "",
-              nome: p.name || "",
-              status: p.status,
-              preco: p.price ?? p.suggested_discounted_price ?? null,
-              preco_original: p.original_price ?? null,
-              preco_sugerido: p.suggested_discounted_price ?? null,
-              preco_min: p.min_discounted_price ?? null,
-              preco_max: p.max_discounted_price ?? null,
-              meli_pct: Number(p.meli_percentage ?? p.benefits?.meli_percent ?? 0) || 0,
-              seller_pct: Number(p.seller_percentage ?? p.benefits?.seller_percent ?? 0) || 0,
-              offer_id: p.offer_id || p.ref_id || null,
-              inicio: p.start_date || null,
-              fim: p.finish_date || p.end_date || null,
-              estoque_min: p.stock?.min ?? null,
-              estoque_max: p.stock?.max ?? null,
-            }));
-          } catch (e) {}
-        }));
-      }
-
-      const comOferta = Object.keys(ofertasPorItem);
-      const info = {};
-      for (let i = 0; i < comOferta.length; i += 20) {
-        const lote = comOferta.slice(i, i + 20);
-        const d = await (await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_custom_field,attributes,thumbnail,pictures,permalink,available_quantity,catalog_listing`, { headers: H })).json().catch(() => []);
-        (Array.isArray(d) ? d : []).forEach(e => { const it = e?.body; if (it?.id) info[it.id] = it; });
-      }
-
-      const itens = comOferta.map(id => {
-        const it = info[id] || {};
-        const skuAttr = (it.attributes || []).find(a => a.id === "SELLER_SKU");
-        const pic = (it.pictures || [])[0];
-        return {
-          item_id: id,
-          titulo: it.title || id,
-          sku: it.seller_custom_field || skuAttr?.value_name || "",
-          foto: (pic?.secure_url || it.thumbnail || "").replace(/^http:/, "https:"),
-          preco: it.price ?? null,
-          estoque: it.available_quantity ?? null,
-          permalink: it.permalink || "",
-          catalogo: it.catalog_listing === true,
-          ofertas: ofertasPorItem[id],
-        };
-      });
-      return res.json({ ok: true, seller_id: me.id, itens, total_anuncios: ids.length });
+      return res.json(await montarOfertasML(tk));
     } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Ofertas do ML com cache no Firebase (usado pela tela e pelo cron do VPS) ──
+  // GET ?action=ofertas-ml-cache&conta=filial|matriz[&forcar=1]
+  if (req.query.action === "ofertas-ml-cache" && req.method === "GET") {
+    const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+    const ref = getDb().ref(`/ofertas_ml_cache/${conta}`);
+    try {
+      if (req.query.forcar !== "1") {
+        const atual = (await ref.once("value")).val();
+        if (atual?.gerado_em && Date.now() - atual.gerado_em < 10 * 60 * 1000) return res.json({ ...atual, do_cache: true });
+      }
+      const dados = await montarOfertasML(await tokenMLDaConta(conta));
+      await ref.set(dados);
+      return res.json(dados);
+    } catch (e) {
+      try { await getDb().ref(`/ofertas_ml_cache/${conta}/ultimo_erro`).set({ msg: e.message, em: Date.now() }); } catch (_) {}
       return res.status(500).json({ ok: false, error: e.message });
     }
   }
