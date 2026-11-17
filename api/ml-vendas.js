@@ -26,15 +26,17 @@ async function tokenMLDaConta(conta) {
 async function atualizarCatalogoBackground(token, uid, fbUrl) {
   const ids = [];
   // Buscar ativos e pausados
+  // search_type=scan: percorre TODOS os anúncios (a busca comum para em 300/1000 e deixava produtos de fora)
   for (const status of ["active", "paused"]) {
-    for (let offset = 0; offset < 300; offset += 50) {
-      const r = await fetch(`https://api.mercadolibre.com/users/${uid}/items/search?status=${status}&limit=50&offset=${offset}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+    let scroll = null;
+    for (let volta = 0; volta < 100; volta++) {
+      const url = `https://api.mercadolibre.com/users/${uid}/items/search?status=${status}&search_type=scan&limit=100` + (scroll ? `&scroll_id=${encodeURIComponent(scroll)}` : "");
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       const d = await r.json();
       const batch = d.results || [];
       ids.push(...batch);
-      if (batch.length < 50) break;
+      scroll = d.scroll_id;
+      if (!batch.length || !scroll) break;
     }
   }
   // Deduplicar IDs
@@ -59,7 +61,7 @@ async function atualizarCatalogoBackground(token, uid, fbUrl) {
   });
   await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, {
     method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length }),
+    body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length, versao: 2 }),
   });
 }
 
@@ -1258,7 +1260,7 @@ Responda APENAS com JSON array:
       const fbSnap = await fetch(`${fbUrl}/catalogo_ml/${me.id}.json`);
       const fbData = await fbSnap.json();
       // usa o cache se tiver menos de 6h e já estiver no formato novo (com foto e preço)
-      const cacheBom = fbData && fbData.itens && fbData.itens.length && fbData.atualizado_em && (Date.now() - fbData.atualizado_em) < 6 * 3600e3 && "preco" in (fbData.itens[0] || {});
+      const cacheBom = fbData && fbData.itens && fbData.itens.length && fbData.atualizado_em && (Date.now() - fbData.atualizado_em) < 6 * 3600e3 && fbData.versao === 2;
       if (cacheBom) {
         return res.json({ ok: true, itens: fbData.itens, total: fbData.total, seller_id: me.id, source: "cache" });
       }
