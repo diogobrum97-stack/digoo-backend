@@ -90,32 +90,49 @@ function prever(faturado, t, refs, tendencia) {
   return { previsto: Math.max(faturado, peso * ritmo + (1 - peso) * base), parte, base, peso };
 }
 
+// percentil com peso (dias recentes contam mais)
+const percentilPeso = (pares, p) => {
+  const s = [...pares].sort((x, y) => x[0] - y[0]);
+  const tot = s.reduce((a, x) => a + x[1], 0);
+  if (!s.length || !tot) return 0;
+  let acum = 0;
+  for (const [v, w] of s) { acum += w; if (acum / tot >= p) return v; }
+  return s[s.length - 1][0];
+};
+
 async function previsaoDaConta(conta, hist, hoje, horasHoje, t) {
-  const dias = Object.keys(hist).filter(d => d < hoje).sort();
-  const mesmos = dias.filter(d => diaSemana(d) === diaSemana(hoje)).slice(-8);
-  const refsDias = mesmos.length >= 4 ? mesmos : dias.slice(-14);
+  const todos = Object.keys(hist).filter(d => d < hoje).sort();
+  // dias fora da curva (menos da metade ou mais do dobro da mediana do último mês) não entram na conta
+  const med28 = mediana(todos.slice(-28).map(d => total(hist[d])).filter(v => v > 0));
+  const normal = d => { const v = total(hist[d]); return v > 0 && med28 > 0 && v >= med28 * 0.5 && v <= med28 * 2; };
+  const dias = todos.filter(normal);
+  const mesmoDia = (lista, dia) => lista.filter(d => diaSemana(d) === diaSemana(dia));
+  const refsPara = (dia, lista) => { const m = mesmoDia(lista, dia).slice(-8); return m.length >= 4 ? m : lista.slice(-14); };
+  const refsDias = refsPara(hoje, dias);
   // tendência: últimos 7 dias contra as 3 semanas anteriores, limitada pra não exagerar
-  const ult7 = dias.slice(-7).reduce((s, d) => s + total(hist[d]), 0);
-  const ant = dias.slice(-28, -7);
+  const ult7 = todos.slice(-7).reduce((s, d) => s + total(hist[d]), 0);
+  const ant = todos.slice(-28, -7);
   const media7Ant = ant.length ? ant.reduce((s, d) => s + total(hist[d]), 0) / ant.length * 7 : 0;
   const tendencia = media7Ant > 0 ? Math.max(0.7, Math.min(1.5, ult7 / media7Ant)) : 1;
   const faturado = acumulado(horasHoje, t);
   const p = prever(faturado, t, refsDias.map(d => hist[d]), tendencia);
   if (!p) return null;
-  // erro histórico na mesma hora: prevê cada dia de referência com os outros e compara com o real
+  // erro histórico na mesma hora: prevê cada dia normal das últimas 4 semanas com os outros dias e compara com o real
+  const pool = dias.slice(-28);
   const erros = [];
-  for (const d of refsDias) {
+  pool.forEach((d, i) => {
     const real = total(hist[d]);
-    if (!real) continue;
-    const outros = refsDias.filter(x => x !== d).map(x => hist[x]);
-    const pd = prever(acumulado(hist[d], t), t, outros, tendencia);
-    if (pd) erros.push(pd.previsto / real - 1);
-  }
-  const eBaixo = erros.length >= 3 ? percentil(erros, 0.8) : 0.15;   // previsão alta demais → mínimo menor
-  const eAlto = erros.length >= 3 ? percentil(erros, 0.2) : -0.15;
+    const outros = refsPara(d, pool.filter(x => x !== d)).map(x => hist[x]);
+    const pd = prever(acumulado(hist[d], t), t, outros, 1);
+    const idadeSem = (pool.length - 1 - i) / 7;
+    if (pd && real) erros.push([pd.previsto / real - 1, Math.pow(0.5, idadeSem / 2)]); // peso cai pela metade a cada 2 semanas
+  });
+  // faixa "provável": metade central dos dias (percentis 25 e 75)
+  const eBaixo = erros.length >= 5 ? percentilPeso(erros, 0.75) : 0.12;  // previsão alta demais → mínimo menor
+  const eAlto = erros.length >= 5 ? percentilPeso(erros, 0.25) : -0.12;
   const min = Math.max(faturado, p.previsto / (1 + Math.max(eBaixo, 0.03)));
   const max = Math.max(min, p.previsto / (1 + Math.min(eAlto, -0.03)));
-  return { previsto: Math.round(p.previsto), min: Math.round(min), max: Math.round(max), faturado: Math.round(faturado), parte_tipica: Math.round(p.parte * 1000) / 1000 };
+  return { previsto: Math.round(p.previsto), min: Math.round(min), max: Math.round(max), faturado: Math.round(faturado), parte_tipica: Math.round(p.parte * 1000) / 1000, dias_usados: refsDias.length, amostras_erro: erros.length };
 }
 
 const histMem = {};
