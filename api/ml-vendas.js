@@ -1216,14 +1216,23 @@ Responda APENAS com JSON array:
       const meRes = await fetch("https://api.mercadolibre.com/users/me", { headers: { Authorization: `Bearer ${tokenR}` } });
       const me = await meRes.json();
       if (!me.id) return res.status(401).json({ ok: false, error: "Token inválido" });
-      const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/blocked_users`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ user: { id: Number(from_user) } }),
-      });
-      const raw = await r.json().catch(() => ({}));
-      if (r.ok) return res.json({ ok: true, raw });
-      return res.json({ ok: false, error: raw?.message || raw?.error || "Erro ao bloquear", raw });
+      // Bloqueio de perguntas (documentado) + bloqueio de compras, nas listas negras do ML
+      const bloquear = async lista => {
+        const r = await fetch(`https://api.mercadolibre.com/users/${me.id}/${lista}`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${tokenR}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: Number(from_user) }),
+        });
+        const raw = await r.json().catch(() => ({}));
+        // já estar na lista conta como bloqueado
+        const ok = r.ok || /already|exist/i.test(JSON.stringify(raw));
+        return { ok, status: r.status, erro: ok ? null : (raw?.message || raw?.error || `HTTP ${r.status}`) };
+      };
+      const perguntas = await bloquear("questions_blacklist");
+      const compras = await bloquear("order_blacklist");
+      console.log("[bloquear-comprador]", from_user, "perguntas:", perguntas, "compras:", compras);
+      if (perguntas.ok || compras.ok) return res.json({ ok: true, perguntas: perguntas.ok, compras: compras.ok, erros: { perguntas: perguntas.erro, compras: compras.erro } });
+      return res.json({ ok: false, error: `perguntas: ${perguntas.erro} · compras: ${compras.erro}` });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
