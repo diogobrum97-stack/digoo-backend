@@ -1379,6 +1379,8 @@ Responda APENAS com JSON array:
           dias_restantes: diasRestantes,
           tipo_promo: p.tipo_promo,
           nome_promo: p.nome_promo,
+          promotion_id: p.promotion_id,
+          offer_id: p.offer_id,
           is_catalogo: item.catalog_listing === true,
         };
       });
