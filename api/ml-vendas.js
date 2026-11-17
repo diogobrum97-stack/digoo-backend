@@ -561,9 +561,10 @@ module.exports = async function handler(req, res) {
       const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 
       // Buscar buyerNames + conhecimentoPorItem em paralelo
-      const buyerIds = [...new Set(perguntas.map(p => p.buyer_id).filter(Boolean))];
+      const buyerIds = [...new Set(perguntas.map(p => (p.from?.id || p.buyer_id)).filter(Boolean))];
       const itemIdsUnicos = [...new Set(perguntas.map(p => p.item_id))];
       const buyerNames = {};
+      const buyerNicks = {}; // apelido do comprador no ML, mostrado no card da pergunta
       const conhecimentoPorItem = {};
 
       await Promise.all([
@@ -576,6 +577,7 @@ module.exports = async function handler(req, res) {
             clearTimeout(tid);
             const u = await r.json();
             const nick = (u.nickname || "").trim();
+            if (nick) buyerNicks[bid] = nick;
             const pareceNome = /^[A-Za-zÀ-ÿ]+$/.test(nick) && nick.length >= 3 && nick.length <= 20;
             if (pareceNome) buyerNames[bid] = nick.charAt(0).toUpperCase() + nick.slice(1).toLowerCase();
           } catch (e) {}
@@ -724,7 +726,7 @@ module.exports = async function handler(req, res) {
           produto: item.title || "Produto",
           ficha_tecnica: fichaAtributos || "",
           pergunta: p.text,
-          nome_comprador: buyerNames[p.buyer_id] || null,
+          nome_comprador: buyerNames[(p.from?.id || p.buyer_id)] || null,
           respostas_anteriores_deste_produto: conhecimentoPorItem[p.item_id] || [],
           itens_relacionados: itensRelevantesporItem[i] || [],
         };
@@ -848,7 +850,8 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         return {
           question_id: p.id,
           item_id: p.item_id,
-          from_user: p.buyer_id || null,
+          from_user: (p.from?.id || p.buyer_id) || null,
+          comprador_nick: buyerNicks[(p.from?.id || p.buyer_id)] || null,
           produto: itemsInfo[p.item_id]?.title || "Produto",
           thumbnail: itemsInfo[p.item_id]?.thumbnail || "",
           pergunta: p.text,
