@@ -44,7 +44,7 @@ async function atualizarCatalogoBackground(token, uid, fbUrl) {
   const lotes = [];
   for (let i = 0; i < idsUnicos.length; i += 20) lotes.push(idsUnicos.slice(i, i + 20));
   const resultados = await Promise.all(lotes.map(lote =>
-    fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku,seller_custom_field,attributes,price,thumbnail,available_quantity,status`, {
+    fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,permalink,seller_sku,seller_custom_field,attributes,price,thumbnail,available_quantity,status,catalog_listing`, {
       headers: { Authorization: `Bearer ${token}` },
     }).then(r => r.json()).catch(() => [])
   ));
@@ -55,13 +55,13 @@ async function atualizarCatalogoBackground(token, uid, fbUrl) {
       // SKU: campo do vendedor ou atributo SELLER_SKU (o seller_sku costuma vir vazio)
       const skuAttr = (b.attributes || []).find(a => a.id === "SELLER_SKU");
       itens.push({ id: b.id, titulo: b.title, sku: b.seller_custom_field || skuAttr?.value_name || b.seller_sku || "", link: b.permalink,
-        preco: b.price ?? null, foto: (b.thumbnail || "").replace(/^http:/, "https:"),
+        preco: b.price ?? null, foto: (b.thumbnail || "").replace(/^http:/, "https:"), catalogo: b.catalog_listing === true,
         estoque: b.available_quantity || 0, status: b.status || "active", seller_id: uid });
     }
   });
   await fetch(`${fbUrl}/catalogo_ml/${uid}.json`, {
     method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length, versao: 2 }),
+    body: JSON.stringify({ itens, atualizado_em: Date.now(), total: itens.length, versao: 3 }),
   });
 }
 
@@ -1260,7 +1260,7 @@ Responda APENAS com JSON array:
       const fbSnap = await fetch(`${fbUrl}/catalogo_ml/${me.id}.json`);
       const fbData = await fbSnap.json();
       // usa o cache se tiver menos de 6h e já estiver no formato novo (com foto e preço)
-      const cacheBom = fbData && fbData.itens && fbData.itens.length && fbData.atualizado_em && (Date.now() - fbData.atualizado_em) < 6 * 3600e3 && fbData.versao === 2;
+      const cacheBom = fbData && fbData.itens && fbData.itens.length && fbData.atualizado_em && (Date.now() - fbData.atualizado_em) < 6 * 3600e3 && fbData.versao === 3;
       if (cacheBom) {
         return res.json({ ok: true, itens: fbData.itens, total: fbData.total, seller_id: me.id, source: "cache" });
       }
