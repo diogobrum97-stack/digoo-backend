@@ -1310,6 +1310,7 @@ Responda APENAS com JSON array:
                 finish_date: p.finish_date || null,
                 tipo_promo: p.type || p.promotion_type || "",
                 nome_promo: p.name || p.type || "",
+                offer_id: p.offer_id || p.ref_id || null,
               }));
           } catch(e) { return []; }
         }));
