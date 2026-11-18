@@ -1,4 +1,7 @@
-module.exports = async function handler(req, res) {
+// fetch que passa pelo Admin SDK nas chamadas ao Firebase (as regras exigem login)
+import { fetch } from "../lib/fb-fetch.js";
+
+export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -154,4 +157,4 @@ async function tarefaVoz(req, res, FIREBASE_URL) {
   return fala(200, true, `Tarefa criada ${pra} · ${PRIO_NOME[t.prio]}${prazoFala ? " · " + prazoFala : ""}.`, { tarefa: { para: t.member, texto: textoFinal, prioridade: t.prio, prazo: t.prazo } });
 }
 
-module.exports.interpretarRegras = interpretarRegras;
+export { interpretarRegras };
