@@ -279,16 +279,25 @@ async function conferirPerguntasAtrasadas() {
 
 // Vendas: dia abaixo do normal (14h e 18h) e resumo do dia (22h)
 const vendasDia = async (conta, dia) => (await db.ref(`/vendas_hora/${conta}/${dia}`).once("value")).val();
+// O dia de hoje não fica em /vendas_hora (só os dias fechados): o faturado de hoje vem da previsão (atualizada a cada 5 min)
+async function faturadoHoje(conta, hoje) {
+  const p = (await db.ref(`/previsao_dia/${conta}`).once("value")).val();
+  if (!p || p.dia !== hoje || !p.gerado_em || Date.now() - p.gerado_em > 20 * 60 * 1000 || typeof p.faturado !== "number") return null;
+  return p.faturado;
+}
 async function conferirVendas() {
   const h = horaBRT(), hoje = diaBRT();
   // Abaixo do normal: compara o acumulado até agora com o mesmo horário das últimas 4 semanas (mesmo dia da semana)
   for (const slot of [14, 18]) {
     if (h !== slot) continue;
-    let atual = 0; const hist = [0, 0, 0, 0];
+    let atual = 0, semDado = false; const hist = [0, 0, 0, 0];
     for (const conta of ["filial", "matriz"]) {
-      atual += somaHoras(await vendasDia(conta, hoje), slot);
+      const f = await faturadoHoje(conta, hoje);
+      if (f == null) { semDado = true; break; }
+      atual += f;
       for (let i = 0; i < 4; i++) hist[i] += somaHoras(await vendasDia(conta, diaMenos(hoje, 7 * (i + 1))), slot);
     }
+    if (semDado) continue;                                          // sem o faturado de hoje confiável, não avisa
     const base = hist.filter(v => v > 0).sort((a, b) => a - b);
     if (base.length < 2) continue;
     const mediana = base.length % 2 ? base[(base.length - 1) / 2] : (base[base.length / 2 - 1] + base[base.length / 2]) / 2;
@@ -306,7 +315,9 @@ async function conferirVendas() {
     if ((await db.ref(`/push_enviados/${k}`).once("value")).exists()) return;
     const tot = {}; let semana = 0; const skus = {};
     for (const conta of ["filial", "matriz"]) {
-      tot[conta] = somaHoras(await vendasDia(conta, hoje), 24);
+      const f = await faturadoHoje(conta, hoje);
+      if (f == null) return;                                         // sem o faturado de hoje: tenta de novo no próximo minuto (até 22:30)
+      tot[conta] = f;
       semana += somaHoras(await vendasDia(conta, diaMenos(hoje, 7)), 24);
       try {
         const uid = vivo.tokens[TOKEN_PATH[conta]]?.user_id;
