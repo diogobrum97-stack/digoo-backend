@@ -232,6 +232,13 @@ export default async function handler(req, res) {
       Accept: "application/json",
     };
 
+    // ── Status leve do Bling (usado pelo aviso "Bling desconectado" da VPS) ──
+    if (req.query.action === "bling-status") {
+      const t = await fetch("https://api.bling.com.br/Api/v3/produtos?limite=1&pagina=1", { headers });
+      if (!t.ok) return res.status(t.status === 401 || t.status === 403 ? 401 : 502).json({ ok: false, erro: `Bling respondeu HTTP ${t.status}` });
+      return res.json({ ok: true });
+    }
+
     // ── Debug: ver estrutura raw de um produto no Bling ──────────────────────
     // ── Extrair dados de NF para Contas a Pagar ──────────────────────────────
     if (req.query.action === 'extrair-nf-cp' && req.method === 'POST') {

@@ -81,6 +81,31 @@ async function registrarCaidas(conta, anteriores, dados) {
   if (Object.keys(upd).length) await base.update(JSON.parse(JSON.stringify(upd)));
 }
 
+// ── Anúncio pausado por falta de estoque ──────────────────────────────────────
+// Estava ativo na volta anterior e saiu da lista de ativos: pergunta ao ML o motivo.
+// Se foi pausado por estoque zerado → /promo_alertas/{conta}/sem_estoque/{item} (o processo "avisos" manda o aviso).
+async function registrarSemEstoque(conta, token, infoAnterior, dados) {
+  if (!infoAnterior || !dados.info) return;
+  const agora = new Set(Object.keys(dados.info));
+  const sairam = Object.keys(infoAnterior).filter(id => !agora.has(id));
+  const base = db.ref(`/promo_alertas/${conta}/sem_estoque`);
+  const upd = {};
+  for (let i = 0; i < sairam.length; i += 20) {
+    const ids = sairam.slice(i, i + 20).join(",");
+    const r = await fetch(`https://api.mercadolibre.com/items?ids=${ids}&attributes=id,title,status,sub_status,available_quantity,seller_custom_field`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) continue;
+    for (const e of await r.json()) {
+      const b = e?.body; if (e?.code !== 200 || !b?.id) continue;
+      const semEstoque = b.status === "paused" && ((b.sub_status || []).includes("out_of_stock") || b.available_quantity === 0);
+      if (semEstoque) { upd[b.id] = { item_id: b.id, titulo: b.title || infoAnterior[b.id]?.titulo || null, sku: infoAnterior[b.id]?.sku || b.seller_custom_field || null, em: Date.now() }; log(`[${conta}] pausado sem estoque: ${b.id}`); }
+    }
+  }
+  // limpa os que voltaram a ficar ativos ou são antigos (7 dias)
+  const atuais = (await base.once("value")).val() || {};
+  for (const [id, a] of Object.entries(atuais)) if (agora.has(id) || Date.now() - (a.em || 0) > 7 * 864e5) upd[id] = null;
+  if (Object.keys(upd).length) await base.update(upd);
+}
+
 const memoria = { filial: { itens: null, info: null }, matriz: { itens: null, info: null } };
 
 async function sincronizar(conta) {
@@ -99,6 +124,7 @@ async function sincronizar(conta) {
   }
   const mudaram = await gravarOfertas(ref, dados, mem.itens, "vps");
   try { await registrarCaidas(conta, mem.itens, dados); } catch (e) { log(`[${conta}] alertas de promoção:`, e.message); }
+  try { await registrarSemEstoque(conta, token, mem.info, dados); } catch (e) { log(`[${conta}] alerta sem estoque:`, e.message); }
   mem.itens = dados.itens;
   mem.info = dados.info;
   const f = dados.meta.falhas;
