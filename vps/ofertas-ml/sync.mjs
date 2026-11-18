@@ -41,6 +41,46 @@ async function tokenDa(conta, forcarRenovar = false) {
   return tk?.access_token || null;
 }
 
+// ── Promoções que caíram ──────────────────────────────────────────────────────
+// Compara com a volta anterior: o anúncio tinha promoção valendo (started) e agora não tem
+// → grava em /promo_alertas/{conta}/caidas/{item}. Some sozinho quando volta a ter promoção.
+// Saídas feitas pelo próprio OPS (botão Sair) ficam em /promo_alertas/{conta}/saida_manual e não viram alerta.
+const listaOf = it => Array.isArray(it?.ofertas) ? it.ofertas : Object.values(it?.ofertas || {});
+const valendo = it => listaOf(it).some(o => o?.status === "started");
+async function registrarCaidas(conta, anteriores, dados) {
+  if (!anteriores) return;
+  const base = db.ref(`/promo_alertas/${conta}`);
+  const atual = (await base.once("value")).val() || {};
+  const caidas = atual.caidas || {}, manual = atual.saida_manual || {};
+  const falhou = new Set(dados.meta?.falhas?.promocoes || []);
+  const ativos = new Set([...Object.keys(dados.info || {}), ...Object.keys(dados.itens || {})]);
+  const agoraMs = Date.now();
+  const upd = {};
+  for (const [id, ant] of Object.entries(anteriores)) {
+    if (falhou.has(id) || caidas[id]) continue;
+    const agora = dados.itens[id];
+    if (!valendo(ant) || valendo(agora)) continue;
+    if (manual[id] && agoraMs - manual[id] < 30 * 60 * 1000) continue;
+    const ini = listaOf(ant).filter(o => o?.status === "started");
+    const p = ini.reduce((a, b) => ((b.preco || Infinity) < (a.preco || Infinity) ? b : a), ini[0]);
+    const inf = agora || dados.info?.[id] || ant;
+    upd[`caidas/${id}`] = {
+      item_id: id, titulo: inf.titulo || ant.titulo || null, sku: inf.sku || ant.sku || null,
+      foto: inf.foto || ant.foto || null, catalogo: !!(inf.catalogo ?? ant.catalogo),
+      preco: inf.preco ?? ant.preco ?? null, estoque: inf.estoque ?? null,
+      promo_nome: p?.nome || null, promo_tipo: p?.tipo || null, promo_preco: p?.preco || null,
+      caiu_em: agoraMs,
+      motivo: !ativos.has(id) ? "inativo" : inf.estoque === 0 ? "sem_estoque" : null,
+    };
+    log(`[${conta}] promoção caiu: ${id} (${p?.nome || p?.tipo || "?"})`);
+  }
+  for (const [id, c] of Object.entries(caidas)) {
+    if (valendo(dados.itens[id]) || agoraMs - (c.caiu_em || 0) > 14 * 24 * 3600e3) upd[`caidas/${id}`] = null;
+  }
+  for (const [id, t] of Object.entries(manual)) if (agoraMs - t > 30 * 60 * 1000) upd[`saida_manual/${id}`] = null;
+  if (Object.keys(upd).length) await base.update(JSON.parse(JSON.stringify(upd)));
+}
+
 const memoria = { filial: { itens: null, info: null }, matriz: { itens: null, info: null } };
 
 async function sincronizar(conta) {
@@ -58,6 +98,7 @@ async function sincronizar(conta) {
     dados = await montarOfertasML(token, mem.info);
   }
   const mudaram = await gravarOfertas(ref, dados, mem.itens, "vps");
+  try { await registrarCaidas(conta, mem.itens, dados); } catch (e) { log(`[${conta}] alertas de promoção:`, e.message); }
   mem.itens = dados.itens;
   mem.info = dados.info;
   const f = dados.meta.falhas;
