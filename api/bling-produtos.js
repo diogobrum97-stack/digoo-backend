@@ -413,8 +413,10 @@ export default async function handler(req, res) {
 
     // ── Emitir NF de Transferência Full ──────────────────────────────────────
     if (req.query.action === 'emitir-nf-transferencia' && req.method === 'POST') {
-      const { itens, naturezaId, cnpjFilial } = req.body;
+      const { itens, naturezaId, cnpjFilial, envios } = req.body;
       if (!itens?.length) return res.status(400).json({ erro: 'Itens obrigatórios' });
+      // Números dos envios Full nas informações complementares da NF
+      const enviosFull = (Array.isArray(envios) ? envios : []).map(e => String(e).replace(/[^0-9A-Za-z-]/g, '')).filter(Boolean);
       // Data de hoje no formato YYYY-MM-DD
       const hoje = new Date().toISOString().split('T')[0];
 
@@ -423,6 +425,7 @@ export default async function handler(req, res) {
         finalidade: 1,
         dataOperacao: hoje,
         naturezaOperacao: { id: Number(naturezaId || 15109130797) },
+        ...(enviosFull.length ? { observacoes: `Envio${enviosFull.length > 1 ? 's' : ''} Full: ${enviosFull.join(', ')}` } : {}),
         // Contato destinatário — Filial SP (CNPJ passado no body ou padrão)
         contato: {
           id: 16726789250,
