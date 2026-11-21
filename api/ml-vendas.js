@@ -1472,6 +1472,73 @@ Responda APENAS com JSON array:
     }
   }
 
+  // ── Teste de conciliação (só leitura, não grava nada) ──
+  // GET ?action=diag-conciliacao&conta=filial|matriz&n=20
+  // Para as últimas N vendas pagas: o que o ML diz que deveria sobrar x o que o Mercado Pago diz que ficou.
+  if (req.query.action === "diag-conciliacao" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      const n = Math.min(Math.max(Number(req.query.n) || 20, 1), 30);
+      const tk = await tokenMLDaConta(conta);
+      const tkInfo = (await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {};
+      let uid = tkInfo.user_id;
+      if (!uid) { const me = await (await mlFetch("https://api.mercadolibre.com/users/me", tk)).json(); uid = me.id; }
+      const ler = async url => { try { const r = await mlFetch(url, tk); const t = await r.text(); let b; try { b = JSON.parse(t); } catch { b = t.slice(0, 200); } return { status: r.status, body: b }; } catch (e) { return { status: 0, body: e.message }; } };
+      const r2 = v => Math.round((Number(v) || 0) * 100) / 100;
+      // Vendas mais recentes (pagas há pelo menos 1 dia, pra ter dados de pagamento)
+      const busca = await ler(`https://api.mercadolibre.com/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=${Math.min(n + 10, 50)}`);
+      const pedidos = (busca.body?.results || []).filter(o => Date.now() - Date.parse(o.date_created) > 24 * 3600e3).slice(0, n);
+      const vendas = [];
+      for (const o of pedidos) {
+        const itens = (o.order_items || []).map(it => ({ titulo: it.item?.title, sku: it.item?.seller_sku || null, qtd: it.quantity, preco_unit: it.unit_price, tarifa_unit: it.sale_fee, preco_cheio_unit: it.full_unit_price }));
+        const bruto = r2(itens.reduce((s, i) => s + i.preco_unit * i.qtd, 0));
+        const tarifaML = r2(itens.reduce((s, i) => s + (Number(i.tarifa_unit) || 0) * i.qtd, 0));
+        // Frete pago pelo vendedor
+        let frete = null, freteBruto = null;
+        if (o.shipping?.id) {
+          const c = await ler(`https://api.mercadolibre.com/shipments/${o.shipping.id}/costs`);
+          freteBruto = c.status === 200 ? { senders: c.body?.senders, gross_amount: c.body?.gross_amount } : { erro: c.status };
+          if (c.status === 200) frete = r2((c.body?.senders || []).reduce((s, x) => s + (Number(x.cost) || 0), 0));
+        }
+        // Pagamentos no Mercado Pago
+        const pags = [];
+        for (const p of o.payments || []) {
+          const mp = await ler(`https://api.mercadopago.com/v1/payments/${p.id}`);
+          const b = mp.body || {};
+          pags.push(mp.status !== 200 ? { id: p.id, erro: mp.status, msg: typeof b === "string" ? b : b.message } : {
+            id: p.id, status: b.status, status_detail: b.status_detail,
+            valor: b.transaction_amount, liquido: b.transaction_details?.net_received_amount,
+            total_pago: b.transaction_details?.total_paid_amount, cupom: b.coupon_amount,
+            tarifas: (b.fee_details || []).map(f => ({ tipo: f.type, valor: f.amount, quem: f.fee_payer })),
+            liberacao: b.money_release_date, liberado: b.money_release_status,
+            reembolsado: b.transaction_amount_refunded,
+          });
+        }
+        const liquidoMP = pags.every(x => x.liquido != null) ? r2(pags.reduce((s, x) => s + x.liquido, 0)) : null;
+        const esperado = frete != null ? r2(bruto - tarifaML - frete) : null;
+        vendas.push({
+          venda: o.id, data: o.date_created, itens, bruto, tarifa_ml: tarifaML, frete_vendedor: frete,
+          esperado_pelo_ml: esperado, liquido_mp: liquidoMP,
+          diferenca: esperado != null && liquidoMP != null ? r2(liquidoMP - esperado) : null,
+          pagamentos: pags, frete_detalhe: freteBruto,
+        });
+      }
+      const comDif = vendas.filter(v => v.diferenca != null);
+      return res.json({
+        ok: true, conta, vendas_testadas: vendas.length,
+        resumo: {
+          batem_ate_10_centavos: comDif.filter(v => Math.abs(v.diferenca) <= 0.10).length,
+          diferentes: comDif.filter(v => Math.abs(v.diferenca) > 0.10).length,
+          sem_dado_para_comparar: vendas.length - comDif.length,
+          pagamentos_sem_acesso_mp: vendas.reduce((s, v) => s + v.pagamentos.filter(p => p.erro).length, 0),
+        },
+        vendas,
+      });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Diagnóstico (só leitura): resposta bruta do ML sobre as promoções de um anúncio ──
   // GET ?action=diag-oferta-item&item_id=MLB...&conta=filial|matriz
   if (req.query.action === "diag-oferta-item" && req.method === "GET") {
