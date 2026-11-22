@@ -104,7 +104,7 @@ async function interpretarHaiku(texto) {
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST", signal: ctrl.signal,
-      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "x-ops-funcao": "tarefa-voz" },
       body: JSON.stringify({
         model: "claude-haiku-4-5", max_tokens: 200,
         system: `Você transforma uma frase ditada em uma tarefa. Hoje é ${DIAS_SEM[hoje.getUTCDay()]}, ${isoDia(hoje)} (Brasília).

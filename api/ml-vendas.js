@@ -109,7 +109,7 @@ module.exports = async function handler(req, res) {
 
       const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', "x-ops-funcao": "perguntas-teste" },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6', max_tokens: 500,
           system: 'Você é assistente de atendimento da Digoo Brasil. Recebe uma pergunta e o catálogo ativo. Identifique o produto mais adequado e responda com link se encontrar. Retorne APENAS JSON: {"suggested_answer": "resposta", "produto_identificado": {"titulo": "...", "sku": "...", "link": "..."} ou null}',
@@ -802,12 +802,20 @@ REGRAS:
 Responda APENAS com JSON válido, sem texto antes ou depois:
 [{"idx": 0, "requires_attention": false, "suggested_answer": "texto", "criar_rascunho": null}, {"idx": 1, "requires_attention": false, "suggested_answer": "", "criar_rascunho": [{"titulo_sugerido": "...", "descricao_sugerida": "...", "preco_sugerido": null, "motivo": "..."}]}]`
 
-      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+      // Sugestões já geradas ficam guardadas por pergunta: abrir/atualizar a aba não paga a IA de novo
+      const cacheSug = {};
+      try {
+        const dbS = getDb();
+        await Promise.all(perguntas.map(async p => { const v = (await dbS.ref(`/perguntas_sugestoes/${p.id}`).once("value")).val(); if (v) cacheSug[p.id] = v; }));
+      } catch (e) { console.warn("[perguntas] cache de sugestões:", e.message); }
+      const paraIA = listaParaClaude.filter(p => !cacheSug[perguntas[p.idx].id]);
+      tPerf.sugestoes_do_cache = perguntas.length - paraIA.length;
+      const claudeRes = !paraIA.length ? { json: async () => ({ content: [{ type: "text", text: "[]" }] }) } : await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-api-key": process.env.ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
+          "anthropic-version": "2023-06-01", "x-ops-funcao": "perguntas-sugestoes",
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
@@ -816,7 +824,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
           messages: [{
             role: "user",
             content: JSON.stringify(
-              listaParaClaude.map(p => ({
+              paraIA.map(p => ({
                 idx: p.idx,
                 produto: p.produto,
                 ficha_tecnica: p.ficha_tecnica,
@@ -853,8 +861,18 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         sugestoes = [];
       }
 
+      // Guarda as sugestões novas (só as que vieram com conteúdo) e junta com as do cache
+      try {
+        const dbS = getDb(), agora = Date.now(), novas = {};
+        for (const sg of sugestoes) {
+          const p = perguntas[sg.idx]; if (!p || cacheSug[p.id]) continue;
+          if (!sg.suggested_answer && !sg.criar_rascunho) continue;
+          novas[p.id] = { suggested_answer: sg.suggested_answer || "", criar_rascunho: sg.criar_rascunho || null, requires_attention: !!sg.requires_attention, em: agora };
+        }
+        if (Object.keys(novas).length) await dbS.ref("/perguntas_sugestoes").update(novas);
+      } catch (e) { console.warn("[perguntas] salvar sugestões:", e.message); }
       const resultado = perguntas.map((p, i) => {
-        const sug = sugestoes.find(s => s.idx === i) || {};
+        const sug = cacheSug[p.id] || sugestoes.find(s => s.idx === i) || {};
         return {
           question_id: p.id,
           item_id: p.item_id,
@@ -1058,7 +1076,7 @@ Responda APENAS com JSON array:
             headers: {
               "Content-Type": "application/json",
               "x-api-key": process.env.ANTHROPIC_API_KEY,
-              "anthropic-version": "2023-06-01",
+              "anthropic-version": "2023-06-01", "x-ops-funcao": "perguntas-auto-resposta",
             },
             body: JSON.stringify({
               model: "claude-haiku-4-5",
@@ -1855,7 +1873,7 @@ Responda APENAS com JSON array:
 
       const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "x-ops-funcao": "promocao-analise" },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
           max_tokens: 300,
@@ -2871,9 +2889,9 @@ Responda APENAS com JSON array:
             const h = parseInt(horaBR, 10);
             const saudacao = h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 
-            // Chamar Claude para analisar
+            // Chamar Claude para analisar — DESLIGADO por enquanto (economia de API); ligar com IA_RECLAMACOES=1 na Vercel
             let sugestao = { tipo_reclamacao: "outro", resumo: "", requires_attention: true, suggested_answer: "", acao_sugerida: "outro" };
-            if (anthropicKey) {
+            if (anthropicKey && process.env.IA_RECLAMACOES === "1") {
               try {
                 const sistemaClaude = `Você é atendente especializado em pós-venda da Digoo Brasil no Mercado Livre.
 Analise a reclamação e retorne APENAS JSON válido:
@@ -2890,7 +2908,7 @@ Respostas de treinamento anteriores: ${JSON.stringify(treinamento)}`;
                 };
                 const claudeR = await fetch("https://api.anthropic.com/v1/messages", {
                   method: "POST",
-                  headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01" },
+                  headers: { "Content-Type": "application/json", "x-api-key": anthropicKey, "anthropic-version": "2023-06-01", "x-ops-funcao": "reclamacoes-sync" },
                   body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 600, system: sistemaClaude, messages: [{ role: "user", content: JSON.stringify(contexto) }] }),
                 });
                 const cd = await claudeR.json();
@@ -4095,7 +4113,7 @@ Respostas de treinamento anteriores: ${JSON.stringify(treinamento)}`;
 
       const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', "x-ops-funcao": "perguntas-teste" },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6', max_tokens: 500,
           system: 'Você é assistente de atendimento da Digoo Brasil. Recebe uma pergunta e o catálogo ativo. Identifique o produto mais adequado e responda com link se encontrar. Retorne APENAS JSON: {"suggested_answer": "resposta", "produto_identificado": {"titulo": "...", "sku": "...", "link": "..."} ou null}',

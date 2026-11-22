@@ -216,7 +216,7 @@ Content-Type: ${mimeType}
           headers: {
             "Content-Type": "application/json",
             "x-api-key": ANTHROPIC_KEY,
-            "anthropic-version": "2023-06-01",
+            "anthropic-version": "2023-06-01", "x-ops-funcao": "email-pdf",
             "anthropic-beta": "pdfs-2024-09-25"
           },
           body: JSON.stringify({

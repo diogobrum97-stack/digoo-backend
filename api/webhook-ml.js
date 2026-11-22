@@ -1,3 +1,4 @@
+import { fetch } from "../lib/fb-fetch.js";
 /**
  * Webhook do Mercado Livre → Firebase
  *
@@ -224,13 +225,14 @@ REGRAS:
   };
   try {
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    if (anthropicKey) {
+    // IA nas reclamações DESLIGADA por enquanto (economia de API); ligar com IA_RECLAMACOES=1 na Vercel
+    if (anthropicKey && process.env.IA_RECLAMACOES === "1") {
       const claudeR = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-api-key": anthropicKey,
-          "anthropic-version": "2023-06-01",
+          "anthropic-version": "2023-06-01", "x-ops-funcao": "reclamacoes-webhook",
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-6",

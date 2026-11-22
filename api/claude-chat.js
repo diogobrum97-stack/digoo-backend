@@ -1,3 +1,4 @@
+import { fetch } from "../lib/fb-fetch.js";
 export const config = {
   maxDuration: 60,
 };
@@ -86,7 +87,7 @@ REGRAS DE CONTEÚDO:
       headers: {
         "Content-Type": "application/json",
         "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01"
+        "anthropic-version": "2023-06-01", "x-ops-funcao": "assistente-chat"
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
