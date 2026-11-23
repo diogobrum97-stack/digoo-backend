@@ -1504,8 +1504,11 @@ Responda APENAS com JSON array:
       const ler = async url => { try { const r = await mlFetch(url, tk); const t = await r.text(); let b; try { b = JSON.parse(t); } catch { b = t.slice(0, 200); } return { status: r.status, body: b }; } catch (e) { return { status: 0, body: e.message }; } };
       const r2 = v => Math.round((Number(v) || 0) * 100) / 100;
       // Vendas mais recentes (pagas há pelo menos 1 dia, pra ter dados de pagamento)
-      const busca = await ler(`https://api.mercadolibre.com/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=${Math.min(n + 10, 50)}`);
-      const pedidos = (busca.body?.results || []).filter(o => Date.now() - Date.parse(o.date_created) > 24 * 3600e3).slice(0, n);
+      // vendas de pelo menos 2 dias atrás (as de hoje ainda não têm o pagamento/frete fechados)
+      const ate = new Date(Date.now() - 2 * 864e5 - 3 * 3600e3).toISOString().slice(0, 19) + ".000-03:00";
+      const busca = await ler(`https://api.mercadolibre.com/orders/search?seller=${uid}&order.status=paid&order.date_created.to=${encodeURIComponent(ate)}&sort=date_desc&limit=${Math.min(n, 50)}`);
+      const pedidos = (busca.body?.results || []).slice(0, n);
+      if (!pedidos.length) return res.json({ ok: false, conta, motivo: "nenhuma venda retornada pela busca do ML", busca_status: busca.status, busca_resposta: typeof busca.body === "string" ? busca.body : { total: busca.body?.paging?.total, erro: busca.body?.message || busca.body?.error || null }, seller: uid });
       const vendas = [];
       for (const o of pedidos) {
         const itens = (o.order_items || []).map(it => ({ titulo: it.item?.title, sku: it.item?.seller_sku || null, qtd: it.quantity, preco_unit: it.unit_price, tarifa_unit: it.sale_fee, preco_cheio_unit: it.full_unit_price }));
