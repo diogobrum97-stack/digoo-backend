@@ -92,7 +92,8 @@ REGRAS DE CONTEÚDO:
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 1200,
-        system: systemPrompt,
+        // ferramentas + instruções no cache da Anthropic: numa conversa, as mensagens seguintes pagam 10% por elas
+        system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
         tools: TOOLS,
         messages
       })

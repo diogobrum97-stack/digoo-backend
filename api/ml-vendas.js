@@ -723,20 +723,23 @@ module.exports = async function handler(req, res) {
       tPerf.catalogo_relevante = Date.now() - t0;
       console.log(`[perf] catálogo relevante: ${tPerf.catalogo_relevante}ms`);
 
+      // Contexto enxuto (economia de API): ficha sem atributos de cadastro, só as respostas mais recentes, até 5 relacionados
+      const ATRIB_FORA = /^(c[oó]digo universal|gtin|ean|sku|condi[cç][aã]o do item|tipo de an[uú]ncio|[eé] kit|origem|garantia do vendedor|tempo de garantia|tipo de garantia|n[uú]mero de pe[cç]a|mpn|cat[aá]logo)/i;
       const listaParaClaude = perguntas.map((p, i) => {
         const item = itemsInfo[p.item_id] || {};
-        const fichaAtributos = (item.attributes || [])
-          .filter(a => a.value_name && a.name)
+        let fichaAtributos = (item.attributes || [])
+          .filter(a => a.value_name && a.name && !ATRIB_FORA.test(a.name))
           .map(a => `${a.name}: ${a.value_name}`)
           .join(", ");
+        if (fichaAtributos.length > 1200) fichaAtributos = fichaAtributos.slice(0, 1200) + "…";
         return {
           idx: i,
           produto: item.title || "Produto",
           ficha_tecnica: fichaAtributos || "",
           pergunta: p.text,
           nome_comprador: buyerNames[(p.from?.id || p.buyer_id)] || null,
-          respostas_anteriores_deste_produto: conhecimentoPorItem[p.item_id] || [],
-          itens_relacionados: itensRelevantesporItem[i] || [],
+          respostas_anteriores_deste_produto: (conhecimentoPorItem[p.item_id] || []).slice(-6).map(e => ({ pergunta: String(e.pergunta).slice(0, 300), resposta: String(e.resposta).slice(0, 500) })),
+          itens_relacionados: (itensRelevantesporItem[i] || []).slice(0, 5),
         };
       });
 
@@ -820,7 +823,8 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
           max_tokens: 4096,
-          system: systemPrompt,
+          // instruções fixas guardadas no cache da Anthropic (as chamadas seguintes, em até 5 min, pagam 10% por elas)
+          system: [{ type: "text", text: systemPrompt, cache_control: { type: "ephemeral" } }],
           messages: [{
             role: "user",
             content: JSON.stringify(
