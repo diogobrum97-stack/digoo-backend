@@ -60,6 +60,7 @@ async function registrarCaidas(conta, anteriores, dados) {
     if (falhou.has(id) || caidas[id]) continue;
     const agora = dados.itens[id];
     if (!valendo(ant) || valendo(agora)) continue;
+    if (!ativos.has(id)) continue;                                   // anúncio pausado/inativo: não é "promoção caiu"
     if (manual[id] && agoraMs - manual[id] < 30 * 60 * 1000) continue;
     const ini = listaOf(ant).filter(o => o?.status === "started");
     const p = ini.reduce((a, b) => ((b.preco || Infinity) < (a.preco || Infinity) ? b : a), ini[0]);
@@ -75,7 +76,8 @@ async function registrarCaidas(conta, anteriores, dados) {
     log(`[${conta}] promoção caiu: ${id} (${p?.nome || p?.tipo || "?"})`);
   }
   for (const [id, c] of Object.entries(caidas)) {
-    if (valendo(dados.itens[id]) || agoraMs - (c.caiu_em || 0) > 14 * 24 * 3600e3) upd[`caidas/${id}`] = null;
+    // some quando voltou a ter promoção ativa, quando o anúncio foi pausado/saiu do ar, ou depois de 14 dias
+    if (valendo(dados.itens[id]) || !ativos.has(id) || agoraMs - (c.caiu_em || 0) > 14 * 24 * 3600e3) upd[`caidas/${id}`] = null;
   }
   for (const [id, t] of Object.entries(manual)) if (agoraMs - t > 30 * 60 * 1000) upd[`saida_manual/${id}`] = null;
   if (Object.keys(upd).length) await base.update(JSON.parse(JSON.stringify(upd)));
