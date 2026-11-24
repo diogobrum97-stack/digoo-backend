@@ -4,6 +4,7 @@ import { getDb } from "../lib/firebase-admin.js";
 // Ofertas do ML: núcleo em lib/ofertas-ml-core.js (o mesmo arquivo roda na VPS)
 import { esperar, mlFetch, emParalelo, dadosDoItem, ofertasDoItem, montarOfertasML, gravarOfertas } from "../lib/ofertas-ml-core.js";
 import { montarDiaVendas, hojeSP } from "../lib/vendas-painel-core.js";
+import { lerRelatorioLiberacoes, COLUNAS_RELATORIO } from "../lib/saldo-mp-core.js";
 
 // Token do ML salvo no Firebase, renovado se estiver perto de vencer
 async function tokenMLDaConta(conta) {
@@ -1581,6 +1582,77 @@ Responda APENAS com JSON array:
       return res.json(resumo);
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
+  // ── Saldo MP (aba Mercado Livre → Saldo MP) ──
+  // GET ?action=saldo-mp&conta=filial|matriz&de=AAAA-MM-DD&ate=AAAA-MM-DD[&novo=1]
+  // Pede ao Mercado Pago o relatório de liberações do período (extrato oficial do saldo disponível),
+  // acompanha até ficar pronto, baixa e agrupa. Estado em /saldo_mp/{conta}/{de}_{ate}.
+  // Respostas: { status: "gerando" } (o OPS chama de novo em ~15s) | { status: "pronto", resultado } | { status: "erro" }
+  if (req.query.action === "saldo-mp" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      const dataOk = d => /^\d{4}-\d{2}-\d{2}$/.test(d || "");
+      if (!dataOk(req.query.de) || !dataOk(req.query.ate)) return res.status(400).json({ ok: false, error: "passe de= e ate= (AAAA-MM-DD)" });
+      const de = req.query.de, ate = req.query.ate;
+      const ref = getDb().ref(`/saldo_mp/${conta}/${de}_${ate}`);
+      let atual = (await ref.once("value")).val();
+      const forcar = req.query.novo === "1";
+      if (atual?.status === "pronto" && !forcar) return res.json({ ok: true, ...atual });
+      const tk = await tokenMLDaConta(conta);
+      const tkInfo = (await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {};
+      const uid = tkInfo.user_id;
+      const MP = "https://api.mercadopago.com/v1/account/release_report";
+      const begin = new Date(`${de}T00:00:00-03:00`).toISOString().replace(/\.\d+Z$/, "Z");
+      const fimDia = new Date(`${ate}T23:59:59-03:00`).getTime();
+      const end = new Date(Math.min(fimDia, Date.now() - 5 * 60e3)).toISOString().replace(/\.\d+Z$/, "Z");
+
+      // configuração do relatório (a Filial nunca tinha configurado)
+      let colunas = COLUNAS_RELATORIO;
+      const cfgR = await mlFetch(`${MP}/config`, tk);
+      if (cfgR.status === 404) {
+        const novo = await mlFetch(`${MP}/config`, tk, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+          file_name_prefix: `release-${uid}`, display_timezone: "GMT-03", report_translation: "pt", separator: ";",
+          scheduled: false, frequency: { hour: 0, type: "monthly", value: 1 },
+          columns: COLUNAS_RELATORIO.map(key => ({ key })),
+        }) });
+        if (!novo.ok) return res.json({ ok: false, status: "erro", error: `não consegui configurar o relatório no Mercado Pago (HTTP ${novo.status}): ${(await novo.text()).slice(0, 200)}` });
+      } else if (cfgR.ok) {
+        const cfg = await cfgR.json().catch(() => null);
+        if (Array.isArray(cfg?.columns) && cfg.columns.length) colunas = cfg.columns.map(c => String(c.key || "").toUpperCase());
+      }
+
+      // pede o relatório do período
+      if (!atual?.pedido_em || forcar || atual.status === "erro") {
+        const pr = await mlFetch(MP, tk, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ begin_date: begin, end_date: end }) });
+        if (!pr.ok && pr.status !== 202) return res.json({ ok: false, status: "erro", error: `o Mercado Pago recusou gerar o relatório (HTTP ${pr.status}): ${(await pr.text()).slice(0, 200)}` });
+        atual = { status: "gerando", pedido_em: Date.now(), begin, end };
+        await ref.set(atual);
+        return res.json({ ok: true, status: "gerando" });
+      }
+
+      // procura o relatório pronto na lista
+      const lr = await mlFetch(`${MP}/list`, tk);
+      const lista = lr.ok ? await lr.json().catch(() => []) : [];
+      const mesmoInstante = (a, b) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 2000;
+      const cand = (Array.isArray(lista) ? lista : [])
+        .filter(x => mesmoInstante(x.begin_date, atual.begin) && mesmoInstante(x.end_date, atual.end) && x.file_name)
+        .sort((a, b) => String(b.date_created).localeCompare(String(a.date_created)))[0];
+      const pronto = cand && /enabled|processed|ready|available/i.test(String(cand.status || ""));
+      if (!pronto) {
+        if (Date.now() - atual.pedido_em > 20 * 60e3) { await ref.update({ status: "erro" }); return res.json({ ok: false, status: "erro", error: "o Mercado Pago não entregou o relatório em 20 min — tente de novo" }); }
+        return res.json({ ok: true, status: "gerando", desde: atual.pedido_em });
+      }
+      const dr = await mlFetch(`${MP}/${encodeURIComponent(cand.file_name)}`, tk);
+      if (!dr.ok) return res.json({ ok: false, status: "erro", error: `não consegui baixar o relatório (HTTP ${dr.status})` });
+      const resultado = lerRelatorioLiberacoes(await dr.text(), colunas);
+      if (!resultado) return res.json({ ok: false, status: "erro", error: "relatório veio vazio" });
+      const salvo = { status: "pronto", pedido_em: atual.pedido_em, begin: atual.begin, end: atual.end, arquivo: cand.file_name, gerado_em: Date.now(), resultado };
+      await ref.set(JSON.parse(JSON.stringify(salvo)));
+      return res.json({ ok: true, ...salvo });
+    } catch (e) {
+      return res.status(500).json({ ok: false, status: "erro", error: e.message });
     }
   }
 
