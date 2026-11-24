@@ -1687,6 +1687,57 @@ Responda APENAS com JSON array:
     }
   }
 
+  // ── Diagnóstico (só leitura): de onde puxar a nota fiscal de cada venda ──
+  // GET ?action=diag-nf  → Filial: serviços de nota do ML · Matriz: Bling (pedido pelo nº do ML → nota)
+  if (req.query.action === "diag-nf" && req.method === "GET") {
+    try {
+      const amostra = async (url, headers) => {
+        try { const r = await fetch(url, { headers }); const t = await r.text(); return { http: r.status, amostra: t.slice(0, 1200) }; }
+        catch (e) { return { http: 0, erro: e.message }; }
+      };
+      const saida = {};
+      for (const conta of ["filial", "matriz"]) {
+        const tk = await tokenMLDaConta(conta);
+        const tkInfo = (await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {};
+        const uid = tkInfo.user_id;
+        const H = { Authorization: `Bearer ${tk}` };
+        // 3 vendas pagas de 1 a 3 dias atrás (nota já deve ter saído)
+        const ate = new Date(Date.now() - 864e5).toISOString().replace(/\.\d+Z$/, ".000-00:00");
+        const sr = await fetch(`https://api.mercadolibre.com/orders/search?seller=${uid}&order.status=paid&sort=date_desc&limit=3&order.date_created.to=${encodeURIComponent(ate)}`, { headers: H });
+        const ords = sr.ok ? ((await sr.json()).results || []) : [];
+        const vendas = [];
+        for (const o of ords) {
+          const v = { pedido: o.id, pack: o.pack_id || null, envio: o.shipping?.id || null, criado: o.date_created };
+          v.ml_invoice_pedido = await amostra(`https://api.mercadolibre.com/users/${uid}/invoices/orders/${o.id}`, H);
+          v.ml_fiscal_docs_pacote = await amostra(`https://api.mercadolibre.com/packs/${o.pack_id || o.id}/fiscal_documents`, H);
+          if (o.shipping?.id) v.ml_invoice_envio = await amostra(`https://api.mercadolibre.com/shipments/${o.shipping.id}/invoice_data/?siteId=MLB`, H);
+          vendas.push(v);
+        }
+        saida[conta] = { user_id: uid, vendas };
+      }
+      // Bling (Matriz): pedido pelo número do ML → nota ligada
+      const bt = (await getDb().ref("/bling_token").once("value")).val() || {};
+      const BH = { Authorization: `Bearer ${bt.access_token}`, Accept: "application/json" };
+      for (const v of saida.matriz.vendas) {
+        const busca = await amostra(`https://api.bling.com.br/Api/v3/pedidos/vendas?numerosLojas[]=${v.pedido}`, BH);
+        v.bling_busca_pedido = busca;
+        try {
+          const id = JSON.parse(busca.amostra || "{}")?.data?.[0]?.id;
+          if (id) {
+            const det = await amostra(`https://api.bling.com.br/Api/v3/pedidos/vendas/${id}`, BH);
+            v.bling_pedido = det;
+            const nfId = (det.amostra.match(/"notaFiscal"\s*:\s*\{\s*"id"\s*:\s*(\d+)/) || [])[1];
+            if (nfId && nfId !== "0") v.bling_nfe = await amostra(`https://api.bling.com.br/Api/v3/nfe/${nfId}`, BH);
+          }
+        } catch (_) {}
+      }
+      saida.bling_token_expira = bt.expires_at || null;
+      return res.json({ ok: true, resultado: saida });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Diagnóstico (só leitura): o que a API do Mercado Pago libera sobre saldo e extrato ──
   // GET ?action=diag-saldo  → testa as duas contas em vários endpoints (só GET, nada é criado)
   if (req.query.action === "diag-saldo" && req.method === "GET") {
