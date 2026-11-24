@@ -1584,6 +1584,44 @@ Responda APENAS com JSON array:
     }
   }
 
+  // ── Diagnóstico (só leitura): o que a API do Mercado Pago libera sobre saldo e extrato ──
+  // GET ?action=diag-saldo  → testa as duas contas em vários endpoints (só GET, nada é criado)
+  if (req.query.action === "diag-saldo" && req.method === "GET") {
+    try {
+      const saida = {};
+      for (const conta of ["filial", "matriz"]) {
+        let tk;
+        try { tk = await tokenMLDaConta(conta); } catch (e) { saida[conta] = { erro: "sem token: " + e.message }; continue; }
+        const tkInfo = (await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {};
+        const uid = tkInfo.user_id;
+        const hoje = new Date(), ini = new Date(Date.now() - 7 * 864e5);
+        const iso = d => d.toISOString().replace(/\.\d+Z$/, ".000-00:00");
+        const urls = {
+          saldo_users: `https://api.mercadopago.com/users/${uid}/mercadopago_account/balance`,
+          saldo_me: `https://api.mercadopago.com/users/me/mercadopago_account/balance`,
+          movimentos: `https://api.mercadopago.com/mercadopago_account/movements/search?user_id=${uid}&limit=5`,
+          movimentos_v1: `https://api.mercadopago.com/v1/account/movements/search?limit=5`,
+          relatorio_liberacoes_lista: `https://api.mercadopago.com/v1/account/release_report/list`,
+          relatorio_liberacoes_config: `https://api.mercadopago.com/v1/account/release_report/config`,
+          relatorio_conciliacao_lista: `https://api.mercadopago.com/v1/account/settlement_report/list`,
+          pagamentos_busca: `https://api.mercadopago.com/v1/payments/search?sort=date_created&criteria=desc&limit=3&range=date_created&begin_date=${encodeURIComponent(iso(ini))}&end_date=${encodeURIComponent(iso(hoje))}`,
+        };
+        const r = { user_id: uid };
+        for (const [nome, url] of Object.entries(urls)) {
+          try {
+            const resp = await fetch(url, { headers: { Authorization: `Bearer ${tk}` } });
+            const txt = await resp.text();
+            r[nome] = { http: resp.status, amostra: txt.slice(0, 1500) };
+          } catch (e) { r[nome] = { http: 0, erro: e.message }; }
+        }
+        saida[conta] = r;
+      }
+      return res.json({ ok: true, resultado: saida });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Diagnóstico (só leitura): como o ML liga pedidos da mesma venda ──
   // GET ?action=diag-pedido&conta=filial&ids=200001...,200001...
   // Devolve o pedido cru, o envio (sem endereços), o pack (se houver) e o que o OPS tem guardado.
