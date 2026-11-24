@@ -1584,6 +1584,35 @@ Responda APENAS com JSON array:
     }
   }
 
+  // ── Diagnóstico (só leitura): como o ML liga pedidos da mesma venda ──
+  // GET ?action=diag-pedido&conta=filial&ids=200001...,200001...
+  // Devolve o pedido cru, o envio (sem endereços), o pack (se houver) e o que o OPS tem guardado.
+  if (req.query.action === "diag-pedido" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      const tk = await tokenMLDaConta(conta);
+      const ids = String(req.query.ids || "").split(",").map(s => s.trim()).filter(s => /^\d+$/.test(s)).slice(0, 5);
+      if (!ids.length) return res.status(400).json({ ok: false, error: "passe ids=pedido1,pedido2" });
+      const ler = async url => { try { const r = await mlFetch(url, tk); const t = await r.text(); let b; try { b = JSON.parse(t); } catch { b = t.slice(0, 300); } return { http: r.status, body: b }; } catch (e) { return { http: 0, erro: e.message }; } };
+      const semEndereco = o => { if (!o || typeof o !== "object") return o; const c = { ...o }; delete c.receiver_address; delete c.sender_address; delete c.destination; delete c.origin; return c; };
+      const saida = [];
+      for (const id of ids) {
+        const ped = await ler(`https://api.mercadolibre.com/orders/${id}`);
+        const o = ped.body || {};
+        const item = { pedido_id: id, pedido_http: ped.http, pedido: o };
+        if (o.shipping?.id) { const sh = await ler(`https://api.mercadolibre.com/shipments/${o.shipping.id}`); item.envio = { http: sh.http, body: semEndereco(sh.body) }; }
+        if (o.pack_id) item.pack = await ler(`https://api.mercadolibre.com/packs/${o.pack_id}`);
+        // onde o OPS guardou esse pedido
+        const dia = o.date_created ? new Date(new Date(o.date_created).getTime() - 3 * 3600e3).toISOString().slice(0, 10) : null;
+        if (dia) item.guardado_no_ops = (await getDb().ref(`/vendas_painel/${conta}/${dia}/pedidos/${id}`).once("value")).val();
+        saida.push(item);
+      }
+      return res.json({ ok: true, conta, resultado: saida });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+  }
+
   // ── Diagnóstico (só leitura): resposta bruta do ML sobre as promoções de um anúncio ──
   // GET ?action=diag-oferta-item&item_id=MLB...&conta=filial|matriz
   if (req.query.action === "diag-oferta-item" && req.method === "GET") {
