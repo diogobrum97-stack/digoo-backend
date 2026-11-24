@@ -1689,6 +1689,32 @@ Responda APENAS com JSON array:
 
   // ── Diagnóstico (só leitura): de onde puxar a nota fiscal de cada venda ──
   // GET ?action=diag-nf  → Filial: serviços de nota do ML · Matriz: Bling (pedido pelo nº do ML → nota)
+  if (req.query.action === "diag-nf" && req.method === "GET" && req.query.pedido) {
+    // modo 2: nota completa de UM pedido (sem dados do comprador) + endereços de XML/PDF
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      const tk = await tokenMLDaConta(conta);
+      const uid = ((await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {}).user_id;
+      const H = { Authorization: `Bearer ${tk}` };
+      const r = await fetch(`https://api.mercadolibre.com/users/${uid}/invoices/orders/${req.query.pedido}`, { headers: H });
+      const inv = await r.json().catch(() => null);
+      if (inv?.recipient) inv.recipient = { state: inv.recipient.address?.state, tipo: inv.recipient.identifications?.cnpj ? "cnpj" : "cpf" };
+      const testes = {};
+      if (inv?.id) {
+        for (const [nome, url] of Object.entries({
+          xml_a: `https://api.mercadolibre.com/users/${uid}/invoices/documents/xml/${inv.id}`,
+          pdf_a: `https://api.mercadolibre.com/users/${uid}/invoices/documents/pdf/${inv.id}`,
+          xml_b: `https://api.mercadolibre.com/users/${uid}/invoices/${inv.id}/xml`,
+          pdf_b: `https://api.mercadolibre.com/users/${uid}/invoices/${inv.id}/pdf`,
+          por_id: `https://api.mercadolibre.com/users/${uid}/invoices/${inv.id}`,
+        })) {
+          try { const x = await fetch(url, { headers: H }); const t = await x.text(); testes[nome] = { http: x.status, tipo: x.headers.get("content-type"), inicio: t.slice(0, 300) }; }
+          catch (e) { testes[nome] = { erro: e.message }; }
+        }
+      }
+      return res.json({ ok: true, conta, http: r.status, nota: inv, testes });
+    } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
   if (req.query.action === "diag-nf" && req.method === "GET") {
     try {
       const amostra = async (url, headers) => {
