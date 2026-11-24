@@ -1664,13 +1664,16 @@ Responda APENAS com JSON array:
       const lr = await mp("listar relatórios", `${MP}/list`);
       const lista = lr.ok ? await lr.json().catch(() => []) : [];
       const mesmoInstante = (a, b) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 2000;
-      const cand = (Array.isArray(lista) ? lista : [])
-        .filter(x => mesmoInstante(x.begin_date, atual.begin) && mesmoInstante(x.end_date, atual.end) && x.file_name)
-        .sort((a, b) => String(b.date_created).localeCompare(String(a.date_created)))[0];
-      const pronto = cand && /enabled|processed|ready|available/i.test(String(cand.status || ""));
+      const arr = Array.isArray(lista) ? lista : (Array.isArray(lista?.results) ? lista.results : []);
+      // o relatório pedido: mesmas datas, ou o mais novo criado depois do pedido (o MP às vezes ajusta as datas)
+      const novos = arr.filter(x => x.file_name && new Date(x.date_created).getTime() >= atual.pedido_em - 2 * 60e3)
+        .sort((a, b) => String(b.date_created).localeCompare(String(a.date_created)));
+      const cand = novos.find(x => mesmoInstante(x.begin_date, atual.begin) && mesmoInstante(x.end_date, atual.end)) || novos[0];
+      const pronto = cand && !/pending|processing|waiting|generat|queued|progress/i.test(String(cand.status || ""));
       if (!pronto) {
-        if (Date.now() - atual.pedido_em > 20 * 60e3) { await ref.update({ status: "erro" }); return res.json({ ok: false, status: "erro", error: "o Mercado Pago não entregou o relatório em 20 min — tente de novo" }); }
-        return res.json({ ok: true, status: "gerando", desde: atual.pedido_em });
+        const ultimos = arr.slice(0, 3).map(x => ({ criado: x.date_created, de: x.begin_date, ate: x.end_date, status: x.status, arquivo: x.file_name }));
+        if (Date.now() - atual.pedido_em > 30 * 60e3) { await ref.update({ status: "erro" }); return res.json({ ok: false, status: "erro", error: `o Mercado Pago não entregou o relatório em 30 min. Últimos na lista: ${JSON.stringify(ultimos)}` }); }
+        return res.json({ ok: true, status: "gerando", desde: atual.pedido_em, lista: ultimos, total_lista: arr.length });
       }
       const dr = await mp("baixar relatório", `${MP}/${encodeURIComponent(cand.file_name)}`);
       if (!dr.ok) return res.json({ ok: false, status: "erro", error: `não consegui baixar o relatório (HTTP ${dr.status})` });
