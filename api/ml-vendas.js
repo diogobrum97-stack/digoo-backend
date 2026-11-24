@@ -3,6 +3,7 @@ import { getDb } from "../lib/firebase-admin.js";
 
 // Ofertas do ML: núcleo em lib/ofertas-ml-core.js (o mesmo arquivo roda na VPS)
 import { esperar, mlFetch, emParalelo, dadosDoItem, ofertasDoItem, montarOfertasML, gravarOfertas } from "../lib/ofertas-ml-core.js";
+import { montarDiaVendas, hojeSP } from "../lib/vendas-painel-core.js";
 
 // Token do ML salvo no Firebase, renovado se estiver perto de vencer
 async function tokenMLDaConta(conta) {
@@ -1566,134 +1567,18 @@ Responda APENAS com JSON array:
 
   // ── Painel de Vendas (aba Mercado Livre → Vendas) ──
   // GET ?action=painel-vendas&conta=filial|matriz&data=AAAA-MM-DD
-  // Vendas do dia com tarifa, frete (1 por envio — carrinho conta uma vez) e líquido do Mercado Pago.
-  // Cada pedido consultado fica em /vendas_painel/{conta}/{data}/pedidos/{id}; só busca de novo o que é novo,
-  // mudou de status ou foi checado há mais de 6h. Dias grandes voltam com parcial:true — o OPS chama de novo.
+  // Monta as vendas do dia (núcleo em lib/vendas-painel-core.js, o mesmo da VPS) e grava o resumo em
+  // /vendas_dia/{conta}/{data}, que o OPS lê direto. Dias grandes voltam com parcial:true — o OPS chama de novo.
   if (req.query.action === "painel-vendas" && req.method === "GET") {
     try {
-      const inicio = Date.now();
       const conta = req.query.conta === "matriz" ? "matriz" : "filial";
-      const hojeSP = new Date(Date.now() - 3 * 3600e3).toISOString().slice(0, 10);
-      const data = /^\d{4}-\d{2}-\d{2}$/.test(req.query.data || "") ? req.query.data : hojeSP;
+      const data = /^\d{4}-\d{2}-\d{2}$/.test(req.query.data || "") ? req.query.data : hojeSP();
       const tk = await tokenMLDaConta(conta);
       const tkInfo = (await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {};
       let uid = tkInfo.user_id;
       if (!uid) { const me = await (await mlFetch("https://api.mercadolibre.com/users/me", tk)).json(); uid = me.id; }
-      const r2 = v => Math.round((Number(v) || 0) * 100) / 100;
-      const lerJson = async url => { try { const r = await mlFetch(url, tk); if (!r.ok) return { status: r.status, body: null }; return { status: r.status, body: await r.json() }; } catch (e) { return { status: 0, body: null }; } };
-      const cacheRef = getDb().ref(`/vendas_painel/${conta}/${data}`);
-      const cache = (await cacheRef.child("pedidos").once("value")).val() || {};
-
-      // 1) Todos os pedidos do dia (horário de Brasília)
-      const de = `${data}T00:00:00.000-03:00`, ate = `${data}T23:59:59.999-03:00`;
-      const pedidos = [];
-      for (let off = 0; off < 5000; off += 50) {
-        const b = await lerJson(`https://api.mercadolibre.com/orders/search?seller=${uid}&order.date_created.from=${encodeURIComponent(de)}&order.date_created.to=${encodeURIComponent(ate)}&sort=date_asc&limit=50&offset=${off}`);
-        if (!b.body) { if (!pedidos.length) throw new Error(`busca de pedidos do ML falhou (HTTP ${b.status})`); break; }
-        pedidos.push(...(b.body.results || []));
-        if ((b.body.results || []).length < 50 || pedidos.length >= (b.body.paging?.total || 0)) break;
-      }
-
-      // 2) Detalhe (frete + Mercado Pago) só do que precisa
-      const precisa = pedidos.filter(o => {
-        const c = cache[o.id];
-        return !c || c.status !== o.status || Date.now() - (c.checado_em || 0) > 6 * 3600e3;
-      });
-      const fretes = {};          // shipping_id → custo do vendedor (um por envio)
-      for (const c of Object.values(cache)) if (c.shipping_id && c.frete_envio != null) fretes[c.shipping_id] = c.frete_envio;
-      let parcial = false;
-      const novos = {};
-      await emParalelo(precisa, 4, async o => {
-        if (Date.now() - inicio > 40e3) { parcial = true; return; }
-        const itens = (o.order_items || []).map(it => ({
-          item_id: it.item?.id || null, titulo: it.item?.title || null,
-          sku: it.item?.seller_sku || it.item?.seller_custom_field || null,
-          qtd: it.quantity || 1, preco_unit: r2(it.unit_price), tarifa_unit: r2(it.sale_fee),
-        }));
-        const shipId = o.shipping?.id || null;
-        let freteEnvio = shipId != null && fretes[shipId] != null ? fretes[shipId] : null;
-        if (shipId && freteEnvio == null) {
-          const c = await lerJson(`https://api.mercadolibre.com/shipments/${shipId}/costs`);
-          if (c.body) { freteEnvio = r2((c.body.senders || []).reduce((s, x) => s + (Number(x.cost) || 0), 0)); fretes[shipId] = freteEnvio; }
-        }
-        const pags = [];
-        for (const p of o.payments || []) {
-          const mp = await lerJson(`https://api.mercadopago.com/v1/payments/${p.id}`);
-          const b = mp.body;
-          if (!b) { pags.push({ id: p.id, erro: mp.status || "sem acesso", status: p.status || null }); continue; }
-          pags.push({
-            id: p.id, status: b.status, liquido: b.transaction_details?.net_received_amount ?? null,
-            valor: b.transaction_amount ?? null, reembolsado: b.transaction_amount_refunded || 0,
-            liberacao: b.money_release_date || null, liberado: b.money_release_status || null,
-          });
-        }
-        novos[o.id] = {
-          id: o.id, criado: o.date_created, status: o.status, pack_id: o.pack_id || null,
-          shipping_id: shipId, frete_envio: freteEnvio, itens, pagamentos: pags, checado_em: Date.now(),
-        };
-      });
-      if (Object.keys(novos).length) await cacheRef.child("pedidos").update(JSON.parse(JSON.stringify(novos)));
-      const todos = { ...cache, ...novos };
-
-      // 3) Monta as linhas: carrinho (pack) vira uma linha e o frete conta uma vez por envio
-      const grupos = {};
-      for (const o of pedidos) {
-        const c = todos[o.id]; if (!c) continue;
-        const k = c.pack_id ? `p${c.pack_id}` : `o${c.id}`;
-        (grupos[k] = grupos[k] || []).push(c);
-      }
-      const vendas = [], excecoes = [], liberacoes = {};
-      for (const [k, ords] of Object.entries(grupos)) {
-        const itens = ords.flatMap(o => o.itens || []);
-        const bruto = r2(itens.reduce((s, i) => s + i.preco_unit * i.qtd, 0));
-        const tarifa = r2(itens.reduce((s, i) => s + i.tarifa_unit * i.qtd, 0));
-        const envios = [...new Set(ords.map(o => o.shipping_id).filter(Boolean))];
-        const freteOk = envios.every(s => ords.some(o => o.shipping_id === s && o.frete_envio != null));
-        const frete = freteOk ? r2(envios.reduce((s, sid) => s + (ords.find(o => o.shipping_id === sid)?.frete_envio || 0), 0)) : null;
-        const pags = ords.flatMap(o => o.pagamentos || []);
-        const aprov = pags.filter(p => ["approved", "authorized"].includes(p.status));   // recusados são ignorados
-        const semAcesso = pags.some(p => p.erro);
-        const liquido = aprov.length && aprov.every(p => p.liquido != null) ? r2(aprov.reduce((s, p) => s + p.liquido, 0)) : null;
-        const esperado = frete != null ? r2(bruto - tarifa - frete) : null;
-        const diferenca = esperado != null && liquido != null ? r2(liquido - esperado) : null;
-        const cancelada = ords.every(o => o.status === "cancelled");
-        const reembolso = r2(pags.reduce((s, p) => s + (Number(p.reembolsado) || 0), 0));
-        for (const p of aprov) {
-          if (!p.liberacao || p.liquido == null) continue;
-          const d = new Date(new Date(p.liberacao).getTime() - 3 * 3600e3).toISOString().slice(0, 10);
-          const l = liberacoes[d] = liberacoes[d] || { data: d, vendas: 0, valor: 0, liberado: true };
-          l.vendas++; l.valor = r2(l.valor + p.liquido); if (p.liberado !== "released") l.liberado = false;
-        }
-        const linha = {
-          id: k, pedidos: ords.map(o => o.id), criado: ords[0].criado, status: cancelada ? "cancelada" : ords[0].status,
-          itens: itens.map(i => ({ titulo: i.titulo, sku: i.sku, qtd: i.qtd, preco_unit: i.preco_unit, item_id: i.item_id })),
-          bruto, tarifa, frete, envios: envios.length, liquido, esperado, diferenca, reembolso,
-          liberacao: aprov.map(p => p.liberacao).filter(Boolean).sort()[0] || null,
-        };
-        const motivos = [];
-        if (cancelada) motivos.push("cancelada");
-        if (reembolso > 0) motivos.push(`reembolso R$ ${reembolso.toFixed(2)}`);
-        if (diferenca != null && Math.abs(diferenca) > 0.10) motivos.push(`diferença de R$ ${diferenca.toFixed(2)} no MP`);
-        if (semAcesso && !aprov.length) motivos.push("sem acesso ao pagamento no MP");
-        if (!cancelada && !aprov.length && !semAcesso) motivos.push("pagamento não aprovado");
-        if (motivos.length) excecoes.push({ ...linha, motivos });
-        if (!cancelada && aprov.length) vendas.push(linha);
-      }
-      vendas.sort((a, b) => String(b.criado).localeCompare(String(a.criado)));
-      // Fotos dos anúncios vendidos (miniatura)
-      const fotos = {};
-      const idsFoto = [...new Set([...vendas, ...excecoes].flatMap(v => v.itens.map(i => i.item_id)).filter(Boolean))];
-      if (Date.now() - inicio < 50e3) {
-        await emParalelo(Array.from({ length: Math.ceil(idsFoto.length / 20) }, (_, i) => idsFoto.slice(i * 20, i * 20 + 20)), 3, async lote => {
-          const r = await lerJson(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,thumbnail`);
-          for (const e of Array.isArray(r.body) ? r.body : []) if (e?.code === 200 && e.body?.thumbnail) fotos[e.body.id] = String(e.body.thumbnail).replace(/^http:/, "https:");
-        });
-      }
-      return res.json({
-        ok: true, conta, data, parcial, faltam: parcial ? precisa.length - Object.keys(novos).length : 0,
-        vendas, excecoes, fotos, liberacoes: Object.values(liberacoes).sort((a, b) => a.data.localeCompare(b.data)),
-        atualizado_em: Date.now(),
-      });
+      const resumo = await montarDiaVendas({ db: getDb(), token: tk, uid, conta, data, mlFetch, emParalelo, limiteMs: 40e3, origem: "backend" });
+      return res.json(resumo);
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
