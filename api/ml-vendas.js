@@ -3,7 +3,7 @@ import { getDb } from "../lib/firebase-admin.js";
 
 // Ofertas do ML: núcleo em lib/ofertas-ml-core.js (o mesmo arquivo roda na VPS)
 import { esperar, mlFetch, emParalelo, dadosDoItem, ofertasDoItem, montarOfertasML, gravarOfertas } from "../lib/ofertas-ml-core.js";
-import { montarDiaVendas, hojeSP } from "../lib/vendas-painel-core.js";
+import { montarDiaVendas, hojeSP, resumirNota } from "../lib/vendas-painel-core.js";
 import { lerRelatorioLiberacoes, COLUNAS_RELATORIO } from "../lib/saldo-mp-core.js";
 
 // Token do ML salvo no Firebase, renovado se estiver perto de vencer
@@ -1685,6 +1685,54 @@ Responda APENAS com JSON array:
     } catch (e) {
       return res.json({ ok: false, status: "erro", error: e.message });
     }
+  }
+
+  // ── Nota fiscal da venda (janela da etiqueta NF na aba Vendas) ──
+  // GET ?action=nf-venda&conta=filial|matriz&pedido=ID  → dados da nota (sem documento do comprador)
+  if (req.query.action === "nf-venda" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      if (!/^\d+$/.test(req.query.pedido || "")) return res.status(400).json({ ok: false, error: "pedido inválido" });
+      const tk = await tokenMLDaConta(conta);
+      const uid = ((await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {}).user_id;
+      const r = await mlFetch(`https://api.mercadolibre.com/users/${uid}/invoices/orders/${req.query.pedido}`, tk);
+      if (r.status === 404) return res.json({ ok: false, error: "Essa venda ainda não tem nota no Mercado Livre." });
+      if (!r.ok) return res.json({ ok: false, error: `Mercado Livre respondeu HTTP ${r.status}` });
+      const inv = await r.json();
+      const nf = resumirNota(inv);
+      const at = inv.attributes || {};
+      return res.json({ ok: true, conta, nf: {
+        ...nf,
+        situacao: at.status_description || inv.status, protocolo: at.protocol || null, autorizada: at.authorization_date || null,
+        cancelada: at.cancellation_date || null, motivo_cancelamento: at.cancellation_reason || null,
+        natureza: inv.fiscal_data?.transaction_type_description || null,
+        emitente: inv.issuer ? { nome: inv.issuer.name, uf: inv.issuer.address?.state, cnpj: inv.issuer.identifications?.cnpj } : null,
+        destinatario: inv.recipient ? { nome: inv.recipient.name || null, uf: inv.recipient.address?.state || null, cidade: inv.recipient.address?.city || null, tipo: inv.recipient.identifications?.cnpj ? "PJ" : "PF" } : null,
+        itens: (inv.items || []).map(i => ({ nome: i.product_name, sku: i.attributes?.sku || null, qtd: i.quantity, valor: i.total_amount, ncm: i.fiscal_data?.attributes?.ncm || null, cfop: i.fiscal_data?.attributes?.cfop || null })),
+        mensagens: (inv.fiscal_data?.messages || []).map(m => m.content).filter(Boolean),
+        tem_danfe: !!at.danfe_location, tem_xml: !!at.xml_location,
+      } });
+    } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
+  // GET ?action=nf-doc&conta=filial|matriz&id=INVOICE_ID&tipo=pdf|xml  → DANFE (PDF) ou XML da nota, pelo acesso da conta
+  if (req.query.action === "nf-doc" && req.method === "GET") {
+    try {
+      const conta = req.query.conta === "matriz" ? "matriz" : "filial";
+      if (!/^\d+$/.test(req.query.id || "")) return res.status(400).send("id inválido");
+      const tipo = req.query.tipo === "xml" ? "xml" : "pdf";
+      const tk = await tokenMLDaConta(conta);
+      const uid = ((await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {}).user_id;
+      const url = tipo === "pdf"
+        ? `https://api.mercadolibre.com/users/${uid}/invoices/sites/MLB/documents/danfe/${req.query.id}`
+        : `https://api.mercadolibre.com/users/${uid}/invoices/documents/xml/${req.query.id}/authorized`;
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${tk}`, Accept: tipo === "pdf" ? "application/pdf,*/*" : "application/xml,*/*" } });
+      if (!r.ok) return res.status(r.status).send(`Não consegui baixar o ${tipo.toUpperCase()} no Mercado Livre (HTTP ${r.status}): ${(await r.text()).slice(0, 200)}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.setHeader("Content-Type", tipo === "pdf" ? "application/pdf" : "application/xml; charset=utf-8");
+      res.setHeader("Content-Disposition", `${tipo === "pdf" ? "inline" : "attachment"}; filename="nf-${req.query.id}.${tipo}"`);
+      return res.status(200).send(buf);
+    } catch (e) { return res.status(500).send(e.message); }
   }
 
   // ── Diagnóstico (só leitura): de onde puxar a nota fiscal de cada venda ──
