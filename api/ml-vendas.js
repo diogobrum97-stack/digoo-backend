@@ -1615,6 +1615,7 @@ Responda APENAS com JSON array:
         const novo = await mlFetch(`${MP}/config`, tk, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
           file_name_prefix: `release-${uid}`, display_timezone: "GMT-03", report_translation: "pt", separator: ";",
           scheduled: false, frequency: { hour: 0, type: "monthly", value: 1 },
+          execute_after_withdrawal: false, include_withdraw: true, detailed: false,
           columns: COLUNAS_RELATORIO.map(key => ({ key })),
         }) });
         if (!novo.ok) return res.json({ ok: false, status: "erro", error: `não consegui configurar o relatório no Mercado Pago (HTTP ${novo.status}): ${(await novo.text()).slice(0, 200)}` });
