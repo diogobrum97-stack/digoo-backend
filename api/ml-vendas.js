@@ -1591,8 +1591,24 @@ Responda APENAS com JSON array:
     try {
       const conta = req.query.conta === "matriz" ? "matriz" : "filial";
       const tk = await tokenMLDaConta(conta);
-      const ids = String(req.query.ids || "").split(",").map(s => s.trim()).filter(s => /^\d+$/.test(s)).slice(0, 5);
-      if (!ids.length) return res.status(400).json({ ok: false, error: "passe ids=pedido1,pedido2" });
+      let ids = String(req.query.ids || "").split(",").map(s => s.trim()).filter(s => /^\d+$/.test(s)).slice(0, 5);
+      const packs = [];
+      // número da "Venda" que aparece no ML pode ser o pacote: tenta /packs e pega os pedidos de dentro
+      const idsPedido = [];
+      for (const id of ids) {
+        const pk = await mlFetch(`https://api.mercadolibre.com/packs/${id}`, tk).then(async r => ({ http: r.status, body: await r.json().catch(() => null) })).catch(e => ({ http: 0, erro: e.message }));
+        packs.push({ id, ...pk });
+        const ordens = (pk.body?.orders || []).map(o => String(o.id || o));
+        if (ordens.length) idsPedido.push(...ordens); else idsPedido.push(id);
+      }
+      // procura no que o OPS guardou: ?dia=AAAA-MM-DD&sku=XYZ
+      const achadosNoOps = [];
+      if (req.query.dia && req.query.sku) {
+        const ped = (await getDb().ref(`/vendas_painel/${conta}/${req.query.dia}/pedidos`).once("value")).val() || {};
+        for (const c of Object.values(ped)) if ((c.itens || []).some(i => String(i.sku || "").toUpperCase() === String(req.query.sku).toUpperCase())) { achadosNoOps.push({ id: c.id, criado: c.criado, pack_id: c.pack_id, shipping_id: c.shipping_id, frete_envio: c.frete_envio }); idsPedido.push(String(c.id)); }
+      }
+      ids = [...new Set(idsPedido)].slice(0, 6);
+      if (!ids.length) return res.status(400).json({ ok: false, error: "passe ids=... ou dia=AAAA-MM-DD&sku=SKU" });
       const ler = async url => { try { const r = await mlFetch(url, tk); const t = await r.text(); let b; try { b = JSON.parse(t); } catch { b = t.slice(0, 300); } return { http: r.status, body: b }; } catch (e) { return { http: 0, erro: e.message }; } };
       const semEndereco = o => { if (!o || typeof o !== "object") return o; const c = { ...o }; delete c.receiver_address; delete c.sender_address; delete c.destination; delete c.origin; return c; };
       const saida = [];
@@ -1607,7 +1623,7 @@ Responda APENAS com JSON array:
         if (dia) item.guardado_no_ops = (await getDb().ref(`/vendas_painel/${conta}/${dia}/pedidos/${id}`).once("value")).val();
         saida.push(item);
       }
-      return res.json({ ok: true, conta, resultado: saida });
+      return res.json({ ok: true, conta, packs, achados_no_ops: achadosNoOps, resultado: saida });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e.message });
     }
