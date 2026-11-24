@@ -1680,9 +1680,18 @@ Responda APENAS com JSON array:
         if (!cancelada && aprov.length) vendas.push(linha);
       }
       vendas.sort((a, b) => String(b.criado).localeCompare(String(a.criado)));
+      // Fotos dos anúncios vendidos (miniatura)
+      const fotos = {};
+      const idsFoto = [...new Set([...vendas, ...excecoes].flatMap(v => v.itens.map(i => i.item_id)).filter(Boolean))];
+      if (Date.now() - inicio < 50e3) {
+        await emParalelo(Array.from({ length: Math.ceil(idsFoto.length / 20) }, (_, i) => idsFoto.slice(i * 20, i * 20 + 20)), 3, async lote => {
+          const r = await lerJson(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,thumbnail`);
+          for (const e of Array.isArray(r.body) ? r.body : []) if (e?.code === 200 && e.body?.thumbnail) fotos[e.body.id] = String(e.body.thumbnail).replace(/^http:/, "https:");
+        });
+      }
       return res.json({
         ok: true, conta, data, parcial, faltam: parcial ? precisa.length - Object.keys(novos).length : 0,
-        vendas, excecoes, liberacoes: Object.values(liberacoes).sort((a, b) => a.data.localeCompare(b.data)),
+        vendas, excecoes, fotos, liberacoes: Object.values(liberacoes).sort((a, b) => a.data.localeCompare(b.data)),
         atualizado_em: Date.now(),
       });
     } catch (e) {
