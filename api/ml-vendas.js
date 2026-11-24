@@ -1623,13 +1623,29 @@ Responda APENAS com JSON array:
       let colunas = COLUNAS_RELATORIO;
       const cfgR = await mp("ler configuração do relatório", `${MP}/config`);
       if (cfgR.status === 404) {
-        const novo = await mp("configurar relatório", `${MP}/config`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-          file_name_prefix: `release-${uid}`, display_timezone: "GMT-03", report_translation: "pt", separator: ";",
-          scheduled: false, frequency: { hour: 0, type: "monthly", value: 1 },
-          execute_after_withdrawal: false, include_withdraw: true, detailed: false,
-          columns: COLUNAS_RELATORIO.map(key => ({ key })),
-        }) });
-        if (!novo.ok) return res.json({ ok: false, status: "erro", error: `não consegui configurar o relatório no Mercado Pago (HTTP ${novo.status}): ${(await novo.text()).slice(0, 200)}` });
+        // copia a configuração que já funciona na outra conta (a Matriz tem); senão, usa uma mínima
+        const outra = conta === "filial" ? "matriz" : "filial";
+        let corpos = [];
+        try {
+          const tkOutra = await tokenMLDaConta(outra);
+          const ro = await fetch(`${MP}/config`, { headers: { Authorization: `Bearer ${tkOutra}` } });
+          if (ro.ok) {
+            const base = await ro.json();
+            for (const k of ["id", "user_id", "date_created", "last_modified"]) delete base[k];
+            base.file_name_prefix = `release-${uid}`;
+            if (base.execute_after_withdrawal === undefined) base.execute_after_withdrawal = false;
+            corpos.push(base);
+          }
+        } catch (_) {}
+        corpos.push({ file_name_prefix: `release-${uid}`, display_timezone: "GMT-03", report_language: "pt", separator: ";", scheduled: false,
+          execute_after_withdrawal: false, frequency: { hour: 0, type: "daily", value: "" }, columns: COLUNAS_RELATORIO.map(key => ({ key })) });
+        let okCfg = false, ultimoErro = "";
+        for (const corpo of corpos) {
+          const novo = await fetch(`${MP}/config`, { method: "POST", headers: { Authorization: `Bearer ${tk}`, "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
+          if (novo.ok) { okCfg = true; break; }
+          ultimoErro = `HTTP ${novo.status} — ${(await novo.text()).slice(0, 200)}`;
+        }
+        if (!okCfg) return res.json({ ok: false, status: "erro", error: `configurar relatório: ${ultimoErro}. Se continuar, gere uma vez o relatório "Liberações" no site do Mercado Pago da ${conta === "filial" ? "Filial" : "Matriz"} — isso cria a configuração.` });
       } else if (cfgR.ok) {
         const cfg = await cfgR.json().catch(() => null);
         if (Array.isArray(cfg?.columns) && cfg.columns.length) colunas = cfg.columns.map(c => String(c.key || "").toUpperCase());
