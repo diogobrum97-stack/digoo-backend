@@ -1604,15 +1604,26 @@ Responda APENAS com JSON array:
       const tkInfo = (await getDb().ref(conta === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {};
       const uid = tkInfo.user_id;
       const MP = "https://api.mercadopago.com/v1/account/release_report";
+      // chamada ao MP que devolve a resposta mesmo em erro (para mostrar o passo e o motivo)
+      const mp = async (passo, url, opts = {}) => {
+        let ultimo;
+        for (let t = 0; t < 2; t++) {
+          const r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${tk}`, ...(opts.headers || {}) } });
+          if (r.status < 500) return r;
+          ultimo = `${passo}: Mercado Pago respondeu HTTP ${r.status} — ${(await r.text()).slice(0, 200)}`;
+          await esperar(1500);
+        }
+        throw new Error(ultimo);
+      };
       const begin = new Date(`${de}T00:00:00-03:00`).toISOString().replace(/\.\d+Z$/, "Z");
       const fimDia = new Date(`${ate}T23:59:59-03:00`).getTime();
       const end = new Date(Math.min(fimDia, Date.now() - 5 * 60e3)).toISOString().replace(/\.\d+Z$/, "Z");
 
       // configuração do relatório (a Filial nunca tinha configurado)
       let colunas = COLUNAS_RELATORIO;
-      const cfgR = await mlFetch(`${MP}/config`, tk);
+      const cfgR = await mp("ler configuração do relatório", `${MP}/config`);
       if (cfgR.status === 404) {
-        const novo = await mlFetch(`${MP}/config`, tk, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        const novo = await mp("configurar relatório", `${MP}/config`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
           file_name_prefix: `release-${uid}`, display_timezone: "GMT-03", report_translation: "pt", separator: ";",
           scheduled: false, frequency: { hour: 0, type: "monthly", value: 1 },
           execute_after_withdrawal: false, include_withdraw: true, detailed: false,
@@ -1626,7 +1637,7 @@ Responda APENAS com JSON array:
 
       // pede o relatório do período
       if (!atual?.pedido_em || forcar || atual.status === "erro") {
-        const pr = await mlFetch(MP, tk, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ begin_date: begin, end_date: end }) });
+        const pr = await mp("pedir relatório", MP, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ begin_date: begin, end_date: end }) });
         if (!pr.ok && pr.status !== 202) return res.json({ ok: false, status: "erro", error: `o Mercado Pago recusou gerar o relatório (HTTP ${pr.status}): ${(await pr.text()).slice(0, 200)}` });
         atual = { status: "gerando", pedido_em: Date.now(), begin, end };
         await ref.set(atual);
@@ -1634,7 +1645,7 @@ Responda APENAS com JSON array:
       }
 
       // procura o relatório pronto na lista
-      const lr = await mlFetch(`${MP}/list`, tk);
+      const lr = await mp("listar relatórios", `${MP}/list`);
       const lista = lr.ok ? await lr.json().catch(() => []) : [];
       const mesmoInstante = (a, b) => Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 2000;
       const cand = (Array.isArray(lista) ? lista : [])
@@ -1645,7 +1656,7 @@ Responda APENAS com JSON array:
         if (Date.now() - atual.pedido_em > 20 * 60e3) { await ref.update({ status: "erro" }); return res.json({ ok: false, status: "erro", error: "o Mercado Pago não entregou o relatório em 20 min — tente de novo" }); }
         return res.json({ ok: true, status: "gerando", desde: atual.pedido_em });
       }
-      const dr = await mlFetch(`${MP}/${encodeURIComponent(cand.file_name)}`, tk);
+      const dr = await mp("baixar relatório", `${MP}/${encodeURIComponent(cand.file_name)}`);
       if (!dr.ok) return res.json({ ok: false, status: "erro", error: `não consegui baixar o relatório (HTTP ${dr.status})` });
       const resultado = lerRelatorioLiberacoes(await dr.text(), colunas);
       if (!resultado) return res.json({ ok: false, status: "erro", error: "relatório veio vazio" });
@@ -1653,7 +1664,7 @@ Responda APENAS com JSON array:
       await ref.set(JSON.parse(JSON.stringify(salvo)));
       return res.json({ ok: true, ...salvo });
     } catch (e) {
-      return res.status(500).json({ ok: false, status: "erro", error: e.message });
+      return res.json({ ok: false, status: "erro", error: e.message });
     }
   }
 
