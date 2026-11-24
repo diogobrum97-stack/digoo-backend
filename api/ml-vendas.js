@@ -1687,6 +1687,76 @@ Responda APENAS com JSON array:
     }
   }
 
+  // ── TEMPORÁRIO: conferência de alíquota de ICMS por SKU (subaba "ICMS (temp)") ──
+  // GET ?action=conf-icms&dias=30 → lê as notas já salvas em /vendas_painel (duas contas), calcula ICMS ÷ valor
+  // de cada nota, agrupa por SKU e abre 1 nota completa por SKU+alíquota para pegar NCM, UF e CFOP. Só leitura.
+  if (req.query.action === "conf-icms" && req.method === "GET") {
+    try {
+      const inicio = Date.now();
+      const dias = Math.min(Math.max(parseInt(req.query.dias) || 30, 1), 60);
+      const hoje = hojeSP();
+      const datas = Array.from({ length: dias }, (_, i) => new Date(new Date(hoje + "T12:00:00Z").getTime() - i * 864e5).toISOString().slice(0, 10));
+      const FAIXAS = [0, 4, 7, 12, 18];
+      const faixaDe = pct => { const f = FAIXAS.reduce((a, b) => Math.abs(b - pct) < Math.abs(a - pct) ? b : a); return Math.abs(f - pct) <= 1.5 ? `${f}%` : "outra"; };
+      const grupos = {}, amostras = [];
+      let notas = 0, varios = 0, semImposto = 0, diasComNota = new Set();
+      for (const conta of ["filial", "matriz"]) {
+        const snaps = await Promise.all(datas.map(d => getDb().ref(`/vendas_painel/${conta}/${d}/pedidos`).once("value").then(s => [d, s.val() || {}])));
+        for (const [d, peds] of snaps) for (const p of Object.values(peds)) {
+          if (!p?.nf || p.status === "cancelled") continue;
+          const imp = p.nf.impostos, valor = Number(p.nf.valor) || 0;
+          if (!imp || !valor) { semImposto++; continue; }
+          const skus = [...new Set((p.itens || []).map(i => i.sku || "?"))];
+          if (skus.length !== 1) { varios++; continue; }
+          notas++; diasComNota.add(d);
+          const pct = Math.round((Number(imp.icms) || 0) / valor * 10000) / 100;
+          const fx = faixaDe(pct);
+          const g = grupos[`${conta}|${skus[0]}`] = grupos[`${conta}|${skus[0]}`] || { conta, sku: skus[0], titulo: p.itens?.[0]?.titulo || null, faixas: {} };
+          const f = g.faixas[fx] = g.faixas[fx] || { n: 0, difal: 0, pcts: [], exemplo: null };
+          f.n++; if (Number(imp.difal) > 0) f.difal++;
+          if (f.pcts.length < 6 && !f.pcts.includes(pct)) f.pcts.push(pct);
+          if (!f.exemplo) { f.exemplo = { pedido: p.id, data: d, nf: p.nf.numero || null }; amostras.push({ conta, f }); }
+        }
+      }
+      // 1 nota completa por SKU+alíquota: NCM, UF de destino, CFOP e o que vier de alíquota no item
+      const tokens = {}, uids = {};
+      for (const c of ["filial", "matriz"]) {
+        tokens[c] = await tokenMLDaConta(c).catch(() => null);
+        uids[c] = ((await getDb().ref(c === "filial" ? "ml_token_filial" : "ml_token").once("value")).val() || {}).user_id;
+      }
+      const achaAliq = (o, prof = 0) => {
+        if (!o || typeof o !== "object" || prof > 5) return null;
+        for (const [k, v] of Object.entries(o)) {
+          if (/^(p_?icms|picms|aliquota_?icms|icms_?rate|icms_?aliquota)$/i.test(k) && v != null && v !== "") return Number(v);
+          if (typeof v === "object") { const r = achaAliq(v, prof + 1); if (r != null) return r; }
+        }
+        return null;
+      };
+      let camposItem = null, abertas = 0;
+      await emParalelo(amostras, 4, async ({ conta, f }) => {
+        if (Date.now() - inicio > 45e3 || !tokens[conta]) return;
+        try {
+          const r = await mlFetch(`https://api.mercadolibre.com/users/${uids[conta]}/invoices/orders/${f.exemplo.pedido}`, tokens[conta]);
+          if (!r.ok) return;
+          const inv = await r.json(); abertas++;
+          const it = (inv.items || [])[0] || {};
+          if (!camposItem) camposItem = { item: Object.keys(it), fiscal: it.fiscal_data ? JSON.parse(JSON.stringify(it.fiscal_data)) : null };
+          f.exemplo.ncm = it.fiscal_data?.attributes?.ncm || null;
+          f.exemplo.cfop = it.fiscal_data?.attributes?.cfop || null;
+          f.exemplo.origem = it.fiscal_data?.attributes?.origin ?? it.fiscal_data?.attributes?.origem ?? null;
+          f.exemplo.uf_destino = inv.recipient?.address?.state || null;
+          f.exemplo.uf_emitente = inv.issuer?.address?.state || null;
+          f.exemplo.aliq_item = achaAliq(it);
+        } catch (_) {}
+      });
+      return res.json({
+        ok: true, dias, notas, varios_skus: varios, sem_imposto: semImposto, dias_com_nota: diasComNota.size,
+        notas_abertas: abertas, de_amostras: amostras.length, campos_item: camposItem,
+        grupos: Object.values(grupos).sort((a, b) => a.conta.localeCompare(b.conta) || String(a.sku).localeCompare(String(b.sku))),
+      });
+    } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Nota fiscal da venda (janela da etiqueta NF na aba Vendas) ──
   // GET ?action=nf-venda&conta=filial|matriz&pedido=ID  → dados da nota (sem documento do comprador)
   if (req.query.action === "nf-venda" && req.method === "GET") {
