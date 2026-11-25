@@ -1730,6 +1730,56 @@ Responda APENAS com JSON array:
     }
   }
 
+  // ── Certificado digital (Configurações → Certificado digital) ──
+  // POST ?action=cert-enviar { conta, pfx (base64), senha }
+  // Confere senha, CNPJ e validade; guarda chave+certificado CRIPTOGRAFADOS com a chave pública da VPS
+  // (/certificados_chave/publica). Só a VPS (capturadores) consegue abrir. Nada sai em claro.
+  if (req.query.action === "cert-enviar" && req.method === "POST") {
+    try {
+      const forge = (await import("node-forge")).default;
+      const { conta, pfx, senha } = req.body || {};
+      const CNPJ = { matriz: "40981026000182", filial: "40981026000344" }[conta];
+      if (!CNPJ) return res.status(400).json({ ok: false, error: "Conta inválida." });
+      if (!pfx || typeof senha !== "string" || !senha) return res.status(400).json({ ok: false, error: "Anexe o arquivo e digite a senha." });
+      let p12;
+      try { p12 = forge.pkcs12.pkcs12FromAsn1(forge.asn1.fromDer(forge.util.decode64(pfx)), false, senha); }
+      catch (e) { return res.status(400).json({ ok: false, error: /MAC|password|senha/i.test(e.message) ? "A senha não abre esse certificado." : "Esse arquivo não parece um certificado .pfx válido." }); }
+      const sacos = t => Object.values(p12.getBags({ bagType: t }))[0] || [];
+      const chave = [...sacos(forge.pki.oids.pkcs8ShroudedKeyBag), ...sacos(forge.pki.oids.keyBag)].map(b => b.key).find(Boolean);
+      const certs = sacos(forge.pki.oids.certBag).map(b => b.cert).filter(Boolean);
+      if (!chave || !certs.length) return res.status(400).json({ ok: false, error: "O arquivo não tem a chave e o certificado juntos." });
+      const folha = certs.find(c => c.publicKey?.n && chave.n && c.publicKey.n.equals(chave.n)) || certs[0];
+      const der = forge.asn1.toDer(forge.pki.certificateToAsn1(folha)).getBytes();
+      if (!der.includes(CNPJ)) return res.status(400).json({ ok: false, error: `Esse certificado não é do CNPJ da ${conta === "matriz" ? "Matriz" : "Filial"}.` });
+      const validade = folha.validity.notAfter;
+      if (validade.getTime() < Date.now()) return res.status(400).json({ ok: false, error: `Esse certificado venceu em ${validade.toLocaleDateString("pt-BR")}.` });
+      const pub = (await getDb().ref("/certificados_chave/publica").once("value")).val();
+      if (!pub) return res.status(409).json({ ok: false, error: "A VPS ainda não foi configurada para receber certificados." });
+      // PEM em vez do .pfx: os capturadores não dependem do algoritmo do arquivo (OpenSSL 3 recusa .pfx antigos)
+      const pacote = JSON.stringify({
+        key: forge.pki.privateKeyToPem(chave),
+        cert: [folha, ...certs.filter(c => c !== folha)].map(c => forge.pki.certificateToPem(c)).join(""),
+      });
+      const crypto = await import("node:crypto");
+      const k = crypto.randomBytes(32), iv = crypto.randomBytes(12);
+      const cif = crypto.createCipheriv("aes-256-gcm", k, iv);
+      const dados = Buffer.concat([cif.update(pacote, "utf8"), cif.final()]);
+      const cripto = {
+        k: crypto.publicEncrypt({ key: pub, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, k).toString("base64"),
+        iv: iv.toString("base64"), tag: cif.getAuthTag().toString("base64"), dados: dados.toString("base64"),
+      };
+      const attr = (nome, campo) => (nome.getField(campo) || {}).value || null;
+      const info = {
+        titular: attr(folha.subject, "CN"), emissor: attr(folha.issuer, "CN"), cnpj: CNPJ,
+        validade: validade.toISOString(), inicio: folha.validity.notBefore.toISOString(),
+        serie: folha.serialNumber, enviado_em: Date.now(), usado_em: null, erro: null,
+      };
+      await getDb().ref(`/certificados_cripto/${conta}`).set(cripto);
+      await getDb().ref(`/certificados_info/${conta}`).set(info);
+      return res.json({ ok: true, info });
+    } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── TEMPORÁRIO: conferência de alíquota de ICMS por SKU (subaba "ICMS (temp)") ──
   // GET ?action=conf-icms&dias=30 → lê as notas já salvas em /vendas_painel (duas contas), calcula ICMS ÷ valor
   // de cada nota, agrupa por SKU e abre 1 nota completa por SKU+alíquota para pegar NCM, UF e CFOP. Só leitura.
