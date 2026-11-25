@@ -1329,7 +1329,12 @@ Responda APENAS com JSON array:
         const chunk = ids.slice(i, i + 10);
         const results = await Promise.all(chunk.map(async itemId => {
           try {
-            const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
+            let r;
+            for (let t = 0; t < 3; t++) {
+              r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, { headers: { Authorization: `Bearer ${tokenP}` } });
+              if (r.status !== 429) break;
+              await esperar(800 * (t + 1));
+            }
             if (!r.ok) return [];
             const d = await r.json();
             const promos = Array.isArray(d) ? d : [];
@@ -1363,21 +1368,59 @@ Responda APENAS com JSON array:
         }
       });
       const itemIds = Object.keys(itemMap);
+      const HP = { Authorization: `Bearer ${tokenP}` };
 
-      // Buscar detalhes dos itens em lotes de 20
+      // Promoções sem data no item (automáticas do ML, campanhas...): busca a promoção (uma vez por promoção)
+      const semData = [...new Map(Object.values(itemMap).filter(p => (!p.start_date || !p.finish_date) && p.promotion_id && p.tipo_promo).map(p => [`${p.promotion_id}|${p.tipo_promo}`, p])).values()];
+      const datasPromo = {};
+      await emParalelo(semData, 3, async p => {
+        for (let t = 0; t < 3; t++) {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/seller-promotions/promotions/${p.promotion_id}?promotion_type=${encodeURIComponent(p.tipo_promo)}&app_version=v2`, { headers: HP });
+            if (r.status === 429) { await esperar(800 * (t + 1)); continue; }
+            if (!r.ok) return;
+            const d = await r.json();
+            datasPromo[`${p.promotion_id}|${p.tipo_promo}`] = { start_date: d.start_date || null, finish_date: d.finish_date || d.deadline_date || null, nome: d.name || null };
+            return;
+          } catch (e) { return; }
+        }
+      });
+      for (const p of Object.values(itemMap)) {
+        const x = datasPromo[`${p.promotion_id}|${p.tipo_promo}`];
+        if (!x) continue;
+        p.start_date = p.start_date || x.start_date; p.finish_date = p.finish_date || x.finish_date;
+        if (x.nome && (!p.nome_promo || p.nome_promo === p.tipo_promo)) p.nome_promo = x.nome;
+      }
+
+      // Buscar detalhes dos itens em lotes de 20 — um lote por vez, tentando de novo quando o ML recusa
       const itemsData = {};
-      const lotes = [];
-      for (let i = 0; i < itemIds.length; i += 20) lotes.push(itemIds.slice(i, i + 20));
-      await Promise.all(lotes.map(async lote => {
-        try {
-          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_custom_field,attributes,thumbnail,permalink,catalog_listing`, { headers: { Authorization: `Bearer ${tokenP}` } });
-          const d = await r.json();
-          (Array.isArray(d) ? d : []).forEach(entry => {
-            const item = entry?.body || entry;
-            if (item?.id) itemsData[item.id] = item;
-          });
-        } catch(e) {}
-      }));
+      const buscarLote = async lote => {
+        for (let t = 0; t < 4; t++) {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,price,original_price,seller_custom_field,attributes,thumbnail,permalink,catalog_listing`, { headers: HP });
+            if (r.status === 429 || r.status >= 500) { await esperar(700 * (t + 1)); continue; }
+            const d = await r.json();
+            (Array.isArray(d) ? d : []).forEach(entry => {
+              const item = entry?.body || entry;
+              if (item?.id && item.title) itemsData[item.id] = item;
+            });
+            return;
+          } catch (e) { await esperar(500); }
+        }
+      };
+      for (let i = 0; i < itemIds.length; i += 20) await buscarLote(itemIds.slice(i, i + 20));
+      // repescagem: os que ficaram sem nome, um a um
+      const faltam = itemIds.filter(id => !itemsData[id]);
+      if (faltam.length) await emParalelo(faltam, 3, async id => {
+        for (let t = 0; t < 3; t++) {
+          try {
+            const r = await fetch(`https://api.mercadolibre.com/items/${id}?attributes=id,title,price,original_price,seller_custom_field,attributes,thumbnail,permalink,catalog_listing`, { headers: HP });
+            if (r.status === 429) { await esperar(800 * (t + 1)); continue; }
+            if (r.ok) { const it = await r.json(); if (it?.id) itemsData[it.id] = it; }
+            return;
+          } catch (e) { return; }
+        }
+      });
 
       // Montar resultado final
       const resultadoBruto = itemIds.map(itemId => {
