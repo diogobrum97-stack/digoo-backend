@@ -1730,6 +1730,17 @@ Responda APENAS com JSON array:
     }
   }
 
+  // GET ?action=cert-info → só os dados públicos (titular, validade, uso) + se a VPS já publicou a chave
+  if (req.query.action === "cert-info" && req.method === "GET") {
+    try {
+      const [info, criada] = await Promise.all([
+        getDb().ref("/certificados_info").once("value").then(s => s.val() || {}),
+        getDb().ref("/certificados_chave/criada_em").once("value").then(s => s.val()),
+      ]);
+      return res.json({ ok: true, info, vps: !!criada });
+    } catch (e) { return res.status(500).json({ ok: false, error: e.message }); }
+  }
+
   // ── Certificado digital (Configurações → Certificado digital) ──
   // POST ?action=cert-enviar { conta, pfx (base64), senha }
   // Confere senha, CNPJ e validade; guarda chave+certificado CRIPTOGRAFADOS com a chave pública da VPS
