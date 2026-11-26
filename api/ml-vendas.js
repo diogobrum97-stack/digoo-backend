@@ -6,6 +6,38 @@ import { esperar, mlFetch, emParalelo, dadosDoItem, ofertasDoItem, montarOfertas
 import { montarDiaVendas, hojeSP, resumirNota } from "../lib/vendas-painel-core.js";
 import { lerRelatorioLiberacoes, COLUNAS_RELATORIO } from "../lib/saldo-mp-core.js";
 
+// Dados de vários anúncios: lotes de 20, um por vez, tentando de novo quando o ML recusa;
+// no fim busca um a um os que ainda faltarem. Retorna { item_id: item }.
+async function buscarItensML(ids, token, attrs) {
+  const out = {}, H = { Authorization: `Bearer ${token}` };
+  ids = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < ids.length; i += 20) {
+    const lote = ids.slice(i, i + 20);
+    for (let t = 0; t < 4; t++) {
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=${attrs}`, { headers: H });
+        if (r.status === 429 || r.status >= 500) { await esperar(700 * (t + 1)); continue; }
+        const arr = await r.json();
+        (Array.isArray(arr) ? arr : []).forEach(e => { const it = e?.body; if (e?.code === 200 && it?.id && it.title) out[it.id] = it; });
+        break;
+      } catch (e) { await esperar(500); }
+    }
+  }
+  const faltam = ids.filter(id => !out[id]);
+  if (faltam.length) await emParalelo(faltam, 3, async id => {
+    for (let t = 0; t < 3; t++) {
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${id}?attributes=${attrs}`, { headers: H });
+        if (r.status === 429 || r.status >= 500) { await esperar(800 * (t + 1)); continue; }
+        if (r.ok) { const it = await r.json(); if (it?.id && it.title) out[it.id] = it; }
+        return;
+      } catch (e) { return; }
+    }
+  });
+  if (faltam.length) console.warn(`[itens ML] multiget falhou para ${faltam.length}; individual recuperou ${faltam.filter(id => out[id]).length}`);
+  return out;
+}
+
 // Token do ML salvo no Firebase, renovado se estiver perto de vencer
 async function tokenMLDaConta(conta) {
   const path = conta === "filial" ? "ml_token_filial" : "ml_token";
@@ -546,19 +578,7 @@ module.exports = async function handler(req, res) {
 
       // Buscar título, fotos, atributos e descrição dos anúncios
       const itemIds = [...new Set(perguntas.map(p => p.item_id))];
-      const itemsInfo = {};
-      for (let i = 0; i < itemIds.length; i += 20) {
-        const lote = itemIds.slice(i, i + 20);
-        try {
-          const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(",")}&attributes=id,title,thumbnail,pictures,attributes,category_id`, {
-            headers: { Authorization: `Bearer ${tokenP}` },
-          });
-          const arr = await r.json();
-          arr.forEach(entry => {
-            if (entry.code === 200 && entry.body) itemsInfo[entry.body.id] = entry.body;
-          });
-        } catch (e) {}
-      }
+      const itemsInfo = await buscarItensML(itemIds, tokenP, "id,title,thumbnail,pictures,attributes,category_id");
 
       tPerf.itens_ml = Date.now() - t0;
       console.log(`[perf] itens ML: ${tPerf.itens_ml}ms`);
@@ -811,9 +831,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       const cacheSug = {};
       try {
         const dbS = getDb();
-        await Promise.all(perguntas.map(async p => { const v = (await dbS.ref(`/perguntas_sugestoes/${p.id}`).once("value")).val(); if (v) cacheSug[p.id] = v; }));
+        await Promise.all(perguntas.map(async p => { const v = (await dbS.ref(`/perguntas_sugestoes/${p.id}`).once("value")).val(); if (v && v.com_anuncio) cacheSug[p.id] = v; }));   // sugestões antigas sem dados do anúncio são refeitas
       } catch (e) { console.warn("[perguntas] cache de sugestões:", e.message); }
-      const paraIA = listaParaClaude.filter(p => !cacheSug[perguntas[p.idx].id]);
+      // Sem os dados do anúncio a IA não sugere nada (nunca responder compatibilidade no escuro)
+      const paraIA = listaParaClaude.filter(p => !cacheSug[perguntas[p.idx].id] && itemsInfo[perguntas[p.idx].item_id]);
       tPerf.sugestoes_do_cache = perguntas.length - paraIA.length;
       const claudeRes = !paraIA.length ? { json: async () => ({ content: [{ type: "text", text: "[]" }] }) } : await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -871,14 +892,15 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
       try {
         const dbS = getDb(), agora = Date.now(), novas = {};
         for (const sg of sugestoes) {
-          const p = perguntas[sg.idx]; if (!p || cacheSug[p.id]) continue;
+          const p = perguntas[sg.idx]; if (!p || cacheSug[p.id] || !itemsInfo[p.item_id]) continue;
           if (!sg.suggested_answer && !sg.criar_rascunho) continue;
-          novas[p.id] = { suggested_answer: sg.suggested_answer || "", criar_rascunho: sg.criar_rascunho || null, requires_attention: !!sg.requires_attention, em: agora };
+          novas[p.id] = { suggested_answer: sg.suggested_answer || "", criar_rascunho: sg.criar_rascunho || null, requires_attention: !!sg.requires_attention, em: agora, com_anuncio: true };
         }
         if (Object.keys(novas).length) await dbS.ref("/perguntas_sugestoes").update(novas);
       } catch (e) { console.warn("[perguntas] salvar sugestões:", e.message); }
       const resultado = perguntas.map((p, i) => {
-        const sug = cacheSug[p.id] || sugestoes.find(s => s.idx === i) || {};
+        const semAnuncio = !itemsInfo[p.item_id];
+        const sug = semAnuncio ? {} : (cacheSug[p.id] || sugestoes.find(s => s.idx === i) || {});
         return {
           question_id: p.id,
           item_id: p.item_id,
@@ -888,9 +910,10 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
           thumbnail: itemsInfo[p.item_id]?.thumbnail || "",
           pergunta: p.text,
           data: p.date_created,
-          requires_attention: false,
+          requires_attention: semAnuncio,
+          sem_anuncio: semAnuncio,
           suggested_answer: sug.suggested_answer || "",
-          suggested_answer_fallback: !sug.suggested_answer && !sug.requires_attention,
+          suggested_answer_fallback: !semAnuncio && !sug.suggested_answer && !sug.requires_attention,
           criar_rascunho: Array.isArray(sug.criar_rascunho) ? sug.criar_rascunho : (sug.criar_rascunho ? [sug.criar_rascunho] : null),
           has_knowledge: (conhecimentoPorItem[p.item_id] || []).length > 0,
         };
@@ -1032,14 +1055,7 @@ Responda APENAS com JSON válido, sem texto antes ou depois:
 
           // Buscar títulos dos anúncios
           const itemIds = [...new Set(perguntas.map(p => p.item_id))];
-          const itemsInfo = {};
-          try {
-            const r = await fetch(`https://api.mercadolibre.com/items?ids=${itemIds.join(",")}&attributes=id,title,thumbnail`, {
-              headers: { Authorization: `Bearer ${conta.token}` },
-            });
-            const arr = await r.json();
-            arr.forEach(entry => { if (entry.code === 200 && entry.body) itemsInfo[entry.body.id] = entry.body; });
-          } catch(e) {}
+          const itemsInfo = await buscarItensML(itemIds, conta.token, "id,title,thumbnail");
 
           // Buscar treinamento existente por item
           const conhecimentoPorItem = {};
@@ -1114,6 +1130,7 @@ Responda APENAS com JSON array:
             const sugestao = (p.suggested_answer || "").trim();
             if (!sugestao) continue;
             if (p.requires_attention) continue;
+            if (!itemsInfo[p.item_id]) continue;   // sem os dados do anúncio: nunca responde automático
             // suggested_answer presente + requires_attention=false já é o critério de confiança do Claude
 
             // Enviar resposta no ML
