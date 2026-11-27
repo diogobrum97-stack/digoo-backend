@@ -64,6 +64,16 @@ async function atualizarDia(conta, data, revalidarMs) {
 }
 
 let ultimaOntem = 0, ultimaMadrugada = "";
+// Recalcular os últimos 30 dias agora e sair: RECALCULAR=1 node vendas.mjs
+if (process.env.RECALCULAR) {
+  const hoje = hojeSP();
+  log("Recalculando os últimos 30 dias (uma vez)");
+  for (const conta of CONTAS) for (let i = 0; i <= 30; i++) {
+    try { await atualizarDia(conta, somaDias(hoje, -i), 20 * 3600e3); } catch (e) { log(`[${conta}] ${somaDias(hoje, -i)} erro:`, e.message); }
+    await esperar(1500);
+  }
+  log("Pronto."); process.exit(0);
+}
 log("Painel de vendas iniciado");
 for (;;) {
   const hoje = hojeSP();
